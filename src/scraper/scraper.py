@@ -1,19 +1,20 @@
-"""smeecher - Continuous TFT match scraper."""
+"""Continuous TFT match scraper."""
 import asyncio
 import os
 import signal
 from datetime import datetime
+from pathlib import Path
+
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-from rich.text import Text
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from client import TFTClient
-from database import Database
-from models import ScrapedMatch
+from .client import TFTClient
+from .models import ScrapedMatch
+from ..db import Database
 
 
 TIER_VALUE = {
@@ -48,7 +49,7 @@ console = Console()
 class Smeecher:
     """TFT match scraper with pretty output."""
 
-    def __init__(self, api_key: str, platform: str = "na1", db_path: str = "smeecher.db"):
+    def __init__(self, api_key: str, platform: str = "na1", db_path: str = "data/smeecher.db"):
         self.client = TFTClient(api_key, platform)
         self.db = Database(db_path)
         self.platform = platform.upper()
@@ -203,7 +204,7 @@ class Smeecher:
         self.running = False
 
 
-async def main():
+async def _async_main():
     load_dotenv()
 
     api_key = os.getenv("RIOT_API_KEY")
@@ -213,7 +214,10 @@ async def main():
         return
 
     platform = os.getenv("TFT_PLATFORM", "na1")
-    db_path = os.getenv("SMEECHER_DB", "smeecher.db")
+    db_path = os.getenv("SMEECHER_DB", "data/smeecher.db")
+
+    # Ensure data directory exists
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
     scraper = Smeecher(api_key, platform, db_path)
 
@@ -224,5 +228,10 @@ async def main():
     await scraper.run()
 
 
+def main():
+    """CLI entry point for the scraper."""
+    asyncio.run(_async_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

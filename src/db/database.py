@@ -1,15 +1,17 @@
-"""SQLite database for smeecher."""
+"""SQLite database for TFT match data."""
 import sqlite3
 import json
 from pathlib import Path
 from typing import Optional
-from models import PlayerRank, ScrapedMatch
+
+from ..scraper.models import PlayerRank, ScrapedMatch
 
 
 class Database:
     """SQLite storage for TFT match data."""
 
-    def __init__(self, db_path: str = "smeecher.db"):
+    def __init__(self, db_path: str = "data/smeecher.db"):
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self._init()

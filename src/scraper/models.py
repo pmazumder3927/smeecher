@@ -1,4 +1,4 @@
-"""Data models for smeecher."""
+"""Data models for TFT match data."""
 from pydantic import BaseModel
 from typing import Optional
 

@@ -1,24 +1,69 @@
 # smeecher
 
-tft match scraper. Continuously scrapes games from Riot's API, storing units, items, placements, and lobby ranks.
+TFT match scraper and analysis tool with interactive filter graph visualization.
+
+## Structure
+
+```
+smeecher/
+├── src/
+│   ├── scraper/          # Match scraping
+│   │   ├── client.py     # Riot API client
+│   │   ├── scraper.py    # Scraper logic
+│   │   └── models.py     # Data models
+│   ├── graph/            # Analysis & visualization
+│   │   ├── index.py      # Inverted index builder
+│   │   └── server.py     # Graph API server
+│   └── db/               # Database
+│       └── database.py   # SQLite storage
+├── static/               # Web frontend
+│   └── index.html        # Graph visualization
+├── data/                 # Data files (gitignored)
+│   ├── smeecher.db       # Match database
+│   └── index.pkl         # Precomputed index
+└── pyproject.toml
+```
 
 ## Setup
 
 ```bash
-uv venv && uv sync
+# Install dependencies
+uv sync
+
+# Set up environment
 cp .env.example .env
-# Add your API key from https://developer.riotgames.com/
+# Edit .env with your Riot API key
 ```
 
-## Run
+## Usage
 
+### Scrape matches
 ```bash
-uv run python main.py
+uv run smeecher
 ```
+
+### Build index
+```bash
+uv run smeecher-index
+```
+
+### Run graph server
+```bash
+uv run smeecher-graph
+# Open http://localhost:8000
+```
+
+## Graph Features
+
+- Search units/items to center the graph
+- Click nodes to add constraints
+- Edge thickness = placement impact
+- Green = improves placement, Red = worsens placement
+- Hover for detailed stats (avg placement, sample size)
 
 ## Data
 
-Saves to `smeecher.db` (SQLite):
+Saves to `data/smeecher.db` (SQLite):
 
 - `matches` - match metadata + lobby rank
 - `player_matches` - placements, augments, traits

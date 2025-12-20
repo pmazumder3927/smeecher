@@ -2,7 +2,8 @@
 import asyncio
 import httpx
 from typing import Optional
-from models import Unit, PlayerMatch, MatchInfo, PlayerRank
+
+from .models import Unit, PlayerMatch, MatchInfo, PlayerRank
 
 
 PLATFORM_TO_REGION = {
