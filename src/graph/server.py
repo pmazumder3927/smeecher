@@ -61,12 +61,9 @@ import os
 import secrets
 
 UPLOAD_SECRET = os.environ.get("UPLOAD_SECRET", secrets.token_urlsafe(32))
-
-@app.on_event("startup")
-async def print_upload_secret():
-    print(f"\n{'='*60}")
-    print(f"UPLOAD SECRET: {UPLOAD_SECRET}")
-    print(f"{'='*60}\n")
+print(f"\n{'='*60}")
+print(f"UPLOAD SECRET: {UPLOAD_SECRET}")
+print(f"{'='*60}\n")
 
 
 @app.post("/upload-data")
