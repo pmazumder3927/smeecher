@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TFT Filter Graph</title>
+    <title>Smeecher — TFT Analysis</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         * {
@@ -11,289 +11,672 @@
             padding: 0;
             box-sizing: border-box;
         }
+
+        :root {
+            --bg-primary: #000000;
+            --bg-secondary: #0a0a0a;
+            --bg-tertiary: #111111;
+            --border: #1a1a1a;
+            --border-hover: #2a2a2a;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0a0;
+            --text-tertiary: #666666;
+            --accent: #0070f3;
+            --accent-hover: #0051cc;
+            --success: #00d9a5;
+            --error: #ff4444;
+            --warning: #f5a623;
+            --unit: #ff6b9d;
+            --item: #00d9ff;
+            --equipped: #f5a623;
+            --shadow: rgba(0, 0, 0, 0.3);
+        }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
-            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', 'Helvetica Neue', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            height: 100vh;
+            overflow: hidden;
         }
+
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
-            padding: 20px;
-        }
-        header {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        h1 {
-            font-size: 1.5rem;
-            color: #00d9ff;
-        }
-        .search-container {
-            position: relative;
-            flex: 1;
-            max-width: 400px;
-        }
-        #search {
-            width: 100%;
-            padding: 12px 16px;
-            font-size: 1rem;
-            background: #16213e;
-            border: 1px solid #0f3460;
-            border-radius: 8px;
-            color: #eee;
-            outline: none;
-        }
-        #search:focus {
-            border-color: #00d9ff;
-        }
-        .search-results {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            right: 0;
-            background: #16213e;
-            border: 1px solid #0f3460;
-            border-radius: 8px;
-            margin-top: 4px;
-            max-height: 300px;
-            overflow-y: auto;
-            z-index: 100;
-            display: none;
-        }
-        .search-results.visible {
-            display: block;
-        }
-        .search-result {
-            padding: 10px 16px;
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .search-result:hover {
-            background: #0f3460;
-        }
-        .search-result .label {
-            font-weight: 500;
-        }
-        .search-result .meta {
-            font-size: 0.85rem;
-            color: #888;
-        }
-        .chips {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-bottom: 20px;
-            min-height: 36px;
-        }
-        .chip {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 12px;
-            background: #0f3460;
-            border-radius: 20px;
-            font-size: 0.9rem;
-        }
-        .chip.unit {
-            border-left: 3px solid #e94560;
-        }
-        .chip.item {
-            border-left: 3px solid #00d9ff;
-        }
-        .chip.equipped {
-            border-left: 3px solid #ffc107;
-        }
-        .chip button {
-            background: none;
-            border: none;
-            color: #888;
-            cursor: pointer;
-            font-size: 1rem;
-            padding: 0;
-            line-height: 1;
-        }
-        .chip button:hover {
-            color: #fff;
-        }
-        .stats {
-            background: #16213e;
-            padding: 12px 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            display: flex;
-            gap: 30px;
-        }
-        .stat {
+            padding: 12px 24px;
+            height: 100%;
             display: flex;
             flex-direction: column;
         }
-        .stat-label {
-            font-size: 0.8rem;
-            color: #888;
-            text-transform: uppercase;
+
+        /* Header - Hero Banner */
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 8px;
+            padding: 12px 0;
+            flex-shrink: 0;
+            border-bottom: none;
         }
-        .stat-value {
-            font-size: 1.2rem;
-            font-weight: 600;
-            color: #00d9ff;
+
+        .logo {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
         }
-        #graph {
-            background: #16213e;
-            border-radius: 8px;
+
+        .logo-text {
+            font-size: 32px;
+            font-weight: 700;
+            letter-spacing: -0.04em;
+            color: var(--text-primary);
+            text-transform: lowercase;
+            line-height: 1;
+        }
+
+        /* Search - Central and Prominent */
+        .search-section {
             width: 100%;
-            height: 600px;
+            max-width: 700px;
+            margin: 0 auto;
+            margin-bottom: 12px;
+            flex-shrink: 0;
         }
+
+        .search-container {
+            position: relative;
+            width: 100%;
+        }
+
+        #search {
+            width: 100%;
+            padding: 12px 20px;
+            font-size: 15px;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-primary);
+            outline: none;
+            transition: all 0.2s ease;
+            font-family: inherit;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        #search::placeholder {
+            color: var(--text-tertiary);
+        }
+
+        #search:focus {
+            border-color: var(--accent);
+            background: var(--bg-tertiary);
+            box-shadow: 0 4px 16px rgba(0, 112, 243, 0.15);
+        }
+
+        .search-results {
+            position: absolute;
+            top: calc(100% + 12px);
+            left: 0;
+            right: 0;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            margin-top: 4px;
+            max-height: 360px;
+            overflow-y: auto;
+            z-index: 100;
+            display: none;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+
+        .search-results.visible {
+            display: block;
+        }
+
+        .search-result {
+            padding: 12px 16px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.15s ease;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .search-result:last-child {
+            border-bottom: none;
+        }
+
+        .search-result:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .search-result .label {
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        .search-result .meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .search-result .type-badge {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .search-result .type-badge.unit {
+            background: rgba(255, 107, 157, 0.15);
+            color: var(--unit);
+        }
+
+        .search-result .type-badge.item {
+            background: rgba(0, 217, 255, 0.15);
+            color: var(--item);
+        }
+
+        /* Filters Section */
+        .filters-section {
+            margin-bottom: 12px;
+            margin-top: 0;
+            flex-shrink: 0;
+            max-height: 80px;
+            overflow-y: auto;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .section-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-secondary);
+        }
+
+        .chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            min-height: 32px;
+        }
+
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+
+        .chip::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            border-radius: 6px 0 0 6px;
+        }
+
+        .chip.unit::before {
+            background: var(--unit);
+        }
+
+        .chip.item::before {
+            background: var(--item);
+        }
+
+        .chip.equipped::before {
+            background: var(--equipped);
+        }
+
+        .chip:hover {
+            border-color: var(--border-hover);
+            background: var(--bg-tertiary);
+        }
+
+        .chip button {
+            background: none;
+            border: none;
+            color: var(--text-tertiary);
+            cursor: pointer;
+            font-size: 16px;
+            padding: 0;
+            line-height: 1;
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 3px;
+            transition: all 0.15s ease;
+        }
+
+        .chip button:hover {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+        }
+
+        /* Stats */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-shrink: 0;
+        }
+
+        .stat-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 16px;
+            transition: all 0.2s ease;
+        }
+
+        .stat-card:hover {
+            border-color: var(--border-hover);
+        }
+
+        .stat-label {
+            font-size: 10px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .stat-value {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: -0.02em;
+        }
+
+        /* Graph Container */
+        .graph-section {
+            margin-bottom: 12px;
+            flex: 1;
+            min-height: 0;
+        }
+
+        .graph-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            position: relative;
+            overflow: hidden;
+            height: 100%;
+        }
+
+        #graph {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+        }
+
+        /* Graph Nodes */
         .node {
             cursor: pointer;
+            transition: opacity 0.2s ease;
         }
+
         .node circle {
             stroke-width: 2px;
+            transition: all 0.2s ease;
         }
+
         .node.unit circle {
-            fill: #e94560;
-            stroke: #ff6b8a;
+            fill: var(--unit);
+            stroke: rgba(255, 107, 157, 0.3);
         }
+
         .node.item circle {
-            fill: #00d9ff;
-            stroke: #66e5ff;
+            fill: var(--item);
+            stroke: rgba(0, 217, 255, 0.3);
         }
+
         .node.center circle {
-            stroke-width: 4px;
+            stroke-width: 3px;
+            filter: drop-shadow(0 0 8px currentColor);
         }
+
+        .node:hover circle {
+            stroke-width: 3px;
+            filter: drop-shadow(0 0 12px currentColor);
+        }
+
         .node text {
-            font-size: 11px;
-            fill: #fff;
+            font-size: 12px;
+            font-weight: 500;
+            fill: var(--text-primary);
             pointer-events: none;
             text-anchor: middle;
+            font-family: inherit;
         }
+
+        /* Graph Links */
         .link {
             fill: none;
-            stroke-opacity: 0.6;
+            stroke-opacity: 0.4;
+            transition: stroke-opacity 0.2s ease;
         }
+
+        .link:hover {
+            stroke-opacity: 0.8;
+        }
+
         .link.equipped {
-            stroke: #ffc107;
+            stroke: var(--equipped);
+            stroke-width: 2.5px;
         }
+
         .link.cooccur {
-            stroke: #888;
-            stroke-dasharray: 4,2;
+            stroke: var(--text-tertiary);
+            stroke-width: 1.5px;
+            stroke-dasharray: 4,3;
         }
+
         .link.positive {
-            stroke: #4caf50;
+            stroke: var(--success);
         }
+
         .link.negative {
-            stroke: #f44336;
+            stroke: var(--error);
         }
+
+        /* Tooltip */
         .tooltip {
             position: absolute;
-            background: #0f3460;
-            border: 1px solid #00d9ff;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
             border-radius: 8px;
-            padding: 12px;
-            font-size: 0.85rem;
+            padding: 16px;
+            font-size: 13px;
             pointer-events: none;
             z-index: 1000;
-            max-width: 250px;
+            max-width: 280px;
+            box-shadow: 0 8px 24px var(--shadow);
+            backdrop-filter: blur(10px);
         }
+
         .tooltip-title {
             font-weight: 600;
-            margin-bottom: 8px;
-            color: #00d9ff;
+            margin-bottom: 12px;
+            color: var(--text-primary);
+            font-size: 14px;
         }
+
         .tooltip-row {
             display: flex;
             justify-content: space-between;
-            margin: 4px 0;
+            align-items: center;
+            margin: 6px 0;
+            gap: 16px;
         }
+
         .tooltip-row .label {
-            color: #888;
+            color: var(--text-secondary);
+            font-size: 12px;
         }
+
+        .tooltip-row .value {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
         .uplift-positive {
-            color: #4caf50;
+            color: var(--success);
         }
+
         .uplift-negative {
-            color: #f44336;
+            color: var(--error);
         }
+
+        /* Legend */
         .legend {
             display: flex;
+            flex-wrap: wrap;
             gap: 20px;
-            margin-top: 10px;
-            font-size: 0.85rem;
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 11px;
+            flex-shrink: 0;
         }
+
+        .legend-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .legend-group-title {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-secondary);
+            margin-bottom: 2px;
+        }
+
+        .legend-items {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
         .legend-item {
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 10px;
         }
+
         .legend-dot {
             width: 12px;
             height: 12px;
             border-radius: 50%;
+            flex-shrink: 0;
         }
+
         .legend-dot.unit {
-            background: #e94560;
+            background: var(--unit);
         }
+
         .legend-dot.item {
-            background: #00d9ff;
+            background: var(--item);
         }
+
         .legend-line {
-            width: 20px;
-            height: 3px;
+            width: 24px;
+            height: 2px;
+            flex-shrink: 0;
         }
+
         .legend-line.equipped {
-            background: #ffc107;
+            background: var(--equipped);
         }
+
         .legend-line.cooccur {
-            background: #888;
+            background: var(--text-tertiary);
+        }
+
+        .legend-line.positive {
+            background: var(--success);
+        }
+
+        .legend-line.negative {
+            background: var(--error);
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .empty-state-text {
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        /* Scrollbar */
+        .search-results::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .search-results::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+        }
+
+        .search-results::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        .search-results::-webkit-scrollbar-thumb:hover {
+            background: var(--border-hover);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container {
+                padding: 12px 16px;
+            }
+
+            header {
+                justify-content: center;
+                padding: 8px 0;
+            }
+
+            .logo-text {
+                font-size: 24px;
+            }
+
+            .search-section {
+                margin-bottom: 8px;
+            }
+
+            #search {
+                padding: 10px 16px;
+                font-size: 14px;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>TFT Filter Graph</h1>
-            <div class="search-container">
-                <input type="text" id="search" placeholder="Search units or items..." autocomplete="off">
-                <div class="search-results" id="searchResults"></div>
+            <div class="logo">
+                <div class="logo-text">smeecher</div>
             </div>
         </header>
 
-        <div class="chips" id="chips"></div>
-
-        <div class="stats" id="stats">
-            <div class="stat">
-                <span class="stat-label">Games</span>
-                <span class="stat-value" id="statGames">-</span>
-            </div>
-            <div class="stat">
-                <span class="stat-label">Avg Placement</span>
-                <span class="stat-value" id="statPlacement">-</span>
+        <div class="search-section">
+            <div class="search-container">
+                <input type="text" id="search" placeholder="Search units or items to explore relationships..." autocomplete="off">
+                <div class="search-results" id="searchResults"></div>
             </div>
         </div>
 
-        <svg id="graph"></svg>
+        <div class="filters-section">
+            <div class="section-header">
+                <div class="section-title">Active Filters</div>
+            </div>
+            <div class="chips" id="chips"></div>
+        </div>
+
+        <div class="stats" id="stats">
+            <div class="stat-card">
+                <div class="stat-label">Total Games</div>
+                <div class="stat-value" id="statGames">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Avg Placement</div>
+                <div class="stat-value" id="statPlacement">-</div>
+            </div>
+        </div>
+
+        <div class="graph-section">
+            <div class="graph-container">
+                <svg id="graph"></svg>
+            </div>
+        </div>
 
         <div class="legend">
-            <div class="legend-item">
-                <div class="legend-dot unit"></div>
-                <span>Unit</span>
+            <div class="legend-group">
+                <div class="legend-group-title">Node Types</div>
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <div class="legend-dot unit"></div>
+                        <span>Unit</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-dot item"></div>
+                        <span>Item</span>
+                    </div>
+                </div>
             </div>
-            <div class="legend-item">
-                <div class="legend-dot item"></div>
-                <span>Item</span>
+            <div class="legend-group">
+                <div class="legend-group-title">Edge Types</div>
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <div class="legend-line equipped"></div>
+                        <span>Equipped on</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-line cooccur"></div>
+                        <span>Co-occurs with</span>
+                    </div>
+                </div>
             </div>
-            <div class="legend-item">
-                <div class="legend-line equipped"></div>
-                <span>Equipped on</span>
-            </div>
-            <div class="legend-item">
-                <div class="legend-line cooccur"></div>
-                <span>Co-occurs</span>
+            <div class="legend-group">
+                <div class="legend-group-title">Placement Impact</div>
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <div class="legend-line positive"></div>
+                        <span>Improves placement</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-line negative"></div>
+                        <span>Worsens placement</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -323,9 +706,13 @@
             }
 
             searchTimeout = setTimeout(async () => {
-                const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
-                const results = await response.json();
-                renderSearchResults(results);
+                try {
+                    const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
+                    const results = await response.json();
+                    renderSearchResults(results);
+                } catch (error) {
+                    console.error('Search error:', error);
+                }
             }, 150);
         });
 
@@ -342,12 +729,24 @@
         });
 
         function renderSearchResults(results) {
-            searchResults.innerHTML = results.map(r => `
-                <div class="search-result" data-token="${r.token}">
-                    <span class="label">${r.label}</span>
-                    <span class="meta">${r.type} · ${r.count} games</span>
-                </div>
-            `).join('');
+            if (results.length === 0) {
+                searchResults.innerHTML = '<div class="search-result"><span class="label">No results found</span></div>';
+                searchResults.classList.add('visible');
+                return;
+            }
+
+            searchResults.innerHTML = results.map(r => {
+                const typeClass = r.type === 'unit' ? 'unit' : 'item';
+                return `
+                    <div class="search-result" data-token="${r.token}">
+                        <span class="label">${r.label}</span>
+                        <span class="meta">
+                            <span class="type-badge ${typeClass}">${r.type}</span>
+                            <span>${r.count.toLocaleString()} games</span>
+                        </span>
+                    </div>
+                `;
+            }).join('');
 
             searchResults.classList.add('visible');
 
@@ -376,16 +775,21 @@
         }
 
         function renderChips() {
+            if (selectedTokens.length === 0) {
+                chipsContainer.innerHTML = '<div style="color: var(--text-tertiary); font-size: 12px;">No filters applied. Search and select units or items to start.</div>';
+                return;
+            }
+
             chipsContainer.innerHTML = selectedTokens.map(token => {
                 const type = token.startsWith('U:') ? 'unit' :
                              token.startsWith('I:') ? 'item' : 'equipped';
                 const label = token.startsWith('E:') ?
-                    token.slice(2).replace('|', ' + ') :
+                    token.slice(2).replace('|', ' → ') :
                     token.slice(2);
                 return `
                     <div class="chip ${type}">
                         <span>${label}</span>
-                        <button onclick="removeToken('${token}')">&times;</button>
+                        <button onclick="removeToken('${token}')" aria-label="Remove filter">×</button>
                     </div>
                 `;
             }).join('');
@@ -394,13 +798,17 @@
         // Graph fetching and rendering
         async function fetchGraph() {
             const tokensParam = selectedTokens.join(',');
-            const response = await fetch(`/graph?tokens=${encodeURIComponent(tokensParam)}`);
-            graphData = await response.json();
+            try {
+                const response = await fetch(`/graph?tokens=${encodeURIComponent(tokensParam)}`);
+                graphData = await response.json();
 
-            document.getElementById('statGames').textContent = graphData.base.n.toLocaleString();
-            document.getElementById('statPlacement').textContent = graphData.base.avg_placement.toFixed(2);
+                document.getElementById('statGames').textContent = graphData.base.n.toLocaleString();
+                document.getElementById('statPlacement').textContent = graphData.base.avg_placement.toFixed(2);
 
-            renderGraph();
+                renderGraph();
+            } catch (error) {
+                console.error('Graph fetch error:', error);
+            }
         }
 
         function renderGraph() {
@@ -412,27 +820,48 @@
 
             svg.attr('viewBox', [0, 0, width, height]);
 
-            if (!graphData || graphData.nodes.length === 0) return;
+            if (!graphData || graphData.nodes.length === 0) {
+                svg.append('foreignObject')
+                    .attr('x', width / 2 - 200)
+                    .attr('y', height / 2 - 60)
+                    .attr('width', 400)
+                    .attr('height', 120)
+                    .append('xhtml:div')
+                    .attr('class', 'empty-state')
+                    .html(`
+                        <div class="empty-state-title">No data to display</div>
+                        <div class="empty-state-text">Search and select units or items to visualize relationships</div>
+                    `);
+                return;
+            }
 
             // Create arrow markers
-            svg.append('defs').selectAll('marker')
-                .data(['equipped', 'cooccur'])
-                .join('marker')
-                .attr('id', d => `arrow-${d}`)
-                .attr('viewBox', '0 -5 10 10')
-                .attr('refX', 25)
-                .attr('refY', 0)
-                .attr('markerWidth', 6)
-                .attr('markerHeight', 6)
-                .attr('orient', 'auto')
-                .append('path')
-                .attr('fill', d => d === 'equipped' ? '#ffc107' : '#888')
-                .attr('d', 'M0,-5L10,0L0,5');
+            const defs = svg.append('defs');
+            
+            ['equipped', 'cooccur', 'positive', 'negative'].forEach(type => {
+                const marker = defs.append('marker')
+                    .attr('id', `arrow-${type}`)
+                    .attr('viewBox', '0 -5 10 10')
+                    .attr('refX', 28)
+                    .attr('refY', 0)
+                    .attr('markerWidth', 8)
+                    .attr('markerHeight', 8)
+                    .attr('orient', 'auto');
+
+                const color = type === 'equipped' ? '#f5a623' :
+                             type === 'cooccur' ? '#666666' :
+                             type === 'positive' ? '#00d9a5' :
+                             '#ff4444';
+
+                marker.append('path')
+                    .attr('fill', color)
+                    .attr('d', 'M0,-5L10,0L0,5');
+            });
 
             // Process data
             const nodes = graphData.nodes.map(n => ({
                 ...n,
-                radius: n.isCenter ? 25 : 18
+                radius: n.isCenter ? 28 : 20
             }));
 
             const nodeById = new Map(nodes.map(n => [n.id, n]));
@@ -445,20 +874,35 @@
 
             // Force simulation
             const simulation = d3.forceSimulation(nodes)
-                .force('link', d3.forceLink(links).id(d => d.id).distance(120))
-                .force('charge', d3.forceManyBody().strength(-400))
+                .force('link', d3.forceLink(links).id(d => d.id).distance(140))
+                .force('charge', d3.forceManyBody().strength(-500))
                 .force('center', d3.forceCenter(width / 2, height / 2))
-                .force('collision', d3.forceCollide().radius(d => d.radius + 10));
+                .force('collision', d3.forceCollide().radius(d => d.radius + 12));
 
             // Links
-            // For placement: negative delta = improvement (green), positive delta = worse (red)
             const link = svg.append('g')
                 .selectAll('line')
                 .data(links)
                 .join('line')
-                .attr('class', d => `link ${d.type} ${d.delta <= 0 ? 'positive' : 'negative'}`)
-                .attr('stroke-width', d => Math.max(1, Math.abs(d.delta) * 3))
-                .attr('marker-end', d => `url(#arrow-${d.type})`)
+                .attr('class', d => {
+                    const classes = [`link ${d.type}`];
+                    if (d.delta !== undefined) {
+                        classes.push(d.delta <= 0 ? 'positive' : 'negative');
+                    }
+                    return classes.join(' ');
+                })
+                .attr('stroke-width', d => {
+                    if (d.delta !== undefined) {
+                        return Math.max(2, Math.min(5, Math.abs(d.delta) * 4));
+                    }
+                    return d.type === 'equipped' ? 2.5 : 1.5;
+                })
+                .attr('marker-end', d => {
+                    if (d.delta !== undefined) {
+                        return `url(#arrow-${d.delta <= 0 ? 'positive' : 'negative'})`;
+                    }
+                    return `url(#arrow-${d.type})`;
+                })
                 .on('mouseover', showEdgeTooltip)
                 .on('mouseout', hideTooltip);
 
@@ -477,7 +921,7 @@
                 .attr('r', d => d.radius);
 
             node.append('text')
-                .attr('dy', d => d.radius + 14)
+                .attr('dy', d => d.radius + 16)
                 .text(d => d.label);
 
             // Tick
@@ -513,47 +957,43 @@
         function handleNodeClick(event, d) {
             event.stopPropagation();
 
-            // Find the edge connecting to this node
             const edge = graphData.edges.find(e =>
                 (e.from === d.id || e.to === d.id) && !d.isCenter
             );
 
             if (edge) {
-                // Add the edge's token as a constraint
                 addToken(edge.token);
             } else if (!d.isCenter) {
-                // Fallback: add the node directly
                 addToken(d.id);
             }
         }
 
         function showEdgeTooltip(event, d) {
-            // For placement: negative delta = improvement (green), positive = worse (red)
             const deltaClass = d.delta <= 0 ? 'uplift-positive' : 'uplift-negative';
             const deltaSign = d.delta <= 0 ? '' : '+';
+            const impact = d.delta <= 0 ? 'Improves' : 'Worsens';
 
             tooltip.innerHTML = `
                 <div class="tooltip-title">${d.token.replace('E:', '').replace('|', ' → ')}</div>
                 <div class="tooltip-row">
-                    <span class="label">Placement Delta</span>
-                    <span class="${deltaClass}">${deltaSign}${d.delta.toFixed(2)}</span>
+                    <span class="label">Placement Impact</span>
+                    <span class="value ${deltaClass}">${deltaSign}${d.delta.toFixed(2)}</span>
                 </div>
                 <div class="tooltip-row">
-                    <span class="label">With this</span>
-                    <span>${d.avg_with.toFixed(2)}</span>
+                    <span class="label">With this combo</span>
+                    <span class="value">${d.avg_with.toFixed(2)}</span>
                 </div>
                 <div class="tooltip-row">
-                    <span class="label">Base avg</span>
-                    <span>${d.avg_base.toFixed(2)}</span>
+                    <span class="label">Base average</span>
+                    <span class="value">${d.avg_base.toFixed(2)}</span>
                 </div>
                 <div class="tooltip-row">
                     <span class="label">Sample size</span>
-                    <span>${d.n_with.toLocaleString()} / ${d.n_base.toLocaleString()}</span>
+                    <span class="value">${d.n_with.toLocaleString()} / ${d.n_base.toLocaleString()}</span>
                 </div>
             `;
             tooltip.style.display = 'block';
-            tooltip.style.left = event.pageX + 10 + 'px';
-            tooltip.style.top = event.pageY + 10 + 'px';
+            positionTooltip(event);
         }
 
         function showNodeTooltip(event, d) {
@@ -561,16 +1001,35 @@
                 <div class="tooltip-title">${d.label}</div>
                 <div class="tooltip-row">
                     <span class="label">Type</span>
-                    <span>${d.type}</span>
+                    <span class="value">${d.type}</span>
                 </div>
                 <div class="tooltip-row">
-                    <span class="label">Click to</span>
-                    <span>${d.isCenter ? 'Already selected' : 'Add constraint'}</span>
+                    <span class="label">Action</span>
+                    <span class="value">${d.isCenter ? 'Center node' : 'Click to add filter'}</span>
                 </div>
             `;
             tooltip.style.display = 'block';
-            tooltip.style.left = event.pageX + 10 + 'px';
-            tooltip.style.top = event.pageY + 10 + 'px';
+            positionTooltip(event);
+        }
+
+        function positionTooltip(event) {
+            const tooltipRect = tooltip.getBoundingClientRect();
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+            
+            let left = event.pageX + 12;
+            let top = event.pageY + 12;
+
+            if (left + tooltipRect.width > viewportWidth) {
+                left = event.pageX - tooltipRect.width - 12;
+            }
+
+            if (top + tooltipRect.height > viewportHeight) {
+                top = event.pageY - tooltipRect.height - 12;
+            }
+
+            tooltip.style.left = left + 'px';
+            tooltip.style.top = top + 'px';
         }
 
         function hideTooltip() {
@@ -578,11 +1037,16 @@
         }
 
         // Initial load
+        renderChips();
         fetchGraph();
 
         // Handle window resize
+        let resizeTimeout;
         window.addEventListener('resize', () => {
-            if (graphData) renderGraph();
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                if (graphData) renderGraph();
+            }, 250);
         });
     </script>
 </body>
