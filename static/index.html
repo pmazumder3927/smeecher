@@ -331,18 +331,21 @@
             position: relative;
             overflow: hidden;
             height: 100%;
+            touch-action: none;
         }
 
         #graph {
             width: 100%;
             height: 100%;
             background: transparent;
+            touch-action: none;
         }
 
         /* Graph Nodes */
         .node {
             cursor: pointer;
             transition: opacity 0.2s ease;
+            touch-action: none;
         }
 
         .node .node-ring {
@@ -415,9 +418,10 @@
         .link-overlay {
             fill: none;
             stroke: transparent;
-            stroke-width: 12px;
+            stroke-width: 20px;
             cursor: pointer;
             pointer-events: stroke;
+            touch-action: none;
         }
 
         .link {
@@ -974,6 +978,13 @@
 
             svg.attr('viewBox', [0, 0, width, height]);
 
+            // Dismiss tooltips on background tap (mobile)
+            svg.on('touchstart', function(event) {
+                if (event.target === this) {
+                    hideTooltip();
+                }
+            });
+
             if (!graphData || graphData.nodes.length === 0) {
                 svg.append('foreignObject')
                     .attr('x', width / 2 - 200)
@@ -1127,6 +1138,17 @@
                 .on('mouseout', (event, d) => {
                     link.filter(ld => ld === d).classed('active', false);
                     hideTooltip();
+                })
+                .on('touchstart', function(event, d) {
+                    event.preventDefault();
+                    link.filter(ld => ld === d).classed('active', true);
+                    showEdgeTooltip(event, d);
+                }, { passive: false })
+                .on('touchend', function(event, d) {
+                    setTimeout(() => {
+                        link.filter(ld => ld === d).classed('active', false);
+                        hideTooltip();
+                    }, 1500);
                 });
 
             // Create clip paths for circular icons
@@ -1148,7 +1170,15 @@
                 .call(drag(simulation))
                 .on('click', handleNodeClick)
                 .on('mouseover', showNodeTooltip)
-                .on('mouseout', hideTooltip);
+                .on('mouseout', hideTooltip)
+                .on('touchstart', function(event, d) {
+                    event.preventDefault();
+                    showNodeTooltip(event, d);
+                }, { passive: false })
+                .on('touchend', function(event, d) {
+                    // Delay hide to allow reading tooltip
+                    setTimeout(hideTooltip, 1500);
+                });
 
             // Background circle
             node.append('circle')
@@ -1349,16 +1379,29 @@
             const tooltipRect = tooltip.getBoundingClientRect();
             const viewportWidth = window.innerWidth;
             const viewportHeight = window.innerHeight;
-            
-            let left = event.pageX + 12;
-            let top = event.pageY + 12;
+
+            // Handle touch events
+            let pageX, pageY;
+            if (event.touches && event.touches.length > 0) {
+                pageX = event.touches[0].pageX;
+                pageY = event.touches[0].pageY;
+            } else if (event.changedTouches && event.changedTouches.length > 0) {
+                pageX = event.changedTouches[0].pageX;
+                pageY = event.changedTouches[0].pageY;
+            } else {
+                pageX = event.pageX;
+                pageY = event.pageY;
+            }
+
+            let left = pageX + 12;
+            let top = pageY + 12;
 
             if (left + tooltipRect.width > viewportWidth) {
-                left = event.pageX - tooltipRect.width - 12;
+                left = pageX - tooltipRect.width - 12;
             }
 
             if (top + tooltipRect.height > viewportHeight) {
-                top = event.pageY - tooltipRect.height - 12;
+                top = pageY - tooltipRect.height - 12;
             }
 
             tooltip.style.left = left + 'px';
