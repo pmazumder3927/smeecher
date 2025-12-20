@@ -1,42 +1,33 @@
-"""Data models for TFT match data."""
+"""Data models for smeecher."""
 from pydantic import BaseModel
 from typing import Optional
 
 
-class Item(BaseModel):
-    """An item equipped on a unit."""
-    item_id: str
-    name: str
-
-
 class Unit(BaseModel):
-    """A unit in a player's composition."""
     character_id: str
     name: str
-    tier: int  # Star level (1, 2, or 3)
-    items: list[str]  # List of item IDs
-    rarity: int  # Cost tier
+    tier: int
+    items: list[str]
+    rarity: int
 
 
 class PlayerMatch(BaseModel):
-    """A player's performance in a match."""
     match_id: str
     puuid: str
-    placement: int  # 1-8
+    placement: int
     level: int
     gold_left: int
     last_round: int
     time_eliminated: float
     units: list[Unit]
-    traits: list[dict]  # Active traits with tier info
-    augments: list[str]  # Chosen augments
+    traits: list[dict]
+    augments: list[str]
 
 
 class MatchInfo(BaseModel):
-    """Metadata about a match."""
     match_id: str
-    game_datetime: int  # Unix timestamp in ms
-    game_length: float  # Seconds
+    game_datetime: int
+    game_length: float
     game_version: str
     queue_id: int
     tft_set_number: int
@@ -44,18 +35,16 @@ class MatchInfo(BaseModel):
 
 
 class PlayerRank(BaseModel):
-    """A player's ranked information."""
     puuid: str
     summoner_id: str
-    tier: str  # IRON, BRONZE, SILVER, etc.
-    rank: str  # I, II, III, IV
+    tier: str
+    rank: str
     league_points: int
     wins: int
     losses: int
 
 
 class ScrapedMatch(BaseModel):
-    """Complete scraped match data with all players and lobby rank info."""
     match_info: MatchInfo
     players: list[PlayerMatch]
-    lobby_avg_rank: Optional[str] = None  # Estimated lobby rank
+    lobby_avg_rank: Optional[str] = None

@@ -1,185 +1,205 @@
-"""Continuous TFT match scraping server."""
+"""smeecher - Continuous TFT match scraper."""
 import asyncio
 import os
 import signal
 from datetime import datetime
-from typing import Optional
 from dotenv import load_dotenv
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.text import Text
 
 from client import TFTClient
 from database import Database
-from models import MatchInfo, PlayerMatch, ScrapedMatch
+from models import ScrapedMatch
 
 
-# Tier order for ranking calculation
-TIER_ORDER = {
-    "IRON": 0, "BRONZE": 1, "SILVER": 2, "GOLD": 3,
-    "PLATINUM": 4, "EMERALD": 5, "DIAMOND": 6,
-    "MASTER": 7, "GRANDMASTER": 8, "CHALLENGER": 9
+TIER_VALUE = {
+    "IRON": 0, "BRONZE": 400, "SILVER": 800, "GOLD": 1200,
+    "PLATINUM": 1600, "EMERALD": 2000, "DIAMOND": 2400,
+    "MASTER": 2800, "GRANDMASTER": 3200, "CHALLENGER": 3600
 }
+TIER_NAMES = list(TIER_VALUE.keys())
 
 
-def tier_to_numeric(tier: str, rank: str, lp: int) -> int:
-    """Convert tier/rank to a numeric value for averaging."""
-    base = TIER_ORDER.get(tier.upper(), 0) * 400
-    rank_bonus = {"IV": 0, "III": 100, "II": 200, "I": 300}.get(rank, 0)
-    return base + rank_bonus + lp
+def rank_to_str(tier: str, rank: str, lp: int) -> str:
+    if tier in ("MASTER", "GRANDMASTER", "CHALLENGER"):
+        return f"{tier[:2]} {lp}LP"
+    return f"{tier[:1]}{rank} {lp}LP"
 
 
-def numeric_to_tier(value: int) -> str:
-    """Convert numeric value back to tier string."""
-    tier_idx = min(value // 400, 9)
-    tier_names = list(TIER_ORDER.keys())
-    tier = tier_names[tier_idx]
-
-    if tier in ["MASTER", "GRANDMASTER", "CHALLENGER"]:
-        lp = value - (tier_idx * 400)
-        return f"{tier} {lp}LP"
-
-    remaining = value % 400
-    rank_idx = remaining // 100
-    ranks = ["IV", "III", "II", "I"]
-    rank = ranks[min(rank_idx, 3)]
-    lp = remaining % 100
-    return f"{tier} {rank} {lp}LP"
+def avg_rank_str(ranks: list) -> str:
+    if not ranks:
+        return "???"
+    avg = sum(ranks) // len(ranks)
+    tier_idx = min(avg // 400, 9)
+    tier = TIER_NAMES[tier_idx]
+    if tier in ("MASTER", "GRANDMASTER", "CHALLENGER"):
+        return f"{tier[:2]} {avg - tier_idx * 400}LP"
+    rank_idx = (avg % 400) // 100
+    return f"{tier[:1]}{'IV III II I'.split()[rank_idx]}"
 
 
-class TFTScraper:
-    """Continuous TFT match scraper."""
+console = Console()
 
-    def __init__(self, api_key: str, platform: str = "na1", db_path: str = "tft_matches.db"):
+
+class Smeecher:
+    """TFT match scraper with pretty output."""
+
+    def __init__(self, api_key: str, platform: str = "na1", db_path: str = "smeecher.db"):
         self.client = TFTClient(api_key, platform)
         self.db = Database(db_path)
+        self.platform = platform.upper()
         self.running = False
-        self.matches_scraped = 0
-        self.start_time: Optional[datetime] = None
+        self.matches = 0
+        self.players_scraped = 0
+        self.start_time = None
+        self.current_player = ""
+        self.current_match = ""
+        self.last_rank = ""
 
-    async def seed_from_top_players(self):
-        """Seed the scrape queue with top-ranked players."""
-        print("Seeding scrape queue from top players...")
+    def make_status_table(self) -> Table:
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column(style="cyan", width=12)
+        table.add_column(style="white")
 
-        # Get challenger, grandmaster, and master players
-        for league_name, get_league in [
-            ("Challenger", self.client.get_challenger_league),
-            ("Grandmaster", self.client.get_grandmaster_league),
-            ("Master", self.client.get_master_league),
-        ]:
-            print(f"Fetching {league_name} league...")
+        runtime = str(datetime.now() - self.start_time).split(".")[0] if self.start_time else "0:00:00"
+        rate = self.matches / max(1, (datetime.now() - self.start_time).total_seconds() / 60) if self.start_time else 0
+
+        table.add_row("Runtime", runtime)
+        table.add_row("Matches", f"[green]{self.matches}[/green]")
+        table.add_row("Players", f"{self.players_scraped}")
+        table.add_row("Rate", f"{rate:.1f}/min")
+        table.add_row("Queue", f"{self.db.queue_size()}")
+        table.add_row("", "")
+        table.add_row("Player", f"[dim]{self.current_player[:12]}...[/dim]" if self.current_player else "[dim]---[/dim]")
+        table.add_row("Match", f"[dim]{self.current_match[-12:]}[/dim]" if self.current_match else "[dim]---[/dim]")
+        table.add_row("Rank", f"[yellow]{self.last_rank}[/yellow]" if self.last_rank else "[dim]---[/dim]")
+
+        return table
+
+    async def seed(self, progress: Progress, task_id):
+        """Seed queue from top players."""
+        leagues = [
+            ("Challenger", self.client.get_challenger),
+            ("Grandmaster", self.client.get_grandmaster),
+            ("Master", self.client.get_master),
+        ]
+
+        total = 0
+        for name, get_league in leagues:
+            progress.update(task_id, description=f"[cyan]Fetching {name}...")
             league = await get_league()
             if league and "entries" in league:
-                for entry in league["entries"][:100]:  # Top 100 from each
-                    summoner = await self.client.get_summoner_by_puuid(entry.get("puuid", ""))
-                    if summoner:
-                        priority = TIER_ORDER.get(league_name.upper(), 0)
-                        self.db.add_to_scrape_queue(summoner["puuid"], priority)
-                print(f"Added {min(len(league['entries']), 100)} {league_name} players to queue")
-                await asyncio.sleep(1)  # Respect rate limits
+                for entry in league["entries"][:50]:
+                    if puuid := entry.get("puuid"):
+                        self.db.add_to_queue(puuid, priority=TIER_VALUE.get(name.upper(), 0))
+                        total += 1
+            await asyncio.sleep(0.5)
 
-    async def scrape_player_matches(self, puuid: str) -> int:
-        """Scrape recent matches for a player. Returns number of new matches."""
+        progress.update(task_id, description=f"[green]Seeded {total} players")
+        return total
+
+    async def scrape_player(self, puuid: str) -> int:
+        """Scrape matches for a player."""
+        self.current_player = puuid
         match_ids = await self.client.get_match_ids(puuid, count=20)
-        new_matches = 0
+        new = 0
 
         for match_id in match_ids:
             if self.db.match_exists(match_id):
                 continue
 
+            self.current_match = match_id
             match_data = await self.client.get_match(match_id)
             if not match_data:
                 continue
 
-            # Parse match data
             match_info, players = self.client.parse_match(match_data)
 
-            # Get rank info for players and calculate lobby average
+            # Get ranks for first 3 players
             ranks = []
-            for player in players:
-                rank = await self.client.get_player_rank(player.puuid)
-                if rank:
-                    self.db.save_player_rank(rank)
-                    ranks.append(tier_to_numeric(rank.tier, rank.rank, rank.league_points))
+            for p in players[:3]:
+                if rank := await self.client.get_player_rank(p.puuid):
+                    self.db.save_rank(rank)
+                    ranks.append(TIER_VALUE.get(rank.tier, 0) + rank.league_points)
+                    self.last_rank = rank_to_str(rank.tier, rank.rank, rank.league_points)
 
-                # Add new players to scrape queue
-                self.db.add_to_scrape_queue(player.puuid, priority=0)
+            # Queue all players
+            for p in players:
+                self.db.add_to_queue(p.puuid)
 
-            # Calculate average lobby rank
-            lobby_avg = numeric_to_tier(sum(ranks) // len(ranks)) if ranks else None
-
-            # Save the match
-            scraped = ScrapedMatch(
+            # Save match
+            self.db.save_match(ScrapedMatch(
                 match_info=match_info,
                 players=players,
-                lobby_avg_rank=lobby_avg,
-            )
-            self.db.save_match(scraped)
-            new_matches += 1
-            self.matches_scraped += 1
+                lobby_avg_rank=avg_rank_str(ranks) if ranks else None,
+            ))
+            new += 1
+            self.matches += 1
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Scraped match {match_id[:20]}... | "
-                  f"Lobby: {lobby_avg or 'Unknown'} | Total: {self.matches_scraped}")
-
-        return new_matches
+        self.players_scraped += 1
+        self.db.mark_scraped(puuid)
+        return new
 
     async def run(self):
-        """Run the continuous scraping loop."""
+        """Main scraping loop."""
         self.running = True
         self.start_time = datetime.now()
 
-        print("=" * 60)
-        print("TFT Match Scraper Started")
-        print("=" * 60)
+        console.print(Panel.fit(
+            f"[bold cyan]smeecher[/bold cyan] [dim]v0.1.0[/dim]\n"
+            f"[dim]Platform: {self.platform}[/dim]",
+            border_style="cyan"
+        ))
 
-        # Seed if queue is empty
-        if self.db.get_next_to_scrape() is None:
-            await self.seed_from_top_players()
+        # Seed if needed
+        if not self.db.get_next():
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("[cyan]Seeding...", total=None)
+                await self.seed(progress, task)
 
-        print("\nStarting continuous scrape loop...")
-        print("Press Ctrl+C to stop\n")
+        console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
-        while self.running:
-            puuid = self.db.get_next_to_scrape()
+        # Main loop with live display
+        with Live(self.make_status_table(), refresh_per_second=2, console=console) as live:
+            while self.running:
+                puuid = self.db.get_next()
+                if not puuid:
+                    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
+                        task = p.add_task("[yellow]Queue empty, reseeding...")
+                        await self.seed(p, task)
+                    continue
 
-            if not puuid:
-                print("Queue empty, re-seeding...")
-                await self.seed_from_top_players()
-                continue
-
-            try:
-                new_matches = await self.scrape_player_matches(puuid)
-                self.db.mark_scraped(puuid)
-
-                if new_matches == 0:
-                    # No new matches, small delay
-                    await asyncio.sleep(0.5)
-                else:
-                    # Found matches, continue quickly
-                    await asyncio.sleep(0.1)
-
-            except Exception as e:
-                print(f"Error scraping {puuid[:8]}...: {e}")
-                await asyncio.sleep(5)
+                try:
+                    await self.scrape_player(puuid)
+                    live.update(self.make_status_table())
+                except Exception as e:
+                    console.print(f"[red]Error: {e}[/red]")
+                    await asyncio.sleep(1)
 
         await self.shutdown()
 
     async def shutdown(self):
-        """Clean shutdown."""
-        print("\n" + "=" * 60)
-        print("Shutting down...")
+        console.print(f"\n[cyan]Shutting down...[/cyan]")
         stats = self.db.get_stats()
-        runtime = datetime.now() - self.start_time if self.start_time else None
-
-        print(f"Runtime: {runtime}")
-        print(f"Matches scraped this session: {self.matches_scraped}")
-        print(f"Total matches in database: {stats['total_matches']}")
-        print(f"Unique players: {stats['unique_players']}")
-        print(f"Total units recorded: {stats['total_units']}")
-        print("=" * 60)
-
+        console.print(Panel(
+            f"[bold]Session Complete[/bold]\n\n"
+            f"Matches scraped: [green]{self.matches}[/green]\n"
+            f"Total in DB: [cyan]{stats['total_matches']}[/cyan]\n"
+            f"Unique players: [cyan]{stats['unique_players']}[/cyan]",
+            border_style="green"
+        ))
         await self.client.close()
         self.db.close()
 
     def stop(self):
-        """Signal the scraper to stop."""
         self.running = False
 
 
@@ -188,25 +208,18 @@ async def main():
 
     api_key = os.getenv("RIOT_API_KEY")
     if not api_key:
-        print("Error: RIOT_API_KEY environment variable not set")
-        print("Get your API key from: https://developer.riotgames.com/")
-        print("Then create a .env file with: RIOT_API_KEY=your_key_here")
+        console.print("[red]Error: RIOT_API_KEY not set[/red]")
+        console.print("[dim]Get your key from https://developer.riotgames.com/[/dim]")
         return
 
     platform = os.getenv("TFT_PLATFORM", "na1")
-    db_path = os.getenv("TFT_DB_PATH", "tft_matches.db")
+    db_path = os.getenv("SMEECHER_DB", "smeecher.db")
 
-    scraper = TFTScraper(api_key, platform, db_path)
+    scraper = Smeecher(api_key, platform, db_path)
 
-    # Handle graceful shutdown
     loop = asyncio.get_event_loop()
-
-    def signal_handler():
-        print("\nReceived shutdown signal...")
-        scraper.stop()
-
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, signal_handler)
+        loop.add_signal_handler(sig, scraper.stop)
 
     await scraper.run()
 

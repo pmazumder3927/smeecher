@@ -1,4 +1,4 @@
-"""TFT Match Scraper - Entry point."""
+"""smeecher - TFT match scraper."""
 import asyncio
 from server import main
 
