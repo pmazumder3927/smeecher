@@ -923,7 +923,10 @@
                 fetchGraph().then(() => {
                     // Drift to center on the new selection
                     if (currentSvg && currentZoom && graphWidth && graphHeight) {
-                        startDriftToCenter(currentSvg, currentZoom, graphWidth, graphHeight);
+                        // Ensure auto-framing is active
+                         if (!driftAnimationId) {
+                            startAutoFraming(currentSvg, currentZoom, graphWidth, graphHeight);
+                        }
                     }
                 });
             }
@@ -995,80 +998,91 @@
         let panVelocity = { x: 0, y: 0 };
         let lastTransform = null;
 
-        // Drift back to center
+        // Auto-framing camera
         let isDragging = false;
         let driftAnimationId = null;
         let currentZoom = null;
         let graphWidth = 0;
         let graphHeight = 0;
 
-        function startDriftToCenter(svg, zoom, width, height) {
+        function startAutoFraming(svg, zoom, width, height) {
             if (driftAnimationId) {
                 cancelAnimationFrame(driftAnimationId);
             }
 
-            const driftSpeed = 0.04;
-
-            // Calculate target once after simulation settles
-            let targetX = width / 2;
-            let targetY = height / 2;
-
-            function beginDrift() {
-                // Follow the last selected node
-                if (currentNodes && lastSelectedToken) {
-                    const targetNode = currentNodes.find(n => n.id === lastSelectedToken);
-                    if (targetNode) {
-                        targetX = targetNode.x;
-                        targetY = targetNode.y;
-                    }
-                }
-                driftAnimationId = requestAnimationFrame(drift);
-            }
+            const driftSpeed = 0.02;
+            const paddingFactor = 0.85;
 
             function drift() {
-                if (isDragging) {
-                    driftAnimationId = null;
-                    return;
-                }
-
-                // Calculate where viewport needs to be to center on target
-                const scale = currentZoomTransform.k;
-                const goalX = (width / 2) - (targetX * scale);
-                const goalY = (height / 2) - (targetY * scale);
-
-                const dx = goalX - currentZoomTransform.x;
-                const dy = goalY - currentZoomTransform.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-
-                // Stop when close enough
-                if (distance < 0.5) {
-                    currentZoomTransform = d3.zoomIdentity
-                        .translate(goalX, goalY)
-                        .scale(scale);
-                    svg.call(zoom.transform, currentZoomTransform);
-                    driftAnimationId = null;
-                    return;
-                }
-
-                // Smooth ease toward goal
-                const newX = currentZoomTransform.x + dx * driftSpeed;
-                const newY = currentZoomTransform.y + dy * driftSpeed;
-
-                currentZoomTransform = d3.zoomIdentity
-                    .translate(newX, newY)
-                    .scale(scale);
-
-                svg.call(zoom.transform, currentZoomTransform);
-
                 driftAnimationId = requestAnimationFrame(drift);
+
+                if (isDragging || !currentNodes || currentNodes.length === 0) {
+                    return;
+                }
+
+                // Calculate bounding box of all nodes
+                let minX = Infinity, maxX = -Infinity;
+                let minY = Infinity, maxY = -Infinity;
+
+                currentNodes.forEach(n => {
+                    if (n.x < minX) minX = n.x;
+                    if (n.x > maxX) maxX = n.x;
+                    if (n.y < minY) minY = n.y;
+                    if (n.y > maxY) maxY = n.y;
+                });
+
+                if (minX === Infinity) return;
+
+                // Add margin (radius + extra)
+                const margin = 60;
+                minX -= margin;
+                maxX += margin;
+                minY -= margin;
+                maxY += margin;
+
+                const contentWidth = maxX - minX;
+                const contentHeight = maxY - minY;
+                
+                // Ensure minimum bounds to prevent excessive zoom in
+                const safeWidth = Math.max(contentWidth, 100);
+                const safeHeight = Math.max(contentHeight, 100);
+
+                const centerX = (minX + maxX) / 2;
+                const centerY = (minY + maxY) / 2;
+
+                // Calculate target scale to fit content
+                const scaleX = (width * paddingFactor) / safeWidth;
+                const scaleY = (height * paddingFactor) / safeHeight;
+                let targetK = Math.min(scaleX, scaleY);
+
+                // Clamp to allowed zoom range
+                targetK = Math.max(0.3, Math.min(2.5, targetK));
+
+                // Calculate target translation to center the content
+                // x = width/2 - centerX * k
+                const targetX = (width / 2) - (centerX * targetK);
+                const targetY = (height / 2) - (centerY * targetK);
+
+                // Interpolate
+                const currentK = currentZoomTransform.k;
+                const currentX = currentZoomTransform.x;
+                const currentY = currentZoomTransform.y;
+
+                const nextK = currentK + (targetK - currentK) * driftSpeed;
+                const nextX = currentX + (targetX - currentX) * driftSpeed;
+                const nextY = currentY + (targetY - currentY) * driftSpeed;
+
+                // Apply if meaningful change
+                if (Math.abs(nextK - currentK) > 0.0001 || 
+                    Math.abs(nextX - currentX) > 0.1 || 
+                    Math.abs(nextY - currentY) > 0.1) {
+                    
+                    const newTransform = d3.zoomIdentity.translate(nextX, nextY).scale(nextK);
+                    svg.call(zoom.transform, newTransform);
+                }
             }
 
-            // Brief delay then start drifting to the target node
-            setTimeout(() => {
-                if (!isDragging) {
-                    beginDrift();
-                }
-            }, 200);
+            drift();
         }
 
         function renderGraph() {
@@ -1135,24 +1149,25 @@
             // Add zoom/pan behavior
             const zoom = d3.zoom()
                 .scaleExtent([0.3, 3])
-                .on('start', () => {
-                    isDragging = true;
-                    lastTransform = { x: currentZoomTransform.x, y: currentZoomTransform.y };
-                    if (driftAnimationId) {
-                        cancelAnimationFrame(driftAnimationId);
-                        driftAnimationId = null;
+                .on('start', (event) => {
+                    // Only pause auto-framing if user initiates the interaction
+                    if (event.sourceEvent) {
+                        isDragging = true;
+                        lastTransform = { x: currentZoomTransform.x, y: currentZoomTransform.y };
                     }
                 })
                 .on('zoom', (event) => {
                     // Track pan velocity for node inertia
-                    if (lastTransform) {
+                    if (event.sourceEvent && lastTransform) {
                         const dx = event.transform.x - lastTransform.x;
                         const dy = event.transform.y - lastTransform.y;
                         // Accumulate velocity with smoothing
                         panVelocity.x = panVelocity.x * 0.6 + dx * 0.4;
                         panVelocity.y = panVelocity.y * 0.6 + dy * 0.4;
                     }
-                    lastTransform = { x: event.transform.x, y: event.transform.y };
+                    if (event.sourceEvent) {
+                        lastTransform = { x: event.transform.x, y: event.transform.y };
+                    }
 
                     currentZoomTransform = event.transform;
                     container.attr('transform', event.transform);
@@ -1175,6 +1190,9 @@
 
             // Apply initial transform
             svg.call(zoom.transform, currentZoomTransform);
+            
+            // Start auto-framing
+            startAutoFraming(svg, zoom, width, height);
 
             // Dismiss tooltips on background tap (mobile)
             svg.on('touchstart.tooltip', function(event) {
