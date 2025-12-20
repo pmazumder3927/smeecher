@@ -66,9 +66,12 @@ print(f"UPLOAD SECRET: {UPLOAD_SECRET}")
 print(f"{'='*60}\n")
 
 
-@app.post("/upload-data")
+from fastapi import Request
+
+@app.put("/upload-data/{filename}")
 async def upload_data(
-    file: UploadFile = File(...),
+    filename: str,
+    request: Request,
     x_upload_secret: str = Header(..., alias="X-Upload-Secret")
 ):
     """
@@ -78,17 +81,21 @@ async def upload_data(
     if x_upload_secret != UPLOAD_SECRET:
         raise HTTPException(status_code=403, detail="Invalid secret")
 
-    if file.filename not in ("smeecher.db", "engine.bin"):
+    if filename not in ("smeecher.db", "engine.bin"):
         raise HTTPException(status_code=400, detail="Only smeecher.db or engine.bin allowed")
 
     data_dir = Path(os.environ.get("DATA_DIR", "data"))
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    dest = data_dir / file.filename
-    content = await file.read()
-    dest.write_bytes(content)
+    dest = data_dir / filename
 
-    return {"status": "ok", "file": file.filename, "size_mb": len(content) / 1024 / 1024}
+    # Stream to file to handle large uploads
+    with open(dest, "wb") as f:
+        async for chunk in request.stream():
+            f.write(chunk)
+
+    size_mb = dest.stat().st_size / 1024 / 1024
+    return {"status": "ok", "file": filename, "size_mb": size_mb}
 # ─────────────────────────────────────────────────────────────────
 
 
