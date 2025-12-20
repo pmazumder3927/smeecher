@@ -382,25 +382,35 @@
         }
 
         /* Graph Links */
-        .link {
+        .link-overlay {
             fill: none;
-            stroke-opacity: 0.4;
-            transition: stroke-opacity 0.2s ease;
+            stroke: transparent;
+            stroke-width: 12px;
+            cursor: pointer;
+            pointer-events: stroke;
         }
 
-        .link:hover {
+        .link {
+            fill: none;
+            stroke-opacity: 0.3;
+            transition: stroke-opacity 0.2s ease, stroke-width 0.2s ease;
+            pointer-events: none;
+        }
+
+        .link.active {
             stroke-opacity: 0.8;
+            stroke-width: 4px;
         }
 
         .link.equipped {
             stroke: var(--equipped);
-            stroke-width: 2.5px;
+            stroke-width: 3px;
         }
 
         .link.cooccur {
             stroke: var(--text-tertiary);
             stroke-width: 1.5px;
-            stroke-dasharray: 4,3;
+            stroke-dasharray: 6,4;
         }
 
         .link.positive {
@@ -880,8 +890,10 @@
                 .force('collision', d3.forceCollide().radius(d => d.radius + 12));
 
             // Links
-            const link = svg.append('g')
-                .selectAll('line')
+            const linkGroup = svg.append('g');
+
+            // 1. Visible themed lines (defined first so they can be referenced)
+            const link = linkGroup.selectAll('.link-visible')
                 .data(links)
                 .join('line')
                 .attr('class', d => {
@@ -893,18 +905,31 @@
                 })
                 .attr('stroke-width', d => {
                     if (d.delta !== undefined) {
-                        return Math.max(2, Math.min(5, Math.abs(d.delta) * 4));
+                        return Math.max(2, Math.min(6, Math.abs(d.delta) * 5));
                     }
-                    return d.type === 'equipped' ? 2.5 : 1.5;
+                    return d.type === 'equipped' ? 3 : 1.5;
                 })
                 .attr('marker-end', d => {
                     if (d.delta !== undefined) {
                         return `url(#arrow-${d.delta <= 0 ? 'positive' : 'negative'})`;
                     }
                     return `url(#arrow-${d.type})`;
+                });
+
+            // 2. Invisible thick hit area for interaction (placed on top)
+            const linkOverlay = linkGroup.selectAll('.link-overlay')
+                .data(links)
+                .join('line')
+                .attr('class', 'link-overlay')
+                .on('mouseover', (event, d) => {
+                    // Use filter instead of ID to avoid CSS selector issues with special chars
+                    link.filter(ld => ld === d).classed('active', true);
+                    showEdgeTooltip(event, d);
                 })
-                .on('mouseover', showEdgeTooltip)
-                .on('mouseout', hideTooltip);
+                .on('mouseout', (event, d) => {
+                    link.filter(ld => ld === d).classed('active', false);
+                    hideTooltip();
+                });
 
             // Nodes
             const node = svg.append('g')
@@ -926,6 +951,12 @@
 
             // Tick
             simulation.on('tick', () => {
+                linkOverlay
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+
                 link
                     .attr('x1', d => d.source.x)
                     .attr('y1', d => d.source.y)
@@ -969,15 +1000,17 @@
         }
 
         function showEdgeTooltip(event, d) {
-            const deltaClass = d.delta <= 0 ? 'uplift-positive' : 'uplift-negative';
-            const deltaSign = d.delta <= 0 ? '' : '+';
-            const impact = d.delta <= 0 ? 'Improves' : 'Worsens';
+            const isImprovement = d.delta <= 0;
+            const color = isImprovement ? 'var(--success)' : 'var(--error)';
+            const deltaSign = d.delta > 0 ? '+' : ''; // negative numbers already include '-'
 
             tooltip.innerHTML = `
                 <div class="tooltip-title">${d.token.replace('E:', '').replace('|', ' → ')}</div>
                 <div class="tooltip-row">
                     <span class="label">Placement Impact</span>
-                    <span class="value ${deltaClass}">${deltaSign}${d.delta.toFixed(2)}</span>
+                    <span class="value" style="color: ${color}; font-weight: 800; font-size: 15px;">
+                        ${deltaSign}${d.delta.toFixed(2)}
+                    </span>
                 </div>
                 <div class="tooltip-row">
                     <span class="label">With this combo</span>
