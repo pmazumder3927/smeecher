@@ -81,32 +81,24 @@
             line-height: 1;
         }
 
-        /* Search - Central and Prominent */
-        .search-section {
-            width: 100%;
-            max-width: 600px;
-            margin: 0 auto;
-            margin-bottom: 28px;
-            flex-shrink: 0;
-        }
-
+        /* Search */
         .search-container {
             position: relative;
-            width: 100%;
+            flex: 1;
+            min-width: 0;
         }
 
         #search {
             width: 100%;
-            padding: 14px 22px;
-            font-size: 15px;
-            background: var(--bg-secondary);
+            padding: 8px 12px;
+            font-size: 13px;
+            background: var(--bg-tertiary);
             border: 1px solid var(--border);
-            border-radius: 10px;
+            border-radius: 6px;
             color: var(--text-primary);
             outline: none;
             transition: all 0.2s ease;
             font-family: inherit;
-            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
         }
 
         #search::placeholder {
@@ -121,14 +113,13 @@
 
         .search-results {
             position: absolute;
-            top: calc(100% + 12px);
+            top: calc(100% + 4px);
             left: 0;
             right: 0;
             background: var(--bg-secondary);
             border: 1px solid var(--border);
-            border-radius: 12px;
-            margin-top: 4px;
-            max-height: 360px;
+            border-radius: 8px;
+            max-height: 320px;
             overflow-y: auto;
             z-index: 100;
             display: none;
@@ -194,20 +185,51 @@
             color: var(--trait);
         }
 
-        /* Filters Section */
-        .filters-section {
+        /* Unified Control Panel */
+        .control-panel {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px 18px;
             margin-bottom: 16px;
-            margin-top: 0;
             flex-shrink: 0;
-            max-height: 72px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .control-panel-top {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .control-panel-bottom {
+            max-height: 48px;
             overflow-y: auto;
         }
 
-        .section-header {
+        .stat-inline {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            margin-bottom: 10px;
+            gap: 6px;
+            padding: 0 12px;
+            border-left: 1px solid var(--border);
+            white-space: nowrap;
+        }
+
+        .stat-inline .stat-label {
+            font-size: 10px;
+            color: var(--text-tertiary);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            font-weight: 500;
+        }
+
+        .stat-inline .stat-value {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text-primary);
         }
 
         .section-title {
@@ -216,6 +238,7 @@
             text-transform: uppercase;
             letter-spacing: 0.12em;
             color: var(--text-tertiary);
+            margin-bottom: 6px;
         }
 
         .chips {
@@ -292,43 +315,6 @@
             background: var(--bg-tertiary);
         }
 
-        /* Stats */
-        .stats {
-            display: flex;
-            gap: 16px;
-            margin-bottom: 16px;
-            flex-shrink: 0;
-        }
-
-        .stat-card {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 10px 16px;
-            transition: all 0.2s ease;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .stat-card:hover {
-            border-color: var(--border-hover);
-        }
-
-        .stat-label {
-            font-size: 10px;
-            color: var(--text-tertiary);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-weight: 500;
-        }
-
-        .stat-value {
-            font-size: 16px;
-            font-weight: 700;
-            color: var(--text-primary);
-            letter-spacing: -0.02em;
-        }
 
         /* Graph Container */
         .graph-section {
@@ -603,7 +589,7 @@
 
         .by-line {
             position: absolute;
-            left: calc(50% + 90px);
+            left: calc(50% + 110px);
             font-size: 12px;
             font-style: italic;
             color: var(--text-tertiary);
@@ -611,6 +597,7 @@
             opacity: 0.5;
             transition: opacity 0.2s ease, color 0.2s ease;
             letter-spacing: 0.02em;
+            white-space: nowrap;
         }
 
         .by-line:hover {
@@ -672,26 +659,35 @@
             }
 
             .by-line {
-                left: calc(50% + 60px);
+                left: calc(50% + 70px);
                 font-size: 11px;
             }
 
-            .search-section {
-                margin-bottom: 20px;
+            .control-panel {
+                padding: 12px 14px;
+            }
+
+            .control-panel-top {
+                flex-wrap: wrap;
+                gap: 12px;
+            }
+
+            .search-container {
+                flex: 1 1 100%;
+            }
+
+            .stat-inline {
+                border-left: none;
+                padding: 0;
+            }
+
+            .stat-inline:first-of-type {
+                padding-left: 0;
             }
 
             #search {
-                padding: 12px 16px;
+                padding: 10px 14px;
                 font-size: 14px;
-            }
-
-            .stats {
-                flex-wrap: wrap;
-                gap: 8px;
-            }
-
-            .stat-card {
-                padding: 8px 12px;
             }
 
             .legend {
@@ -716,28 +712,24 @@
             <a href="https://www.pramit.gg" target="_blank" rel="noopener" class="by-line">by JoyFired</a>
         </header>
 
-        <div class="search-section">
-            <div class="search-container">
-                <input type="text" id="search" placeholder="Search units, items, or traits to explore relationships..." autocomplete="off">
-                <div class="search-results" id="searchResults"></div>
+        <div class="control-panel">
+            <div class="control-panel-top">
+                <div class="search-container">
+                    <input type="text" id="search" placeholder="Search units, items, traits..." autocomplete="off">
+                    <div class="search-results" id="searchResults"></div>
+                </div>
+                <div class="stat-inline">
+                    <span class="stat-label">Games</span>
+                    <span class="stat-value" id="statGames">-</span>
+                </div>
+                <div class="stat-inline">
+                    <span class="stat-label">Avg Place</span>
+                    <span class="stat-value" id="statPlacement">-</span>
+                </div>
             </div>
-        </div>
-
-        <div class="filters-section">
-            <div class="section-header">
+            <div class="control-panel-bottom">
                 <div class="section-title">Active Filters</div>
-            </div>
-            <div class="chips" id="chips"></div>
-        </div>
-
-        <div class="stats" id="stats">
-            <div class="stat-card">
-                <div class="stat-label">Total Games</div>
-                <div class="stat-value" id="statGames">-</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Avg Placement</div>
-                <div class="stat-value" id="statPlacement">-</div>
+                <div class="chips" id="chips"></div>
             </div>
         </div>
 
@@ -787,6 +779,29 @@
         // State
         let selectedTokens = [];
         let graphData = null;
+
+        // Color code placement: 1 = best (green), 4.5 = yellow, 8 = worst (red)
+        function getPlacementColor(placement) {
+            const min = 1, max = 8, mid = 4.5;
+            // Clamp to range
+            const p = Math.max(min, Math.min(max, placement));
+
+            if (p <= mid) {
+                // Green to yellow (1 -> 4.5)
+                const t = (p - min) / (mid - min);
+                const r = Math.round(34 + t * 221);  // 34 -> 255
+                const g = Math.round(197 - t * 17);  // 197 -> 180
+                const b = Math.round(94 - t * 54);   // 94 -> 40
+                return `rgb(${r}, ${g}, ${b})`;
+            } else {
+                // Yellow to red (4.5 -> 8)
+                const t = (p - mid) / (max - mid);
+                const r = 255;
+                const g = Math.round(180 - t * 130); // 180 -> 50
+                const b = Math.round(40 + t * 20);   // 40 -> 60
+                return `rgb(${r}, ${g}, ${b})`;
+            }
+        }
 
         // DOM elements
         const searchInput = document.getElementById('search');
@@ -939,7 +954,10 @@
                 graphData = await response.json();
 
                 document.getElementById('statGames').textContent = graphData.base.n.toLocaleString();
-                document.getElementById('statPlacement').textContent = graphData.base.avg_placement.toFixed(2);
+                const placementEl = document.getElementById('statPlacement');
+                const avgPlace = graphData.base.avg_placement;
+                placementEl.textContent = avgPlace.toFixed(2);
+                placementEl.style.color = getPlacementColor(avgPlace);
 
                 renderGraph();
             } catch (error) {
