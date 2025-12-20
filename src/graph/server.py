@@ -1,4 +1,9 @@
-"""Query server for the filter graph."""
+"""
+Query server for the optimized graph engine.
+
+Uses the high-performance GraphEngine with roaring bitmaps
+for sub-millisecond query response times at scale.
+"""
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,18 +13,25 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import uvicorn
 
-from .index import load_index
+from .engine import GraphEngine, build_engine
 
 
-# Load index on startup
-INDEX = None
+ENGINE: GraphEngine = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global INDEX
-    INDEX = load_index("data/index.pkl")
-    print(f"Loaded index with {len(INDEX['index'])} tokens")
+    global ENGINE
+    engine_path = Path("data/engine.bin")
+
+    if engine_path.exists():
+        ENGINE = GraphEngine.load(str(engine_path))
+    else:
+        print("Engine not found, building from database...")
+        ENGINE = build_engine()
+
+    stats = ENGINE.stats()
+    print(f"Engine ready: {stats['total_tokens']} tokens, {stats['total_matches']} matches")
     yield
 
 
@@ -31,35 +43,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-def avg_placement(pm_ids: set, placements: dict) -> float:
-    """Compute average placement for a set of player match IDs."""
-    if not pm_ids:
-        return 4.5  # neutral default
-    total = sum(placements[pm_id] for pm_id in pm_ids)
-    return total / len(pm_ids)
-
-
-def compute_base(tokens: list[str]) -> set:
-    """Compute intersection of all token sets."""
-    if not tokens:
-        return set(INDEX["metadata"].keys())
-
-    sets = []
-    for token in tokens:
-        if token in INDEX["index"]:
-            sets.append(INDEX["index"][token])
-        else:
-            return set()  # Token not found, empty result
-
-    if not sets:
-        return set()
-
-    result = sets[0].copy()
-    for s in sets[1:]:
-        result &= s
-    return result
 
 
 def get_token_type(token: str) -> str:
@@ -84,45 +67,6 @@ def parse_token(token: str) -> dict:
         parts = token[2:].split("|")
         return {"type": "equipped", "unit": parts[0], "item": parts[1]}
     return {"type": "unknown"}
-
-
-def score_candidates(base: set, placements: dict, candidates: list[str], min_sample: int = 10) -> list[dict]:
-    """
-    Score candidate tokens for edge weights using average placement.
-
-    Returns list of {token, delta, avg_with, avg_base, n_with, n_base}
-    Delta is negative when the candidate improves placement (lower is better).
-    """
-    n_base = len(base)
-    if n_base == 0:
-        return []
-
-    avg_base = avg_placement(base, placements)
-
-    results = []
-    for token in candidates:
-        if token not in INDEX["index"]:
-            continue
-
-        with_set = base & INDEX["index"][token]
-        n_with = len(with_set)
-
-        if n_with < min_sample:
-            continue
-
-        avg_with = avg_placement(with_set, placements)
-        delta = avg_with - avg_base  # negative = better placement
-
-        results.append({
-            "token": token,
-            "delta": round(delta, 2),
-            "avg_with": round(avg_with, 2),
-            "avg_base": round(avg_base, 2),
-            "n_with": n_with,
-            "n_base": n_base
-        })
-
-    return results
 
 
 def get_center_info(tokens: list[str]) -> dict:
@@ -157,66 +101,74 @@ def generate_candidates(center_info: dict, current_tokens: list[str]) -> list[tu
     """
     Generate candidate tokens based on center type.
     Returns list of (token, edge_type) tuples.
+
+    Optimized: Uses engine's indexed token lists instead of scanning.
     """
     candidates = []
-    index = INDEX["index"]
+    current_set = set(current_tokens)
 
-    # Get all units and items from index
-    all_units = [t[2:] for t in index if t.startswith("U:")]
-    all_items = [t[2:] for t in index if t.startswith("I:")]
+    all_units = ENGINE.get_all_tokens_by_type("U:")
+    all_items = ENGINE.get_all_tokens_by_type("I:")
+    all_equipped = ENGINE.get_all_tokens_by_type("E:")
 
     center_units = set(center_info["units"])
     center_items = set(center_info["items"])
 
     if center_info["type"] == "empty":
         # Show most popular units and items
-        for unit in all_units:
-            candidates.append((f"U:{unit}", "cooccur"))
-        for item in all_items:
-            candidates.append((f"I:{item}", "cooccur"))
+        for unit_token in all_units:
+            if unit_token not in current_set:
+                candidates.append((unit_token, "cooccur"))
+        for item_token in all_items:
+            if item_token not in current_set:
+                candidates.append((item_token, "cooccur"))
 
     elif center_info["type"] == "item" or (center_info["items"] and not center_info["units"]):
         # Item-centered: show units that equip these items
         for item in center_items:
-            for unit in all_units:
-                equipped_token = f"E:{unit}|{item}"
-                if equipped_token in index:
-                    candidates.append((equipped_token, "equipped"))
+            for eq_token in all_equipped:
+                if eq_token not in current_set and f"|{item}" in eq_token:
+                    candidates.append((eq_token, "equipped"))
 
         # Also show co-occurring items
-        for item in all_items:
-            if item not in center_items:
-                candidates.append((f"I:{item}", "cooccur"))
+        for item_token in all_items:
+            if item_token not in current_set:
+                item_name = item_token[2:]
+                if item_name not in center_items:
+                    candidates.append((item_token, "cooccur"))
 
     elif center_info["type"] == "unit" or (center_info["units"] and not center_info["items"]):
         # Unit-centered: show items equipped on these units
         for unit in center_units:
-            for item in all_items:
-                equipped_token = f"E:{unit}|{item}"
-                if equipped_token in index:
-                    candidates.append((equipped_token, "equipped"))
+            prefix = f"E:{unit}|"
+            for eq_token in all_equipped:
+                if eq_token not in current_set and eq_token.startswith(prefix):
+                    candidates.append((eq_token, "equipped"))
 
         # Also show co-occurring units
-        for unit in all_units:
-            if unit not in center_units:
-                candidates.append((f"U:{unit}", "cooccur"))
+        for unit_token in all_units:
+            if unit_token not in current_set:
+                unit_name = unit_token[2:]
+                if unit_name not in center_units:
+                    candidates.append((unit_token, "cooccur"))
 
     else:
-        # Combo (unit + item via equipped edge): show other items for same unit, and supporting units
+        # Combo (unit + item via equipped edge)
         for unit in center_units:
-            for item in all_items:
-                if item not in center_items:
-                    equipped_token = f"E:{unit}|{item}"
-                    if equipped_token in index:
-                        candidates.append((equipped_token, "equipped"))
+            prefix = f"E:{unit}|"
+            for eq_token in all_equipped:
+                if eq_token not in current_set and eq_token.startswith(prefix):
+                    # Check item not in center
+                    item_name = eq_token.split("|")[1]
+                    if item_name not in center_items:
+                        candidates.append((eq_token, "equipped"))
 
         # Show supporting units
-        for unit in all_units:
-            if unit not in center_units:
-                candidates.append((f"U:{unit}", "cooccur"))
-
-    # Filter out tokens already in selection
-    candidates = [(t, e) for t, e in candidates if t not in current_tokens]
+        for unit_token in all_units:
+            if unit_token not in current_set:
+                unit_name = unit_token[2:]
+                if unit_name not in center_units:
+                    candidates.append((unit_token, "cooccur"))
 
     return candidates
 
@@ -230,18 +182,15 @@ def get_graph(
     """
     Get graph data for the given filter tokens.
 
-    Example tokens:
-    - I:InfinityEdge
-    - U:Jinx
-    - E:Jinx|InfinityEdge
+    Uses roaring bitmap intersections for O(n) performance
+    where n is the size of the smallest set.
     """
     token_list = [t.strip() for t in tokens.split(",") if t.strip()]
 
-    # Compute base set
-    base = compute_base(token_list)
+    # Compute base set using roaring bitmap intersection
+    base = ENGINE.intersect(token_list)
     n_base = len(base)
-    placements = INDEX["placements"]
-    avg_base = avg_placement(base, placements) if n_base > 0 else 4.5
+    avg_base = ENGINE.avg_placement_for_bitmap(base) if n_base > 0 else 4.5
 
     # Get center info
     center_info = get_center_info(token_list)
@@ -249,14 +198,16 @@ def get_graph(
     # Generate candidates
     candidates = generate_candidates(center_info, token_list)
 
-    # Score candidates
-    scored = []
-    for token, edge_type in candidates:
-        scores = score_candidates(base, placements, [token], min_sample)
-        if scores:
-            score = scores[0]
-            score["edge_type"] = edge_type
-            scored.append(score)
+    # Extract just token strings for scoring
+    candidate_tokens = [t for t, _ in candidates]
+    edge_types = {t: e for t, e in candidates}
+
+    # Score candidates using optimized engine
+    scored = ENGINE.score_candidates(base, candidate_tokens, min_sample)
+
+    # Add edge types
+    for score in scored:
+        score["edge_type"] = edge_types.get(score["token"], "cooccur")
 
     # Sort by absolute delta and take top k
     scored.sort(key=lambda x: abs(x["delta"]), reverse=True)
@@ -290,7 +241,6 @@ def get_graph(
                 })
                 node_ids.add(node_id)
         elif parsed["type"] == "equipped":
-            # Add both unit and item as center nodes
             unit_id = f"U:{parsed['unit']}"
             item_id = f"I:{parsed['item']}"
             if unit_id not in node_ids:
@@ -316,11 +266,9 @@ def get_graph(
         parsed = parse_token(score["token"])
 
         if parsed["type"] == "equipped":
-            # Edge from unit to item
             from_id = f"U:{parsed['unit']}"
             to_id = f"I:{parsed['item']}"
 
-            # Add nodes if not present
             if from_id not in node_ids:
                 nodes.append({
                     "id": from_id,
@@ -351,7 +299,6 @@ def get_graph(
             })
 
         elif parsed["type"] == "unit":
-            # Co-occurrence edge to unit
             node_id = f"U:{parsed['unit']}"
             if node_id not in node_ids:
                 nodes.append({
@@ -362,7 +309,6 @@ def get_graph(
                 })
                 node_ids.add(node_id)
 
-            # Connect to first center node
             if token_list:
                 center_parsed = parse_token(token_list[0])
                 if center_parsed["type"] == "unit":
@@ -389,7 +335,6 @@ def get_graph(
             })
 
         elif parsed["type"] == "item":
-            # Co-occurrence edge to item
             node_id = f"I:{parsed['item']}"
             if node_id not in node_ids:
                 nodes.append({
@@ -400,7 +345,6 @@ def get_graph(
                 })
                 node_ids.add(node_id)
 
-            # Connect to first center node
             if token_list:
                 center_parsed = parse_token(token_list[0])
                 if center_parsed["type"] == "unit":
@@ -430,7 +374,7 @@ def get_graph(
         "center": token_list,
         "base": {
             "n": n_base,
-            "avg_placement": round(avg_base, 2)
+            "avg_placement": round(avg_base, 3)
         },
         "nodes": nodes,
         "edges": edges
@@ -440,22 +384,28 @@ def get_graph(
 @app.get("/search")
 def search_tokens(q: str = Query(..., description="Search query")):
     """Search for tokens matching query."""
-    q = q.lower()
+    q_lower = q.lower()
     results = []
 
-    for token, label in INDEX["labels"].items():
-        if q in label.lower():
-            count = len(INDEX["index"][token])
+    for token_str in ENGINE.id_to_token:
+        label = ENGINE.get_label(token_str)
+        if q_lower in label.lower():
+            count = ENGINE.get_token_count(token_str)
             results.append({
-                "token": token,
+                "token": token_str,
                 "label": label,
-                "type": get_token_type(token),
+                "type": get_token_type(token_str),
                 "count": count
             })
 
-    # Sort by count and limit
     results.sort(key=lambda x: x["count"], reverse=True)
     return results[:20]
+
+
+@app.get("/stats")
+def get_stats():
+    """Return engine statistics."""
+    return ENGINE.stats()
 
 
 # Serve static files

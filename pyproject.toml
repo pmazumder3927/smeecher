@@ -7,7 +7,9 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.126.0",
     "httpx>=0.28.1",
+    "numpy>=2.0.0",
     "pydantic>=2.12.5",
+    "pyroaring>=1.0.0",
     "python-dotenv>=1.2.1",
     "rich>=14.2.0",
     "uvicorn>=0.38.0",
@@ -16,7 +18,7 @@ dependencies = [
 [project.scripts]
 smeecher = "src.scraper.scraper:main"
 smeecher-graph = "src.graph.server:main"
-smeecher-index = "src.graph.index:main"
+smeecher-build = "src.graph.engine:build_engine"
 
 [build-system]
 requires = ["hatchling"]

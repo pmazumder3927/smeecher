@@ -1,3 +1,3 @@
-from .index import build_index, load_index, save_index
+from .engine import GraphEngine, build_engine
 
-__all__ = ["build_index", "load_index", "save_index"]
+__all__ = ["GraphEngine", "build_engine"]

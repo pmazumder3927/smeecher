@@ -12,6 +12,7 @@ dist/
 # Data (large files)
 data/*.db
 data/*.pkl
+data/*.bin
 
 # IDE
 .claude/
