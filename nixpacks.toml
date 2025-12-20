@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["python313", "uv"]
+
+[phases.install]
+cmds = ["uv sync --frozen"]
+
+[start]
+cmd = "uv run smeecher-graph"
+
+[variables]
+DATA_DIR = "/data"

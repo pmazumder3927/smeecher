@@ -21,14 +21,19 @@ ENGINE: GraphEngine = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import os
     global ENGINE
-    engine_path = Path("data/engine.bin")
+    data_dir = Path(os.environ.get("DATA_DIR", "data"))
+    engine_path = data_dir / "engine.bin"
+    db_path = data_dir / "smeecher.db"
 
     if engine_path.exists():
         ENGINE = GraphEngine.load(str(engine_path))
-    else:
+    elif db_path.exists():
         print("Engine not found, building from database...")
-        ENGINE = build_engine()
+        ENGINE = build_engine(str(db_path), str(engine_path))
+    else:
+        raise RuntimeError(f"No data found in {data_dir}. Upload smeecher.db to the volume.")
 
     stats = ENGINE.stats()
     print(f"Engine ready: {stats['total_tokens']} tokens, {stats['total_matches']} matches")
@@ -527,7 +532,9 @@ def read_root():
 
 
 def main():
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
