@@ -286,6 +286,30 @@ def get_graph(
     """
     token_list = [t.strip() for t in tokens.split(",") if t.strip()]
 
+    if not token_list:
+        # Special case: return all root nodes (units, items, base traits)
+        all_units = ENGINE.get_all_tokens_by_type("U:")
+        all_items = ENGINE.get_all_tokens_by_type("I:")
+        all_traits = [t for t in ENGINE.get_all_tokens_by_type("T:") if ":" not in t[2:]]
+
+        nodes = []
+        for t in all_units:
+            nodes.append({"id": t, "label": t[2:], "type": "unit", "isCenter": False})
+        for t in all_items:
+            nodes.append({"id": t, "label": t[2:], "type": "item", "isCenter": False})
+        for t in all_traits:
+            nodes.append({"id": t, "label": t[2:], "type": "trait", "isCenter": False})
+
+        return {
+            "center": [],
+            "base": {
+                "n": ENGINE.total_matches,
+                "avg_placement": 4.5
+            },
+            "nodes": nodes,
+            "edges": []
+        }
+
     # Compute base set using roaring bitmap intersection
     base = ENGINE.intersect(token_list)
     n_base = len(base)

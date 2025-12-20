@@ -98,7 +98,9 @@ class GraphEngine:
                 u.name as unit_name,
                 u.items
             FROM player_matches pm
+            JOIN matches m ON m.match_id = pm.match_id
             LEFT JOIN units u ON u.match_id = pm.match_id AND u.puuid = pm.puuid
+            WHERE m.tft_set_number = 16
             ORDER BY pm.id
         """)
 
@@ -181,7 +183,12 @@ class GraphEngine:
         flush_board()
 
         # Second pass: Process traits from player_matches
-        c.execute("SELECT id, placement, traits FROM player_matches WHERE traits IS NOT NULL")
+        c.execute("""
+            SELECT pm.id, pm.placement, pm.traits 
+            FROM player_matches pm
+            JOIN matches m ON m.match_id = pm.match_id
+            WHERE pm.traits IS NOT NULL AND m.tft_set_number = 16
+        """)
         for row in c:
             pm_id = row["id"]
             placement = row["placement"]

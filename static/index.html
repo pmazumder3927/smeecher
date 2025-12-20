@@ -185,6 +185,49 @@
             color: var(--trait);
         }
 
+        .filter-toggles {
+            display: flex;
+            gap: 8px;
+        }
+
+        .filter-toggle {
+            padding: 6px 10px;
+            border-radius: 5px;
+            border: 1px solid var(--border);
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .filter-toggle:hover {
+            border-color: var(--border-hover);
+            color: var(--text-primary);
+        }
+
+        .filter-toggle.active {
+            border-color: transparent;
+        }
+
+        .filter-toggle.active.unit {
+            background: var(--unit);
+            color: #000;
+        }
+
+        .filter-toggle.active.item {
+            background: var(--item);
+            color: #000;
+        }
+
+        .filter-toggle.active.trait {
+            background: var(--trait);
+            color: #fff;
+        }
+
         /* Unified Control Panel */
         .control-panel {
             background: var(--bg-secondary);
@@ -553,6 +596,18 @@
             gap: 6px;
             color: var(--text-tertiary);
             font-size: 10px;
+            cursor: pointer;
+            transition: opacity 0.2s ease;
+            user-select: none;
+        }
+
+        .legend-item:hover {
+            color: var(--text-primary);
+        }
+
+        .legend-item.disabled {
+            opacity: 0.4;
+            filter: grayscale(100%);
         }
 
         .legend-dot {
@@ -683,11 +738,18 @@
 
             .search-container {
                 flex: 1 1 100%;
+                order: 1;
+            }
+            
+            .filter-toggles {
+                order: 2;
+                flex: 1;
             }
 
             .stat-inline {
                 border-left: none;
                 padding: 0;
+                order: 3;
             }
 
             .stat-inline:first-of-type {
@@ -727,6 +789,13 @@
                     <input type="text" id="search" placeholder="Search units, items, traits..." autocomplete="off">
                     <div class="search-results" id="searchResults"></div>
                 </div>
+                
+                <div class="filter-toggles">
+                    <button id="btn-toggle-unit" class="filter-toggle unit active" onclick="toggleType('unit')">Units</button>
+                    <button id="btn-toggle-item" class="filter-toggle item active" onclick="toggleType('item')">Items</button>
+                    <button id="btn-toggle-trait" class="filter-toggle trait active" onclick="toggleType('trait')">Traits</button>
+                </div>
+
                 <div class="stat-inline">
                     <span class="stat-label">Games</span>
                     <span class="stat-value" id="statGames">-</span>
@@ -752,15 +821,15 @@
             <div class="legend-group">
                 <div class="legend-group-title">Node Types</div>
                 <div class="legend-items">
-                    <div class="legend-item">
+                    <div class="legend-item" onclick="toggleType('unit')" id="legend-unit">
                         <div class="legend-dot unit"></div>
                         <span>Unit</span>
                     </div>
-                    <div class="legend-item">
+                    <div class="legend-item" onclick="toggleType('item')" id="legend-item">
                         <div class="legend-dot item"></div>
                         <span>Item</span>
                     </div>
-                    <div class="legend-item">
+                    <div class="legend-item" onclick="toggleType('trait')" id="legend-trait">
                         <div class="legend-dot trait"></div>
                         <span>Trait</span>
                     </div>
@@ -788,6 +857,7 @@
         // State
         let selectedTokens = [];
         let graphData = null;
+        let activeTypes = new Set(['unit', 'item', 'trait']);
 
         // Color code placement: 1 = best (green), 4.5 = yellow, 8 = worst (red)
         function getPlacementColor(placement) {
@@ -967,8 +1037,10 @@
         // Graph fetching and rendering
         async function fetchGraph() {
             const tokensParam = selectedTokens.join(',');
+            console.log('Fetching graph with tokens:', tokensParam);
             try {
-                const response = await fetch(`/graph?tokens=${encodeURIComponent(tokensParam)}`);
+                // Add timestamp to prevent caching
+                const response = await fetch(`/graph?tokens=${encodeURIComponent(tokensParam)}&t=${Date.now()}`);
                 graphData = await response.json();
 
                 document.getElementById('statGames').textContent = graphData.base.n.toLocaleString();
@@ -1004,6 +1076,28 @@
         let currentZoom = null;
         let graphWidth = 0;
         let graphHeight = 0;
+        
+        // Persist node positions across renders
+        const nodePositions = new Map();
+
+        function toggleType(type) {
+            if (activeTypes.has(type)) {
+                activeTypes.delete(type);
+                // Update legend
+                const legendEl = document.getElementById(`legend-${type}`);
+                if (legendEl) legendEl.classList.add('disabled');
+                // Update button
+                const btnEl = document.getElementById(`btn-toggle-${type}`);
+                if (btnEl) btnEl.classList.remove('active');
+            } else {
+                activeTypes.add(type);
+                const legendEl = document.getElementById(`legend-${type}`);
+                if (legendEl) legendEl.classList.remove('disabled');
+                const btnEl = document.getElementById(`btn-toggle-${type}`);
+                if (btnEl) btnEl.classList.add('active');
+            }
+            if (graphData) renderGraph();
+        }
 
         function startAutoFraming(svg, zoom, width, height) {
             if (driftAnimationId) {
@@ -1239,21 +1333,30 @@
                     .attr('d', 'M0,-5L10,0L0,5');
             });
 
-            // Process data - initialize positions near center
-            const nodes = graphData.nodes.map((n, i) => ({
-                ...n,
-                radius: n.isCenter ? 28 : 20,
-                x: width / 2 + (Math.random() - 0.5) * 100,
-                y: height / 2 + (Math.random() - 0.5) * 100
-            }));
+            // Process data - initialize positions near center or use persisted
+            // Filter nodes based on active types
+            const filteredNodes = graphData.nodes.filter(n => activeTypes.has(n.type));
+            const filteredNodeIds = new Set(filteredNodes.map(n => n.id));
+
+            const nodes = filteredNodes.map((n, i) => {
+                const stored = nodePositions.get(n.id);
+                return {
+                    ...n,
+                    radius: n.isCenter ? 28 : 20,
+                    x: stored ? stored.x : width / 2 + (Math.random() - 0.5) * 100,
+                    y: stored ? stored.y : height / 2 + (Math.random() - 0.5) * 100
+                };
+            });
 
             const nodeById = new Map(nodes.map(n => [n.id, n]));
 
-            const links = graphData.edges.map(e => ({
-                ...e,
-                source: nodeById.get(e.from),
-                target: nodeById.get(e.to)
-            })).filter(l => l.source && l.target);
+            const links = graphData.edges
+                .filter(e => filteredNodeIds.has(e.from) && filteredNodeIds.has(e.to))
+                .map(e => ({
+                    ...e,
+                    source: nodeById.get(e.from),
+                    target: nodeById.get(e.to)
+                })).filter(l => l.source && l.target);
 
             // Identify center nodes (the user's "team" of filters)
             const centerNodes = nodes.filter(n => n.isCenter);
@@ -1262,11 +1365,13 @@
             // Force simulation - tuned for smooth settling
             const simulation = d3.forceSimulation(nodes)
                 .force('link', d3.forceLink(links).id(d => d.id).distance(140))
-                .force('charge', d3.forceManyBody().strength(-400))
+                .force('charge', d3.forceManyBody().strength(-300))
                 .force('center', d3.forceCenter(width / 2, height / 2))
-                .force('collision', d3.forceCollide().radius(d => d.radius + 12))
-                .alphaDecay(0.03)
-                .velocityDecay(0.4);
+                .force('x', d3.forceX(width / 2).strength(0.04))
+                .force('y', d3.forceY(height / 2).strength(0.04))
+                .force('collision', d3.forceCollide().radius(d => d.radius + 8))
+                .alphaDecay(0.02)
+                .velocityDecay(0.3);
 
             // Store references for interaction
             currentSimulation = simulation;
@@ -1474,8 +1579,12 @@
                 .attr('dy', d => d.radius + 16)
                 .text(d => getDisplayName(d.type, d.label));
 
-            // Tick
             simulation.on('tick', () => {
+                // Save positions
+                nodes.forEach(n => {
+                    nodePositions.set(n.id, {x: n.x, y: n.y});
+                });
+
                 // Update team hull
                 if (teamHull && centerNodes.length >= 2) {
                     const padding = 45;
