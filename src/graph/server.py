@@ -575,6 +575,12 @@ static_path = Path(__file__).parent.parent.parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 
+@app.get("/riot.txt")
+def riot_verification():
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse("78b19ad2-1989-43e3-93e6-96e803af504c")
+
+
 @app.get("/")
 def read_root():
     return FileResponse(str(static_path / "index.html"))
