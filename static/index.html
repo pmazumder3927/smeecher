@@ -713,19 +713,6 @@
                 </div>
             </div>
             <div class="legend-group">
-                <div class="legend-group-title">Edge Types</div>
-                <div class="legend-items">
-                    <div class="legend-item">
-                        <div class="legend-line equipped"></div>
-                        <span>Equipped on</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-line cooccur"></div>
-                        <span>Co-occurs with</span>
-                    </div>
-                </div>
-            </div>
-            <div class="legend-group">
                 <div class="legend-group-title">Placement Impact</div>
                 <div class="legend-items">
                     <div class="legend-item">
@@ -968,12 +955,66 @@
                 target: nodeById.get(e.to)
             })).filter(l => l.source && l.target);
 
+            // Identify center nodes (the user's "team" of filters)
+            const centerNodes = nodes.filter(n => n.isCenter);
+            const hasCenterTeam = centerNodes.length > 1;
+
             // Force simulation
             const simulation = d3.forceSimulation(nodes)
                 .force('link', d3.forceLink(links).id(d => d.id).distance(140))
                 .force('charge', d3.forceManyBody().strength(-500))
                 .force('center', d3.forceCenter(width / 2, height / 2))
                 .force('collision', d3.forceCollide().radius(d => d.radius + 12));
+
+            // Gentle clustering: keep center nodes loosely grouped while allowing space for networks
+            if (hasCenterTeam) {
+                const minDistance = 120; // Minimum distance between center nodes
+
+                simulation.force('centerCluster', () => {
+                    // Calculate centroid of center nodes
+                    let cx = 0, cy = 0;
+                    centerNodes.forEach(n => { cx += n.x || 0; cy += n.y || 0; });
+                    cx /= centerNodes.length;
+                    cy /= centerNodes.length;
+
+                    // Pull toward centroid
+                    const pullStrength = 0.03;
+                    centerNodes.forEach(n => {
+                        n.vx += (cx - n.x) * pullStrength;
+                        n.vy += (cy - n.y) * pullStrength;
+                    });
+
+                    // Push apart if too close
+                    const pushStrength = 0.5;
+                    for (let i = 0; i < centerNodes.length; i++) {
+                        for (let j = i + 1; j < centerNodes.length; j++) {
+                            const a = centerNodes[i], b = centerNodes[j];
+                            const dx = b.x - a.x;
+                            const dy = b.y - a.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+                            if (dist < minDistance) {
+                                const force = (minDistance - dist) * pushStrength / dist;
+                                a.vx -= dx * force;
+                                a.vy -= dy * force;
+                                b.vx += dx * force;
+                                b.vy += dy * force;
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Team hull background (visual grouping for center nodes)
+            let teamHull = null;
+            if (hasCenterTeam) {
+                teamHull = svg.append('path')
+                    .attr('class', 'team-hull')
+                    .attr('fill', 'rgba(0, 112, 243, 0.08)')
+                    .attr('stroke', 'rgba(0, 112, 243, 0.25)')
+                    .attr('stroke-width', 2)
+                    .attr('stroke-dasharray', '8,4');
+            }
 
             // Links
             const linkGroup = svg.append('g');
@@ -1087,6 +1128,50 @@
 
             // Tick
             simulation.on('tick', () => {
+                // Update team hull
+                if (teamHull && centerNodes.length >= 2) {
+                    const padding = 45;
+                    const points = centerNodes.map(n => [n.x, n.y]);
+
+                    if (centerNodes.length === 2) {
+                        // For 2 nodes, draw a rounded rectangle/pill shape
+                        const [p1, p2] = points;
+                        const dx = p2[0] - p1[0];
+                        const dy = p2[1] - p1[1];
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const nx = -dy / dist * padding;
+                        const ny = dx / dist * padding;
+
+                        teamHull.attr('d', `
+                            M ${p1[0] + nx} ${p1[1] + ny}
+                            L ${p2[0] + nx} ${p2[1] + ny}
+                            A ${padding} ${padding} 0 0 1 ${p2[0] - nx} ${p2[1] - ny}
+                            L ${p1[0] - nx} ${p1[1] - ny}
+                            A ${padding} ${padding} 0 0 1 ${p1[0] + nx} ${p1[1] + ny}
+                            Z
+                        `);
+                    } else {
+                        // For 3+ nodes, compute convex hull
+                        const hull = d3.polygonHull(points);
+                        if (hull) {
+                            // Expand hull by padding
+                            const cx = d3.mean(hull, p => p[0]);
+                            const cy = d3.mean(hull, p => p[1]);
+                            const expanded = hull.map(p => {
+                                const dx = p[0] - cx;
+                                const dy = p[1] - cy;
+                                const dist = Math.sqrt(dx * dx + dy * dy);
+                                const scale = (dist + padding) / dist;
+                                return [cx + dx * scale, cy + dy * scale];
+                            });
+
+                            // Smooth curve through expanded points
+                            const line = d3.line().curve(d3.curveCardinalClosed.tension(0.7));
+                            teamHull.attr('d', line(expanded));
+                        }
+                    }
+                }
+
                 linkOverlay
                     .attr('x1', d => d.source.x)
                     .attr('y1', d => d.source.y)
