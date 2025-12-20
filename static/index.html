@@ -339,6 +339,11 @@
             height: 100%;
             background: transparent;
             touch-action: none;
+            cursor: grab;
+        }
+
+        #graph:active {
+            cursor: grabbing;
         }
 
         /* Graph Nodes */
@@ -913,8 +918,14 @@
         function addToken(token) {
             if (!selectedTokens.includes(token)) {
                 selectedTokens.push(token);
+                lastSelectedToken = token;
                 renderChips();
-                fetchGraph();
+                fetchGraph().then(() => {
+                    // Drift to center on the new selection
+                    if (currentSvg && currentZoom && graphWidth && graphHeight) {
+                        startDriftToCenter(currentSvg, currentZoom, graphWidth, graphHeight);
+                    }
+                });
             }
         }
 
@@ -964,9 +975,100 @@
                 placementEl.style.color = getPlacementColor(avgPlace);
 
                 renderGraph();
+                return true;
             } catch (error) {
                 console.error('Graph fetch error:', error);
+                return false;
             }
+        }
+
+        // Store zoom transform globally for persistence
+        let currentZoomTransform = d3.zoomIdentity;
+
+        // Simulation and graph references
+        let currentSimulation = null;
+        let currentSvg = null;
+        let currentNodes = null;
+        let lastSelectedToken = null;
+
+        // Pan inertia tracking
+        let panVelocity = { x: 0, y: 0 };
+        let lastTransform = null;
+
+        // Drift back to center
+        let isDragging = false;
+        let driftAnimationId = null;
+        let currentZoom = null;
+        let graphWidth = 0;
+        let graphHeight = 0;
+
+        function startDriftToCenter(svg, zoom, width, height) {
+            if (driftAnimationId) {
+                cancelAnimationFrame(driftAnimationId);
+            }
+
+            const driftSpeed = 0.04;
+
+            // Calculate target once after simulation settles
+            let targetX = width / 2;
+            let targetY = height / 2;
+
+            function beginDrift() {
+                // Follow the last selected node
+                if (currentNodes && lastSelectedToken) {
+                    const targetNode = currentNodes.find(n => n.id === lastSelectedToken);
+                    if (targetNode) {
+                        targetX = targetNode.x;
+                        targetY = targetNode.y;
+                    }
+                }
+                driftAnimationId = requestAnimationFrame(drift);
+            }
+
+            function drift() {
+                if (isDragging) {
+                    driftAnimationId = null;
+                    return;
+                }
+
+                // Calculate where viewport needs to be to center on target
+                const scale = currentZoomTransform.k;
+                const goalX = (width / 2) - (targetX * scale);
+                const goalY = (height / 2) - (targetY * scale);
+
+                const dx = goalX - currentZoomTransform.x;
+                const dy = goalY - currentZoomTransform.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                // Stop when close enough
+                if (distance < 0.5) {
+                    currentZoomTransform = d3.zoomIdentity
+                        .translate(goalX, goalY)
+                        .scale(scale);
+                    svg.call(zoom.transform, currentZoomTransform);
+                    driftAnimationId = null;
+                    return;
+                }
+
+                // Smooth ease toward goal
+                const newX = currentZoomTransform.x + dx * driftSpeed;
+                const newY = currentZoomTransform.y + dy * driftSpeed;
+
+                currentZoomTransform = d3.zoomIdentity
+                    .translate(newX, newY)
+                    .scale(scale);
+
+                svg.call(zoom.transform, currentZoomTransform);
+
+                driftAnimationId = requestAnimationFrame(drift);
+            }
+
+            // Brief delay then start drifting to the target node
+            setTimeout(() => {
+                if (!isDragging) {
+                    beginDrift();
+                }
+            }, 200);
         }
 
         function renderGraph() {
@@ -978,15 +1080,111 @@
 
             svg.attr('viewBox', [0, 0, width, height]);
 
+            // Create a container group for all graph elements (for zoom/pan)
+            const container = svg.append('g').attr('class', 'graph-container-g');
+
+            // Apply stored transform
+            container.attr('transform', currentZoomTransform);
+
+            // Grid line background pattern (moves with pan)
+            const patternDefs = container.append('defs');
+            const gridSize = 40;
+            const pattern = patternDefs.append('pattern')
+                .attr('id', 'grid')
+                .attr('width', gridSize)
+                .attr('height', gridSize)
+                .attr('patternUnits', 'userSpaceOnUse');
+
+            // Background
+            pattern.append('rect')
+                .attr('width', gridSize)
+                .attr('height', gridSize)
+                .attr('fill', '#0a0a0a');
+
+            // Vertical line
+            pattern.append('line')
+                .attr('x1', gridSize)
+                .attr('y1', 0)
+                .attr('x2', gridSize)
+                .attr('y2', gridSize)
+                .attr('stroke', '#1a1a1a')
+                .attr('stroke-width', 1);
+
+            // Horizontal line
+            pattern.append('line')
+                .attr('x1', 0)
+                .attr('y1', gridSize)
+                .attr('x2', gridSize)
+                .attr('y2', gridSize)
+                .attr('stroke', '#1a1a1a')
+                .attr('stroke-width', 1);
+
+            // Large background rect with grid pattern
+            container.append('rect')
+                .attr('class', 'grid-bg')
+                .attr('x', -5000)
+                .attr('y', -5000)
+                .attr('width', 10000)
+                .attr('height', 10000)
+                .attr('fill', 'url(#grid)');
+
+            // Store dimensions for drift
+            graphWidth = width;
+            graphHeight = height;
+
+            // Add zoom/pan behavior
+            const zoom = d3.zoom()
+                .scaleExtent([0.3, 3])
+                .on('start', () => {
+                    isDragging = true;
+                    lastTransform = { x: currentZoomTransform.x, y: currentZoomTransform.y };
+                    if (driftAnimationId) {
+                        cancelAnimationFrame(driftAnimationId);
+                        driftAnimationId = null;
+                    }
+                })
+                .on('zoom', (event) => {
+                    // Track pan velocity for node inertia
+                    if (lastTransform) {
+                        const dx = event.transform.x - lastTransform.x;
+                        const dy = event.transform.y - lastTransform.y;
+                        // Accumulate velocity with smoothing
+                        panVelocity.x = panVelocity.x * 0.6 + dx * 0.4;
+                        panVelocity.y = panVelocity.y * 0.6 + dy * 0.4;
+                    }
+                    lastTransform = { x: event.transform.x, y: event.transform.y };
+
+                    currentZoomTransform = event.transform;
+                    container.attr('transform', event.transform);
+                    hideTooltip();
+
+                    // Wake simulation for inertia effect
+                    if (currentSimulation && (Math.abs(panVelocity.x) > 0.5 || Math.abs(panVelocity.y) > 0.5)) {
+                        currentSimulation.alpha(0.15).restart();
+                    }
+                })
+                .on('end', () => {
+                    isDragging = false;
+                    lastTransform = null;
+                });
+
+            svg.call(zoom);
+            currentZoom = zoom;
+            currentSvg = svg;
+
+
+            // Apply initial transform
+            svg.call(zoom.transform, currentZoomTransform);
+
             // Dismiss tooltips on background tap (mobile)
-            svg.on('touchstart', function(event) {
+            svg.on('touchstart.tooltip', function(event) {
                 if (event.target === this) {
                     hideTooltip();
                 }
             });
 
             if (!graphData || graphData.nodes.length === 0) {
-                svg.append('foreignObject')
+                container.append('foreignObject')
                     .attr('x', width / 2 - 200)
                     .attr('y', height / 2 - 60)
                     .attr('width', 400)
@@ -1001,7 +1199,7 @@
             }
 
             // Create arrow markers
-            const defs = svg.append('defs');
+            const defs = container.append('defs');
             
             ['equipped', 'cooccur', 'positive', 'negative'].forEach(type => {
                 const marker = defs.append('marker')
@@ -1023,10 +1221,12 @@
                     .attr('d', 'M0,-5L10,0L0,5');
             });
 
-            // Process data
-            const nodes = graphData.nodes.map(n => ({
+            // Process data - initialize positions near center
+            const nodes = graphData.nodes.map((n, i) => ({
                 ...n,
-                radius: n.isCenter ? 28 : 20
+                radius: n.isCenter ? 28 : 20,
+                x: width / 2 + (Math.random() - 0.5) * 100,
+                y: height / 2 + (Math.random() - 0.5) * 100
             }));
 
             const nodeById = new Map(nodes.map(n => [n.id, n]));
@@ -1041,12 +1241,41 @@
             const centerNodes = nodes.filter(n => n.isCenter);
             const hasCenterTeam = centerNodes.length > 1;
 
-            // Force simulation
+            // Force simulation - tuned for smooth settling
             const simulation = d3.forceSimulation(nodes)
                 .force('link', d3.forceLink(links).id(d => d.id).distance(140))
-                .force('charge', d3.forceManyBody().strength(-500))
+                .force('charge', d3.forceManyBody().strength(-400))
                 .force('center', d3.forceCenter(width / 2, height / 2))
-                .force('collision', d3.forceCollide().radius(d => d.radius + 12));
+                .force('collision', d3.forceCollide().radius(d => d.radius + 12))
+                .alphaDecay(0.03)
+                .velocityDecay(0.4);
+
+            // Store references for interaction
+            currentSimulation = simulation;
+            currentNodes = nodes;
+
+            // Pan inertia - nodes float and resist camera movement like they're in liquid
+            simulation.force('panInertia', () => {
+                // Apply pan velocity as a displacement force
+                // Nodes resist camera movement, creating a lagging effect
+                const strength = 2.5;
+                const damping = 0.92;
+
+                nodes.forEach(n => {
+                    // Push nodes opposite to pan direction (they resist the movement)
+                    n.vx -= panVelocity.x * strength;
+                    n.vy -= panVelocity.y * strength;
+                });
+
+                // Decay pan velocity smoothly
+                panVelocity.x *= damping;
+                panVelocity.y *= damping;
+
+                // Zero out tiny values
+                if (Math.abs(panVelocity.x) < 0.01) panVelocity.x = 0;
+                if (Math.abs(panVelocity.y) < 0.01) panVelocity.y = 0;
+            });
+
 
             // Gentle clustering: keep center nodes loosely grouped while allowing space for networks
             if (hasCenterTeam) {
@@ -1090,7 +1319,7 @@
             // Team hull background (visual grouping for center nodes)
             let teamHull = null;
             if (hasCenterTeam) {
-                teamHull = svg.append('path')
+                teamHull = container.append('path')
                     .attr('class', 'team-hull')
                     .attr('fill', 'rgba(0, 112, 243, 0.08)')
                     .attr('stroke', 'rgba(0, 112, 243, 0.25)')
@@ -1099,7 +1328,7 @@
             }
 
             // Links
-            const linkGroup = svg.append('g');
+            const linkGroup = container.append('g');
 
             // 1. Visible themed lines (defined first so they can be referenced)
             const link = linkGroup.selectAll('.link-visible')
@@ -1152,7 +1381,7 @@
                 });
 
             // Create clip paths for circular icons
-            const clipDefs = svg.append('defs');
+            const clipDefs = container.append('defs');
 
             nodes.forEach(n => {
                 clipDefs.append('clipPath')
@@ -1162,7 +1391,7 @@
             });
 
             // Nodes
-            const node = svg.append('g')
+            const node = container.append('g')
                 .selectAll('g')
                 .data(nodes)
                 .join('g')
