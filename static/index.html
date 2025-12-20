@@ -1119,15 +1119,18 @@
                 let minY = Infinity, maxY = -Infinity;
 
                 currentNodes.forEach(n => {
-                    if (n.x < minX) minX = n.x;
-                    if (n.x > maxX) maxX = n.x;
-                    if (n.y < minY) minY = n.y;
-                    if (n.y > maxY) maxY = n.y;
+                    // Only consider nodes that are currently visible/active
+                    if (activeTypes.has(n.type)) {
+                        if (n.x < minX) minX = n.x;
+                        if (n.x > maxX) maxX = n.x;
+                        if (n.y < minY) minY = n.y;
+                        if (n.y > maxY) maxY = n.y;
+                    }
                 });
 
                 if (minX === Infinity) return;
 
-                // Add margin (radius + extra)
+                // Add margin
                 const margin = 60;
                 minX -= margin;
                 maxX += margin;
@@ -1136,15 +1139,28 @@
 
                 const contentWidth = maxX - minX;
                 const contentHeight = maxY - minY;
-                
-                // Ensure minimum bounds to prevent excessive zoom in
-                const safeWidth = Math.max(contentWidth, 100);
-                const safeHeight = Math.max(contentHeight, 100);
-
                 const centerX = (minX + maxX) / 2;
                 const centerY = (minY + maxY) / 2;
 
+                const currentK = currentZoomTransform.k;
+                const currentX = currentZoomTransform.x;
+                const currentY = currentZoomTransform.y;
+
+                // Viewport boundaries in graph coordinates
+                const viewX = -currentX / currentK;
+                const viewY = -currentY / currentK;
+                const viewW = width / currentK;
+                const viewH = height / currentK;
+
+                // Check 1: Is the user looking at empty space? (No intersection with content)
+                const overlapX = Math.max(0, Math.min(maxX, viewX + viewW) - Math.max(minX, viewX));
+                const overlapY = Math.max(0, Math.min(maxY, viewY + viewH) - Math.max(minY, viewY));
+                const isLookingAtEmptySpace = (overlapX <= 0 || overlapY <= 0);
+
                 // Calculate target scale to fit content
+                const safeWidth = Math.max(contentWidth, 100);
+                const safeHeight = Math.max(contentHeight, 100);
+                
                 const scaleX = (width * paddingFactor) / safeWidth;
                 const scaleY = (height * paddingFactor) / safeHeight;
                 let targetK = Math.min(scaleX, scaleY);
@@ -1152,16 +1168,24 @@
                 // Clamp to allowed zoom range
                 targetK = Math.max(0.3, Math.min(2.5, targetK));
 
+                // Check 2: Is the user in "Overview Mode"?
+                // If zoom is close to (or less than) the "fit all" zoom level, we assume they want to see everything centered.
+                // If they are zoomed IN significantly (currentK > targetK * 1.1), they are exploring details.
+                const isOverviewMode = currentK <= (targetK * 1.1);
+
+                // Policy:
+                // - If looking at nothing: Drift back.
+                // - If in overview mode: Drift to perfect center/fit.
+                // - If zoomed in (exploring) AND looking at content: Do nothing (Passive).
+                if (!isLookingAtEmptySpace && !isOverviewMode) {
+                    return;
+                }
+
                 // Calculate target translation to center the content
-                // x = width/2 - centerX * k
                 const targetX = (width / 2) - (centerX * targetK);
                 const targetY = (height / 2) - (centerY * targetK);
 
                 // Interpolate
-                const currentK = currentZoomTransform.k;
-                const currentX = currentZoomTransform.x;
-                const currentY = currentZoomTransform.y;
-
                 const nextK = currentK + (targetK - currentK) * driftSpeed;
                 const nextX = currentX + (targetX - currentX) * driftSpeed;
                 const nextY = currentY + (targetY - currentY) * driftSpeed;
