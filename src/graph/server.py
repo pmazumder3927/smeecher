@@ -7,7 +7,7 @@ for sub-millisecond query response times at scale.
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, UploadFile, File, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -29,14 +29,18 @@ async def lifespan(app: FastAPI):
 
     if engine_path.exists():
         ENGINE = GraphEngine.load(str(engine_path))
+        stats = ENGINE.stats()
+        print(f"Engine ready: {stats['total_tokens']} tokens, {stats['total_matches']} matches")
     elif db_path.exists():
         print("Engine not found, building from database...")
         ENGINE = build_engine(str(db_path), str(engine_path))
+        stats = ENGINE.stats()
+        print(f"Engine ready: {stats['total_tokens']} tokens, {stats['total_matches']} matches")
     else:
-        raise RuntimeError(f"No data found in {data_dir}. Upload smeecher.db to the volume.")
+        print(f"WARNING: No data found in {data_dir}")
+        print("Upload smeecher.db via POST /upload-data, then restart the service.")
+        ENGINE = None
 
-    stats = ENGINE.stats()
-    print(f"Engine ready: {stats['total_tokens']} tokens, {stats['total_matches']} matches")
     yield
 
 
@@ -48,6 +52,47 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─────────────────────────────────────────────────────────────────
+# Temporary upload endpoint - DELETE THIS AFTER UPLOADING DATA
+# ─────────────────────────────────────────────────────────────────
+import os
+import secrets
+
+UPLOAD_SECRET = os.environ.get("UPLOAD_SECRET", secrets.token_urlsafe(32))
+
+@app.on_event("startup")
+async def print_upload_secret():
+    print(f"\n{'='*60}")
+    print(f"UPLOAD SECRET: {UPLOAD_SECRET}")
+    print(f"{'='*60}\n")
+
+
+@app.post("/upload-data")
+async def upload_data(
+    file: UploadFile = File(...),
+    x_upload_secret: str = Header(..., alias="X-Upload-Secret")
+):
+    """
+    Upload database or engine file to the data volume.
+    DELETE THIS ENDPOINT AFTER USE.
+    """
+    if x_upload_secret != UPLOAD_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid secret")
+
+    if file.filename not in ("smeecher.db", "engine.bin"):
+        raise HTTPException(status_code=400, detail="Only smeecher.db or engine.bin allowed")
+
+    data_dir = Path(os.environ.get("DATA_DIR", "data"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = data_dir / file.filename
+    content = await file.read()
+    dest.write_bytes(content)
+
+    return {"status": "ok", "file": file.filename, "size_mb": len(content) / 1024 / 1024}
+# ─────────────────────────────────────────────────────────────────
 
 
 def get_token_type(token: str) -> str:
