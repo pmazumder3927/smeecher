@@ -12,7 +12,7 @@ smeecher/
 │   │   ├── scraper.py    # Scraper logic
 │   │   └── models.py     # Data models
 │   ├── graph/            # Analysis & visualization
-│   │   ├── index.py      # Inverted index builder
+│   │   ├── engine.py     # Roaring bitmap query engine
 │   │   └── server.py     # Graph API server
 │   └── db/               # Database
 │       └── database.py   # SQLite storage
@@ -20,7 +20,7 @@ smeecher/
 │   └── index.html        # Graph visualization
 ├── data/                 # Data files (gitignored)
 │   ├── smeecher.db       # Match database
-│   └── index.pkl         # Precomputed index
+│   └── engine.bin        # Serialized query engine
 └── pyproject.toml
 ```
 
@@ -42,9 +42,9 @@ cp .env.example .env
 uv run smeecher
 ```
 
-### Build index
+### Build engine
 ```bash
-uv run smeecher-index
+uv run smeecher-build
 ```
 
 ### Run graph server
