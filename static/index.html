@@ -357,34 +357,61 @@
             transition: opacity 0.2s ease;
         }
 
-        .node circle {
+        .node .node-ring {
+            fill: none;
+            stroke-width: 3px;
+            transition: all 0.2s ease;
+        }
+
+        .node.unit .node-ring {
+            stroke: var(--unit);
+        }
+
+        .node.item .node-ring {
+            stroke: var(--item);
+        }
+
+        .node.trait .node-ring {
+            stroke: var(--trait);
+        }
+
+        .node.center .node-ring {
+            stroke-width: 4px;
+            filter: drop-shadow(0 0 8px currentColor);
+        }
+
+        .node:hover .node-ring {
+            stroke-width: 5px;
+            filter: drop-shadow(0 0 12px currentColor);
+        }
+
+        .node .node-bg {
+            fill: var(--bg-tertiary);
+        }
+
+        .node .node-icon {
+            pointer-events: none;
+        }
+
+        /* Fallback circles when no icon */
+        .node .node-fallback {
             stroke-width: 2px;
             transition: all 0.2s ease;
         }
 
-        .node.unit circle {
+        .node.unit .node-fallback {
             fill: var(--unit);
             stroke: rgba(255, 107, 157, 0.3);
         }
 
-        .node.item circle {
+        .node.item .node-fallback {
             fill: var(--item);
             stroke: rgba(0, 217, 255, 0.3);
         }
 
-        .node.trait circle {
+        .node.trait .node-fallback {
             fill: var(--trait);
             stroke: rgba(168, 85, 247, 0.3);
-        }
-
-        .node.center circle {
-            stroke-width: 3px;
-            filter: drop-shadow(0 0 8px currentColor);
-        }
-
-        .node:hover circle {
-            stroke-width: 3px;
-            filter: drop-shadow(0 0 12px currentColor);
         }
 
         .node text {
@@ -772,9 +799,10 @@
                 const typeClass = r.type === 'unit' ? 'unit' :
                                   r.type === 'item' ? 'item' :
                                   r.type === 'trait' ? 'trait' : 'item';
+                const displayLabel = getDisplayName(r.type, r.label);
                 return `
                     <div class="search-result" data-token="${r.token}">
-                        <span class="label">${r.label}</span>
+                        <span class="label">${displayLabel}</span>
                         <span class="meta">
                             <span class="type-badge ${typeClass}">${r.type}</span>
                             <span>${r.count.toLocaleString()} games</span>
@@ -819,9 +847,13 @@
                 const type = token.startsWith('U:') ? 'unit' :
                              token.startsWith('I:') ? 'item' :
                              token.startsWith('T:') ? 'trait' : 'equipped';
-                const label = token.startsWith('E:') ?
-                    token.slice(2).replace('|', ' → ') :
-                    token.slice(2);
+                let label;
+                if (token.startsWith('E:')) {
+                    const [unit, item] = token.slice(2).split('|');
+                    label = `${getDisplayName('unit', unit)} → ${getDisplayName('item', item)}`;
+                } else {
+                    label = getDisplayName(type, token.slice(2));
+                }
                 return `
                     <div class="chip ${type}">
                         <span>${label}</span>
@@ -957,6 +989,16 @@
                     hideTooltip();
                 });
 
+            // Create clip paths for circular icons
+            const clipDefs = svg.append('defs');
+
+            nodes.forEach(n => {
+                clipDefs.append('clipPath')
+                    .attr('id', `clip-${n.id.replace(/[^a-zA-Z0-9]/g, '_')}`)
+                    .append('circle')
+                    .attr('r', n.radius - 2);
+            });
+
             // Nodes
             const node = svg.append('g')
                 .selectAll('g')
@@ -968,12 +1010,52 @@
                 .on('mouseover', showNodeTooltip)
                 .on('mouseout', hideTooltip);
 
+            // Background circle
             node.append('circle')
+                .attr('class', 'node-bg')
                 .attr('r', d => d.radius);
+
+            // Colored ring
+            node.append('circle')
+                .attr('class', 'node-ring')
+                .attr('r', d => d.radius);
+
+            // Icon image (clipped to circle)
+            node.each(function(d) {
+                const iconKey = `${d.type}:${d.label}`;
+                if (failedIcons.has(iconKey)) {
+                    // Use fallback circle
+                    d3.select(this).append('circle')
+                        .attr('class', 'node-fallback')
+                        .attr('r', d.radius - 4);
+                } else {
+                    const iconUrl = getIconUrl(d.type, d.label);
+                    if (iconUrl) {
+                        const img = d3.select(this).append('image')
+                            .attr('class', 'node-icon')
+                            .attr('x', -(d.radius - 2))
+                            .attr('y', -(d.radius - 2))
+                            .attr('width', (d.radius - 2) * 2)
+                            .attr('height', (d.radius - 2) * 2)
+                            .attr('clip-path', `url(#clip-${d.id.replace(/[^a-zA-Z0-9]/g, '_')})`)
+                            .attr('href', iconUrl)
+                            .attr('preserveAspectRatio', 'xMidYMid slice');
+
+                        // Handle load error - replace with fallback
+                        img.on('error', function() {
+                            failedIcons.add(iconKey);
+                            d3.select(this).remove();
+                            d3.select(this.parentNode).append('circle')
+                                .attr('class', 'node-fallback')
+                                .attr('r', d.radius - 4);
+                        });
+                    }
+                }
+            });
 
             node.append('text')
                 .attr('dy', d => d.radius + 16)
-                .text(d => d.label);
+                .text(d => getDisplayName(d.type, d.label));
 
             // Tick
             simulation.on('tick', () => {
@@ -1025,13 +1107,21 @@
             }
         }
 
+        function formatEdgeTitle(token) {
+            if (token.startsWith('E:')) {
+                const [unit, item] = token.slice(2).split('|');
+                return `${getDisplayName('unit', unit)} → ${getDisplayName('item', item)}`;
+            }
+            return token.slice(2);
+        }
+
         function showEdgeTooltip(event, d) {
             const isImprovement = d.delta <= 0;
             const color = isImprovement ? 'var(--success)' : 'var(--error)';
             const deltaSign = d.delta > 0 ? '+' : ''; // negative numbers already include '-'
 
             tooltip.innerHTML = `
-                <div class="tooltip-title">${d.token.replace('E:', '').replace('|', ' → ')}</div>
+                <div class="tooltip-title">${formatEdgeTitle(d.token)}</div>
                 <div class="tooltip-row">
                     <span class="label">Placement Impact</span>
                     <span class="value" style="color: ${color}; font-weight: 800; font-size: 15px;">
@@ -1057,7 +1147,7 @@
 
         function showNodeTooltip(event, d) {
             tooltip.innerHTML = `
-                <div class="tooltip-title">${d.label}</div>
+                <div class="tooltip-title">${getDisplayName(d.type, d.label)}</div>
                 <div class="tooltip-row">
                     <span class="label">Type</span>
                     <span class="value">${d.type}</span>
@@ -1095,9 +1185,161 @@
             tooltip.style.display = 'none';
         }
 
-        // Initial load
+        // Community Dragon base for TFT assets
+        const CDRAGON_BASE = 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default';
+
+        // Lookup maps loaded from Community Dragon
+        let itemIconMap = new Map();  // display name OR api name -> icon URL
+        let itemDisplayMap = new Map(); // api name -> display name
+        let traitIconMap = new Map(); // display name OR api name -> icon URL
+        let traitDisplayMap = new Map(); // api name -> display name
+
+        // Reverse lookup for search: display name -> { apiName, type }
+        let displayNameIndex = new Map(); // lowercase display name -> { apiName, type }
+
+        // Load TFT data from Community Dragon
+        async function loadCDragonData() {
+            try {
+                const [itemsRes, traitsRes] = await Promise.all([
+                    fetch(`${CDRAGON_BASE}/v1/tftitems.json`),
+                    fetch(`${CDRAGON_BASE}/v1/tfttraits.json`)
+                ]);
+
+                const [items, traits] = await Promise.all([
+                    itemsRes.json(),
+                    traitsRes.json()
+                ]);
+
+                // Build item lookups
+                items.forEach(item => {
+                    const displayName = item.name?.replace(/<[^>]*>/g, '').trim();
+                    const nameId = item.nameId || '';
+                    const iconPath = item.squareIconPath || item.iconPath;
+
+                    if (displayName && iconPath) {
+                        const url = `${CDRAGON_BASE}${iconPath.toLowerCase().replace('/lol-game-data/assets', '')}`;
+
+                        // Map by display name
+                        itemIconMap.set(displayName.toLowerCase(), url);
+
+                        // Map by nameId (e.g., TFT4_Item_OrnnZhonyasParadox)
+                        if (nameId) {
+                            itemIconMap.set(nameId.toLowerCase(), url);
+                            itemDisplayMap.set(nameId.toLowerCase(), displayName);
+
+                            // Also map the "cleaned" version the backend might send
+                            // TFT4_Item_OrnnZhonyasParadox -> OrnnZhonyasParadox
+                            const cleaned = nameId
+                                .replace(/^TFT\d*_Item_/i, '')
+                                .replace(/^TFT_Item_/i, '');
+                            if (cleaned !== nameId) {
+                                itemIconMap.set(cleaned.toLowerCase(), url);
+                                itemDisplayMap.set(cleaned.toLowerCase(), displayName);
+                            }
+
+                            // Add to search index: display name -> cleaned API name
+                            displayNameIndex.set(displayName.toLowerCase(), {
+                                apiName: cleaned !== nameId ? cleaned : nameId.replace(/^TFT_Item_/i, ''),
+                                type: 'item',
+                                displayName: displayName
+                            });
+                        }
+                    }
+                });
+
+                // Build trait lookups
+                traits.forEach(trait => {
+                    const displayName = trait.display_name;
+                    const traitId = trait.trait_id || '';
+                    const iconPath = trait.icon_path;
+
+                    if (displayName && iconPath) {
+                        const url = `${CDRAGON_BASE}${iconPath.toLowerCase().replace('/lol-game-data/assets', '')}`;
+
+                        // Map by display name
+                        traitIconMap.set(displayName.toLowerCase(), url);
+
+                        // Map by trait_id (e.g., TFT16_Brawler, TFT16_ShyvanaUnique)
+                        if (traitId) {
+                            traitIconMap.set(traitId.toLowerCase(), url);
+                            traitDisplayMap.set(traitId.toLowerCase(), displayName);
+
+                            // Also map the "cleaned" version the backend sends
+                            // TFT16_Brawler -> Brawler, TFT16_ShyvanaUnique -> ShyvanaUnique
+                            const cleaned = traitId
+                                .replace(/^TFT\d*_/i, '')
+                                .replace(/^Set\d*_/i, '');
+                            if (cleaned !== traitId) {
+                                traitIconMap.set(cleaned.toLowerCase(), url);
+                                traitDisplayMap.set(cleaned.toLowerCase(), displayName);
+                            }
+                        }
+                    }
+                });
+
+                console.log(`Loaded ${itemIconMap.size} item mappings and ${traitIconMap.size} trait mappings from CDragon`);
+            } catch (error) {
+                console.warn('Failed to load CDragon data, icons may not display:', error);
+            }
+        }
+
+        // Icon URL builders with fallbacks
+        function getUnitIconUrl(name) {
+            // Community Dragon path for TFT Set 16 champions
+            const lower = name.toLowerCase();
+            return `${CDRAGON_BASE}/assets/characters/tft16_${lower}/hud/tft16_${lower}_square.tft_set16.png`;
+        }
+
+        function getItemIconUrl(name) {
+            // Use lookup map if available
+            const lower = name.toLowerCase();
+            if (itemIconMap.has(lower)) {
+                return itemIconMap.get(lower);
+            }
+            // Fallback to constructed URL
+            return `${CDRAGON_BASE}/assets/maps/tft/icons/items/hexcore/tft_item_${lower.replace(/['\s]/g, '')}.tft_set13.png`;
+        }
+
+        function getTraitIconUrl(name) {
+            // Use lookup map if available
+            const lower = name.toLowerCase();
+            if (traitIconMap.has(lower)) {
+                return traitIconMap.get(lower);
+            }
+            // Fallback to constructed URL
+            return `${CDRAGON_BASE}/assets/ux/traiticons/trait_icon_16_${lower.replace(/\s/g, '')}.tft_set16.png`;
+        }
+
+        function getIconUrl(type, name) {
+            switch(type) {
+                case 'unit': return getUnitIconUrl(name);
+                case 'item': return getItemIconUrl(name);
+                case 'trait': return getTraitIconUrl(name);
+                default: return null;
+            }
+        }
+
+        // Get display name from API name (for items and traits)
+        function getDisplayName(type, apiName) {
+            const lower = apiName.toLowerCase();
+            if (type === 'item' && itemDisplayMap.has(lower)) {
+                return itemDisplayMap.get(lower);
+            }
+            if (type === 'trait' && traitDisplayMap.has(lower)) {
+                return traitDisplayMap.get(lower);
+            }
+            // Fallback: return the original name
+            return apiName;
+        }
+
+        // Track which icons failed to load
+        const failedIcons = new Set();
+
+        // Initial load - wait for CDragon data before fetching graph
         renderChips();
-        fetchGraph();
+        loadCDragonData().then(() => {
+            fetchGraph();
+        });
 
         // Handle window resize
         let resizeTimeout;
