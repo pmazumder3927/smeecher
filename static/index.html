@@ -768,8 +768,35 @@
             searchTimeout = setTimeout(async () => {
                 try {
                     const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
-                    const results = await response.json();
-                    renderSearchResults(results);
+                    const backendResults = await response.json();
+
+                    // Also search local display name index
+                    const queryLower = query.toLowerCase();
+                    const localMatches = [];
+                    const seenTokens = new Set(backendResults.map(r => r.token));
+
+                    for (const [displayNameLower, info] of displayNameIndex) {
+                        if (displayNameLower.includes(queryLower)) {
+                            // Construct the token the backend would use
+                            const prefix = info.type === 'item' ? 'I:' : 'T:';
+                            const token = prefix + info.apiName;
+
+                            // Only add if backend didn't already return this
+                            if (!seenTokens.has(token)) {
+                                localMatches.push({
+                                    token: token,
+                                    label: info.apiName, // Will be converted to display name by renderSearchResults
+                                    type: info.type,
+                                    count: 0 // Unknown count for local-only matches
+                                });
+                                seenTokens.add(token);
+                            }
+                        }
+                    }
+
+                    // Merge results: backend first (has counts), then local matches
+                    const allResults = [...backendResults, ...localMatches];
+                    renderSearchResults(allResults);
                 } catch (error) {
                     console.error('Search error:', error);
                 }
@@ -800,12 +827,13 @@
                                   r.type === 'item' ? 'item' :
                                   r.type === 'trait' ? 'trait' : 'item';
                 const displayLabel = getDisplayName(r.type, r.label);
+                const countText = r.count > 0 ? `${r.count.toLocaleString()} games` : '';
                 return `
                     <div class="search-result" data-token="${r.token}">
                         <span class="label">${displayLabel}</span>
                         <span class="meta">
                             <span class="type-badge ${typeClass}">${r.type}</span>
-                            <span>${r.count.toLocaleString()} games</span>
+                            ${countText ? `<span>${countText}</span>` : ''}
                         </span>
                     </div>
                 `;
@@ -1273,11 +1301,21 @@
                                 traitIconMap.set(cleaned.toLowerCase(), url);
                                 traitDisplayMap.set(cleaned.toLowerCase(), displayName);
                             }
+
+                            // Add to search index: display name -> cleaned API name
+                            // Only add Set 16 traits to avoid duplicates from older sets
+                            if (traitId.startsWith('TFT16_')) {
+                                displayNameIndex.set(displayName.toLowerCase(), {
+                                    apiName: cleaned,
+                                    type: 'trait',
+                                    displayName: displayName
+                                });
+                            }
                         }
                     }
                 });
 
-                console.log(`Loaded ${itemIconMap.size} item mappings and ${traitIconMap.size} trait mappings from CDragon`);
+                console.log(`Loaded ${itemIconMap.size} item mappings, ${traitIconMap.size} trait mappings, ${displayNameIndex.size} searchable display names from CDragon`);
             } catch (error) {
                 console.warn('Failed to load CDragon data, icons may not display:', error);
             }
