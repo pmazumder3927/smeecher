@@ -46,13 +46,15 @@ app.add_middleware(
 
 
 def get_token_type(token: str) -> str:
-    """Return 'unit', 'item', or 'equipped'."""
+    """Return 'unit', 'item', 'equipped', or 'trait'."""
     if token.startswith("U:"):
         return "unit"
     elif token.startswith("I:"):
         return "item"
     elif token.startswith("E:"):
         return "equipped"
+    elif token.startswith("T:"):
+        return "trait"
     return "unknown"
 
 
@@ -66,17 +68,24 @@ def parse_token(token: str) -> dict:
     elif token_type == "equipped":
         parts = token[2:].split("|")
         return {"type": "equipped", "unit": parts[0], "item": parts[1]}
+    elif token_type == "trait":
+        # Handle tiered traits like T:Brawler:2
+        parts = token[2:].split(":")
+        if len(parts) == 2:
+            return {"type": "trait", "trait": parts[0], "tier": int(parts[1])}
+        return {"type": "trait", "trait": parts[0], "tier": None}
     return {"type": "unknown"}
 
 
 def get_center_info(tokens: list[str]) -> dict:
     """Determine center type from tokens."""
     if not tokens:
-        return {"type": "empty", "units": [], "items": []}
+        return {"type": "empty", "units": [], "items": [], "traits": []}
 
     units = []
     items = []
     equipped = []
+    traits = []
 
     for t in tokens:
         parsed = parse_token(t)
@@ -88,12 +97,15 @@ def get_center_info(tokens: list[str]) -> dict:
             units.append(parsed["unit"])
             items.append(parsed["item"])
             equipped.append((parsed["unit"], parsed["item"]))
+        elif parsed["type"] == "trait":
+            traits.append(parsed["trait"])
 
     return {
         "type": "combo" if len(tokens) > 1 else get_token_type(tokens[0]),
         "units": list(set(units)),
         "items": list(set(items)),
-        "equipped": equipped
+        "equipped": equipped,
+        "traits": list(set(traits))
     }
 
 
@@ -110,18 +122,34 @@ def generate_candidates(center_info: dict, current_tokens: list[str]) -> list[tu
     all_units = ENGINE.get_all_tokens_by_type("U:")
     all_items = ENGINE.get_all_tokens_by_type("I:")
     all_equipped = ENGINE.get_all_tokens_by_type("E:")
+    all_traits = [t for t in ENGINE.get_all_tokens_by_type("T:") if ":" not in t[2:]]  # Base traits only
 
     center_units = set(center_info["units"])
     center_items = set(center_info["items"])
+    center_traits = set(center_info.get("traits", []))
 
     if center_info["type"] == "empty":
-        # Show most popular units and items
+        # Show most popular units, items, and traits
         for unit_token in all_units:
             if unit_token not in current_set:
                 candidates.append((unit_token, "cooccur"))
         for item_token in all_items:
             if item_token not in current_set:
                 candidates.append((item_token, "cooccur"))
+        for trait_token in all_traits:
+            if trait_token not in current_set:
+                candidates.append((trait_token, "cooccur"))
+
+    elif center_info["type"] == "trait":
+        # Trait-centered: show co-occurring units and traits
+        for unit_token in all_units:
+            if unit_token not in current_set:
+                candidates.append((unit_token, "cooccur"))
+        for trait_token in all_traits:
+            if trait_token not in current_set:
+                trait_name = trait_token[2:]
+                if trait_name not in center_traits:
+                    candidates.append((trait_token, "cooccur"))
 
     elif center_info["type"] == "item" or (center_info["items"] and not center_info["units"]):
         # Item-centered: show units that equip these items
@@ -137,6 +165,11 @@ def generate_candidates(center_info: dict, current_tokens: list[str]) -> list[tu
                 if item_name not in center_items:
                     candidates.append((item_token, "cooccur"))
 
+        # Show co-occurring traits
+        for trait_token in all_traits:
+            if trait_token not in current_set:
+                candidates.append((trait_token, "cooccur"))
+
     elif center_info["type"] == "unit" or (center_info["units"] and not center_info["items"]):
         # Unit-centered: show items equipped on these units
         for unit in center_units:
@@ -151,6 +184,11 @@ def generate_candidates(center_info: dict, current_tokens: list[str]) -> list[tu
                 unit_name = unit_token[2:]
                 if unit_name not in center_units:
                     candidates.append((unit_token, "cooccur"))
+
+        # Show co-occurring traits
+        for trait_token in all_traits:
+            if trait_token not in current_set:
+                candidates.append((trait_token, "cooccur"))
 
     else:
         # Combo (unit + item via equipped edge)
@@ -169,6 +207,13 @@ def generate_candidates(center_info: dict, current_tokens: list[str]) -> list[tu
                 unit_name = unit_token[2:]
                 if unit_name not in center_units:
                     candidates.append((unit_token, "cooccur"))
+
+        # Show co-occurring traits
+        for trait_token in all_traits:
+            if trait_token not in current_set:
+                trait_name = trait_token[2:]
+                if trait_name not in center_traits:
+                    candidates.append((trait_token, "cooccur"))
 
     return candidates
 
@@ -237,6 +282,21 @@ def get_graph(
                     "id": node_id,
                     "label": parsed["item"],
                     "type": "item",
+                    "isCenter": True
+                })
+                node_ids.add(node_id)
+        elif parsed["type"] == "trait":
+            trait_label = parsed["trait"]
+            if parsed.get("tier"):
+                node_id = f"T:{parsed['trait']}:{parsed['tier']}"
+                trait_label = f"{parsed['trait']} {parsed['tier']}"
+            else:
+                node_id = f"T:{parsed['trait']}"
+            if node_id not in node_ids:
+                nodes.append({
+                    "id": node_id,
+                    "label": trait_label,
+                    "type": "trait",
                     "isCenter": True
                 })
                 node_ids.add(node_id)
@@ -317,6 +377,8 @@ def get_graph(
                     from_id = f"I:{center_parsed['item']}"
                 elif center_parsed["type"] == "equipped":
                     from_id = f"U:{center_parsed['unit']}"
+                elif center_parsed["type"] == "trait":
+                    from_id = f"T:{center_parsed['trait']}"
                 else:
                     from_id = node_id
             else:
@@ -353,6 +415,52 @@ def get_graph(
                     from_id = f"I:{center_parsed['item']}"
                 elif center_parsed["type"] == "equipped":
                     from_id = f"I:{center_parsed['item']}"
+                elif center_parsed["type"] == "trait":
+                    from_id = f"T:{center_parsed['trait']}"
+                else:
+                    from_id = node_id
+            else:
+                from_id = node_id
+
+            edges.append({
+                "from": from_id,
+                "to": node_id,
+                "token": score["token"],
+                "type": "cooccur",
+                "delta": score["delta"],
+                "avg_with": score["avg_with"],
+                "avg_base": score["avg_base"],
+                "n_with": score["n_with"],
+                "n_base": score["n_base"]
+            })
+
+        elif parsed["type"] == "trait":
+            trait_label = parsed["trait"]
+            if parsed.get("tier"):
+                node_id = f"T:{parsed['trait']}:{parsed['tier']}"
+                trait_label = f"{parsed['trait']} {parsed['tier']}"
+            else:
+                node_id = f"T:{parsed['trait']}"
+
+            if node_id not in node_ids:
+                nodes.append({
+                    "id": node_id,
+                    "label": trait_label,
+                    "type": "trait",
+                    "isCenter": False
+                })
+                node_ids.add(node_id)
+
+            if token_list:
+                center_parsed = parse_token(token_list[0])
+                if center_parsed["type"] == "unit":
+                    from_id = f"U:{center_parsed['unit']}"
+                elif center_parsed["type"] == "item":
+                    from_id = f"I:{center_parsed['item']}"
+                elif center_parsed["type"] == "equipped":
+                    from_id = f"U:{center_parsed['unit']}"
+                elif center_parsed["type"] == "trait":
+                    from_id = f"T:{center_parsed['trait']}"
                 else:
                     from_id = node_id
             else:

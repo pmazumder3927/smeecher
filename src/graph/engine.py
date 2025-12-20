@@ -179,6 +179,45 @@ class GraphEngine:
 
         # Flush last board
         flush_board()
+
+        # Second pass: Process traits from player_matches
+        c.execute("SELECT id, placement, traits FROM player_matches WHERE traits IS NOT NULL")
+        for row in c:
+            pm_id = row["id"]
+            placement = row["placement"]
+            traits_json = row["traits"]
+
+            if not traits_json:
+                continue
+
+            traits = json.loads(traits_json)
+            for trait in traits:
+                trait_name = self._clean_trait_name(trait["name"])
+                tier = trait.get("tier", 1)
+
+                # Base trait token (any tier)
+                trait_token = f"T:{trait_name}"
+                token_id = self._get_or_create_token_id(trait_token)
+                self.labels[token_id] = trait_name
+
+                if token_id not in token_data:
+                    token_data[token_id] = ([], 0)
+                ids, psum = token_data[token_id]
+                ids.append(pm_id)
+                token_data[token_id] = (ids, psum + placement)
+
+                # Tiered trait token (T:Brawler:2 means tier 2+)
+                if tier >= 2:
+                    tiered_token = f"T:{trait_name}:{tier}"
+                    token_id = self._get_or_create_token_id(tiered_token)
+                    self.labels[token_id] = f"{trait_name} {tier}"
+
+                    if token_id not in token_data:
+                        token_data[token_id] = ([], 0)
+                    ids, psum = token_data[token_id]
+                    ids.append(pm_id)
+                    token_data[token_id] = (ids, psum + placement)
+
         conn.close()
 
         # Convert accumulated data to roaring bitmaps
@@ -200,6 +239,10 @@ class GraphEngine:
     @staticmethod
     def _clean_item_name(item_id: str) -> str:
         return item_id.replace("TFT_Item_", "").replace("TFT16_Item_", "")
+
+    @staticmethod
+    def _clean_trait_name(name: str) -> str:
+        return name.replace("TFT16_", "").replace("TFT_", "").replace("Set16_", "")
 
     # ─────────────────────────────────────────────────────────────────
     # Query Methods
@@ -437,6 +480,7 @@ class GraphEngine:
         unit_tokens = [t for t in self.id_to_token if t.startswith("U:")]
         item_tokens = [t for t in self.id_to_token if t.startswith("I:")]
         equipped_tokens = [t for t in self.id_to_token if t.startswith("E:")]
+        trait_tokens = [t for t in self.id_to_token if t.startswith("T:")]
 
         return {
             "total_matches": self.total_matches,
@@ -444,6 +488,7 @@ class GraphEngine:
             "unit_tokens": len(unit_tokens),
             "item_tokens": len(item_tokens),
             "equipped_tokens": len(equipped_tokens),
+            "trait_tokens": len(trait_tokens),
             "placements_size_mb": self.placements.nbytes / 1024 / 1024,
         }
 
@@ -460,6 +505,7 @@ def build_engine(db_path: str = "data/smeecher.db", save_path: str = "data/engin
     print(f"  Units: {stats['unit_tokens']}")
     print(f"  Items: {stats['item_tokens']}")
     print(f"  Equipped: {stats['equipped_tokens']}")
+    print(f"  Traits: {stats['trait_tokens']}")
     print(f"Placements array: {stats['placements_size_mb']:.2f} MB")
 
     engine.save(save_path)

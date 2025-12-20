@@ -28,6 +28,7 @@
             --warning: #f5a623;
             --unit: #ff6b9d;
             --item: #00d9ff;
+            --trait: #a855f7;
             --equipped: #f5a623;
             --shadow: rgba(0, 0, 0, 0.3);
         }
@@ -187,6 +188,11 @@
             color: var(--item);
         }
 
+        .search-result .type-badge.trait {
+            background: rgba(168, 85, 247, 0.15);
+            color: var(--trait);
+        }
+
         /* Filters Section */
         .filters-section {
             margin-bottom: 12px;
@@ -252,6 +258,10 @@
 
         .chip.equipped::before {
             background: var(--equipped);
+        }
+
+        .chip.trait::before {
+            background: var(--trait);
         }
 
         .chip:hover {
@@ -360,6 +370,11 @@
         .node.item circle {
             fill: var(--item);
             stroke: rgba(0, 217, 255, 0.3);
+        }
+
+        .node.trait circle {
+            fill: var(--trait);
+            stroke: rgba(168, 85, 247, 0.3);
         }
 
         .node.center circle {
@@ -524,6 +539,10 @@
             background: var(--item);
         }
 
+        .legend-dot.trait {
+            background: var(--trait);
+        }
+
         .legend-line {
             width: 24px;
             height: 2px;
@@ -619,7 +638,7 @@
 
         <div class="search-section">
             <div class="search-container">
-                <input type="text" id="search" placeholder="Search units or items to explore relationships..." autocomplete="off">
+                <input type="text" id="search" placeholder="Search units, items, or traits to explore relationships..." autocomplete="off">
                 <div class="search-results" id="searchResults"></div>
             </div>
         </div>
@@ -659,6 +678,10 @@
                     <div class="legend-item">
                         <div class="legend-dot item"></div>
                         <span>Item</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-dot trait"></div>
+                        <span>Trait</span>
                     </div>
                 </div>
             </div>
@@ -746,7 +769,9 @@
             }
 
             searchResults.innerHTML = results.map(r => {
-                const typeClass = r.type === 'unit' ? 'unit' : 'item';
+                const typeClass = r.type === 'unit' ? 'unit' :
+                                  r.type === 'item' ? 'item' :
+                                  r.type === 'trait' ? 'trait' : 'item';
                 return `
                     <div class="search-result" data-token="${r.token}">
                         <span class="label">${r.label}</span>
@@ -786,13 +811,14 @@
 
         function renderChips() {
             if (selectedTokens.length === 0) {
-                chipsContainer.innerHTML = '<div style="color: var(--text-tertiary); font-size: 12px;">No filters applied. Search and select units or items to start.</div>';
+                chipsContainer.innerHTML = '<div style="color: var(--text-tertiary); font-size: 12px;">No filters applied. Search and select units, items, or traits to start.</div>';
                 return;
             }
 
             chipsContainer.innerHTML = selectedTokens.map(token => {
                 const type = token.startsWith('U:') ? 'unit' :
-                             token.startsWith('I:') ? 'item' : 'equipped';
+                             token.startsWith('I:') ? 'item' :
+                             token.startsWith('T:') ? 'trait' : 'equipped';
                 const label = token.startsWith('E:') ?
                     token.slice(2).replace('|', ' → ') :
                     token.slice(2);
@@ -840,7 +866,7 @@
                     .attr('class', 'empty-state')
                     .html(`
                         <div class="empty-state-title">No data to display</div>
-                        <div class="empty-state-text">Search and select units or items to visualize relationships</div>
+                        <div class="empty-state-text">Search and select units, items, or traits to visualize relationships</div>
                     `);
                 return;
             }
