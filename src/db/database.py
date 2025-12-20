@@ -10,14 +10,20 @@ from ..scraper.models import PlayerRank, ScrapedMatch
 class Database:
     """SQLite storage for TFT match data."""
 
-    def __init__(self, db_path: str = "data/smeecher.db"):
+    def __init__(self, db_path: str = "data/smeecher.db", batch_size: int = 100):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+        self.batch_size = batch_size
+        self._pending_writes = 0
         self._init()
 
     def _init(self):
         c = self.conn.cursor()
+
+        # Performance optimizations
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
 
         c.execute("""CREATE TABLE IF NOT EXISTS matches (
             match_id TEXT PRIMARY KEY,
@@ -74,10 +80,19 @@ class Database:
         )""")
 
         c.execute("CREATE INDEX IF NOT EXISTS idx_pm_puuid ON player_matches(puuid)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_pm_match ON player_matches(match_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_units_char ON units(character_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_units_match ON units(match_id, puuid)")
         self.conn.commit()
 
+    def flush(self):
+        """Commit any pending writes."""
+        if self._pending_writes > 0:
+            self.conn.commit()
+            self._pending_writes = 0
+
     def close(self):
+        self.flush()
         self.conn.close()
 
     def match_exists(self, match_id: str) -> bool:
@@ -108,7 +123,9 @@ class Database:
                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (p.match_id, p.puuid, u.character_id, u.name, u.tier, u.rarity, json.dumps(u.items)))
 
-        self.conn.commit()
+        self._pending_writes += 1
+        if self._pending_writes >= self.batch_size:
+            self.flush()
 
     def save_rank(self, r: PlayerRank):
         c = self.conn.cursor()
