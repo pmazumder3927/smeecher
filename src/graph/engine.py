@@ -81,8 +81,10 @@ class GraphEngine:
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
 
-        # Get max player_match_id for array sizing
-        c.execute("SELECT MAX(id), COUNT(*) FROM player_matches")
+        # Get max player_match_id for array sizing (filter by set 16 to match data queries)
+        c.execute("""SELECT MAX(pm.id), COUNT(*) FROM player_matches pm
+            JOIN matches m ON m.match_id = pm.match_id
+            WHERE m.tft_set_number = 16""")
         row = c.fetchone()
         max_id = row[0] or 0
         self.total_matches = row[1] or 0
