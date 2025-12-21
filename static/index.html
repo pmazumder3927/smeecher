@@ -1277,7 +1277,14 @@
                 .attr('y', -5000)
                 .attr('width', 10000)
                 .attr('height', 10000)
-                .attr('fill', 'url(#grid)');
+                .attr('fill', 'url(#grid)')
+                .on('touchstart', function(event) {
+                    if (tooltipFromTouch) {
+                        tooltipFromTouch = false;
+                        hideTooltip();
+                        container.selectAll('.link').classed('active', false);
+                    }
+                });
 
             // Store dimensions for drift
             graphWidth = width;
@@ -1335,15 +1342,6 @@
             // Start auto-framing
             startAutoFraming(svg, zoom, width, height);
 
-            // Dismiss tooltips on background tap (mobile)
-            svg.on('touchstart.tooltip', function(event) {
-                if (event.target === this || event.target.classList.contains('grid-bg')) {
-                    tooltipFromTouch = false;
-                    hideTooltip();
-                    // Clear active link highlight
-                    container.selectAll('.link').classed('active', false);
-                }
-            });
 
             if (!graphData || graphData.nodes.length === 0) {
                 container.append('foreignObject')
