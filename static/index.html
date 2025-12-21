@@ -1086,6 +1086,9 @@
         let panVelocity = { x: 0, y: 0 };
         let lastTransform = null;
 
+        // Touch tooltip state - keeps tooltip visible until background tap
+        let tooltipFromTouch = false;
+
         // Auto-framing camera
         let isDragging = false;
         let driftAnimationId = null;
@@ -1305,7 +1308,11 @@
 
                     currentZoomTransform = event.transform;
                     container.attr('transform', event.transform);
-                    hideTooltip();
+
+                    // Don't hide tooltip during pan if it was shown from touch
+                    if (!tooltipFromTouch) {
+                        hideTooltip();
+                    }
 
                     // Wake simulation for inertia effect
                     if (currentSimulation && (Math.abs(panVelocity.x) > 0.5 || Math.abs(panVelocity.y) > 0.5)) {
@@ -1330,8 +1337,11 @@
 
             // Dismiss tooltips on background tap (mobile)
             svg.on('touchstart.tooltip', function(event) {
-                if (event.target === this) {
+                if (event.target === this || event.target.classList.contains('grid-bg')) {
+                    tooltipFromTouch = false;
                     hideTooltip();
+                    // Clear active link highlight
+                    container.selectAll('.link').classed('active', false);
                 }
             });
 
@@ -1533,15 +1543,12 @@
                 })
                 .on('touchstart', function(event, d) {
                     event.preventDefault();
+                    event.stopPropagation();
+                    tooltipFromTouch = true;
+                    link.classed('active', false); // Clear any previous
                     link.filter(ld => ld === d).classed('active', true);
                     showEdgeTooltip(event, d);
-                }, { passive: false })
-                .on('touchend', function(event, d) {
-                    setTimeout(() => {
-                        link.filter(ld => ld === d).classed('active', false);
-                        hideTooltip();
-                    }, 1500);
-                });
+                }, { passive: false });
 
             // Create clip paths for circular icons
             const clipDefs = container.append('defs');
@@ -1565,12 +1572,10 @@
                 .on('mouseout', hideTooltip)
                 .on('touchstart', function(event, d) {
                     event.preventDefault();
+                    event.stopPropagation();
+                    tooltipFromTouch = true;
                     showNodeTooltip(event, d);
-                }, { passive: false })
-                .on('touchend', function(event, d) {
-                    // Delay hide to allow reading tooltip
-                    setTimeout(hideTooltip, 1500);
-                });
+                }, { passive: false });
 
             // Background circle
             node.append('circle')
