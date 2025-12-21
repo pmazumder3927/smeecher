@@ -276,7 +276,7 @@ def generate_candidates(center_info: dict, current_tokens: list[str]) -> list[tu
 def get_graph(
     tokens: str = Query(default="", description="Comma-separated tokens"),
     min_sample: int = Query(default=10, description="Minimum sample size"),
-    top_k: int = Query(default=15, description="Max edges to return")
+    top_k: int = Query(default=15, description="Max edges to return (0 = unlimited)")
 ):
     """
     Get graph data for the given filter tokens.
@@ -332,9 +332,12 @@ def get_graph(
     for score in scored:
         score["edge_type"] = edge_types.get(score["token"], "cooccur")
 
-    # Sort by absolute delta and take top k
+    # Sort by absolute delta (most impactful first)
     scored.sort(key=lambda x: abs(x["delta"]), reverse=True)
-    top_edges = scored[:top_k]
+
+    # Apply top_k limit if specified
+    if top_k > 0:
+        scored = scored[:top_k]
 
     # Build nodes
     nodes = []
@@ -400,7 +403,7 @@ def get_graph(
 
     # Build edges and add neighbor nodes
     edges = []
-    for score in top_edges:
+    for score in scored:
         parsed = parse_token(score["token"])
 
         if parsed["type"] == "equipped":

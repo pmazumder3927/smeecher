@@ -248,8 +248,7 @@
         }
 
         .control-panel-bottom {
-            max-height: 48px;
-            overflow-y: auto;
+            min-height: 28px;
         }
 
         .stat-inline {
@@ -805,9 +804,25 @@
                     <span class="stat-value" id="statPlacement">-</span>
                 </div>
             </div>
-            <div class="control-panel-bottom">
-                <div class="section-title">Active Filters</div>
-                <div class="chips" id="chips"></div>
+            <div class="control-panel-bottom" style="display: flex; align-items: center; gap: 16px;">
+                <div style="flex: 1;">
+                    <div class="section-title">Active Filters</div>
+                    <div class="chips" id="chips"></div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px; white-space: nowrap;">
+                    <span style="font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 500;">Top-K</span>
+                    <input type="number" id="topKInput" value="15" min="0" max="500" style="
+                        width: 50px;
+                        padding: 4px 6px;
+                        font-size: 13px;
+                        font-weight: 600;
+                        background: var(--bg-tertiary);
+                        border: 1px solid var(--border);
+                        border-radius: 4px;
+                        color: var(--text-primary);
+                        text-align: center;
+                    " title="0 = unlimited">
+                </div>
             </div>
         </div>
 
@@ -1037,10 +1052,11 @@
         // Graph fetching and rendering
         async function fetchGraph() {
             const tokensParam = selectedTokens.join(',');
-            console.log('Fetching graph with tokens:', tokensParam);
+            const topK = parseInt(document.getElementById('topKInput').value) || 0;
+            console.log('Fetching graph with tokens:', tokensParam, 'top_k:', topK);
             try {
                 // Add timestamp to prevent caching
-                const response = await fetch(`/graph?tokens=${encodeURIComponent(tokensParam)}&t=${Date.now()}`);
+                const response = await fetch(`/graph?tokens=${encodeURIComponent(tokensParam)}&top_k=${topK}&t=${Date.now()}`);
                 graphData = await response.json();
 
                 document.getElementById('statGames').textContent = graphData.base.n.toLocaleString();
@@ -1956,6 +1972,11 @@
         renderChips();
         loadCDragonData().then(() => {
             fetchGraph();
+        });
+
+        // Refetch graph when top_k changes
+        document.getElementById('topKInput').addEventListener('change', () => {
+            if (graphData) fetchGraph();
         });
 
         // Handle window resize
