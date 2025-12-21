@@ -27,16 +27,18 @@ class TFTClient:
     async def close(self):
         await self.client.aclose()
 
-    async def _get(self, url: str) -> Optional[dict]:
+    async def _get(self, url: str, _retries: int = 0) -> Optional[dict]:
         await asyncio.sleep(self._rate_limit_wait)
         try:
             resp = await self.client.get(url, headers={"X-Riot-Token": self.api_key})
             if resp.status_code == 200:
                 return resp.json()
             elif resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", 10))
+                if _retries >= 3:
+                    return None  # Give up after 3 retries
+                wait = min(int(resp.headers.get("Retry-After", 10)), 30)  # Cap wait at 30s
                 await asyncio.sleep(wait)
-                return await self._get(url)
+                return await self._get(url, _retries + 1)
             elif resp.status_code in (401, 403):
                 raise Exception("Invalid API key")
             return None

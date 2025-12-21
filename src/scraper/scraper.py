@@ -128,9 +128,8 @@ class Smeecher:
                     ranks.append(TIER_VALUE.get(rank.tier, 0) + rank.league_points)
                     self.last_rank = rank_to_str(rank.tier, rank.rank, rank.league_points)
 
-            # Queue all players
-            for p in players:
-                self.db.add_to_queue(p.puuid)
+            # Queue all players (batch insert)
+            self.db.add_to_queue_batch([p.puuid for p in players])
 
             # Save match
             self.db.save_match(ScrapedMatch(
@@ -169,6 +168,7 @@ class Smeecher:
         console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
         # Main loop with live display
+        prune_counter = 0
         with Live(self.make_status_table(), refresh_per_second=2, console=console) as live:
             while self.running:
                 puuid = self.db.get_next()
@@ -181,6 +181,12 @@ class Smeecher:
                 try:
                     await self.scrape_player(puuid)
                     live.update(self.make_status_table())
+
+                    # Prune old queue entries every 100 players
+                    prune_counter += 1
+                    if prune_counter >= 100:
+                        self.db.prune_queue(keep_hours=24)
+                        prune_counter = 0
                 except Exception as e:
                     console.print(f"[red]Error: {e}[/red]")
                     await asyncio.sleep(1)

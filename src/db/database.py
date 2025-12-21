@@ -83,6 +83,8 @@ class Database:
         c.execute("CREATE INDEX IF NOT EXISTS idx_pm_match ON player_matches(match_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_units_char ON units(character_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_units_match ON units(match_id, puuid)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_queue_priority_scraped ON queue(priority DESC, scraped_at ASC)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_queue_scraped ON queue(scraped_at)")
         self.conn.commit()
 
     def flush(self):
@@ -131,14 +133,26 @@ class Database:
         c = self.conn.cursor()
         c.execute("INSERT INTO ranks (puuid, tier, rank, lp, wins, losses) VALUES (?, ?, ?, ?, ?, ?)",
             (r.puuid, r.tier, r.rank, r.league_points, r.wins, r.losses))
-        self.conn.commit()
+        self._pending_writes += 1
+        if self._pending_writes >= self.batch_size:
+            self.flush()
 
     def add_to_queue(self, puuid: str, priority: int = 0):
         c = self.conn.cursor()
         c.execute("INSERT OR IGNORE INTO queue (puuid, priority) VALUES (?, ?)", (puuid, priority))
-        self.conn.commit()
+        # Don't increment pending_writes here - queue inserts are cheap and don't need batching
+
+    def add_to_queue_batch(self, puuids: list[str], priority: int = 0):
+        """Batch insert multiple puuids into queue."""
+        c = self.conn.cursor()
+        c.executemany("INSERT OR IGNORE INTO queue (puuid, priority) VALUES (?, ?)",
+            [(p, priority) for p in puuids])
+        self._pending_writes += 1
+        if self._pending_writes >= self.batch_size:
+            self.flush()
 
     def get_next(self) -> Optional[str]:
+        self.flush()  # Ensure pending writes are committed before querying
         c = self.conn.cursor()
         c.execute("""SELECT puuid FROM queue
             WHERE scraped_at IS NULL OR scraped_at < datetime('now', '-10 minutes')
@@ -149,12 +163,22 @@ class Database:
     def mark_scraped(self, puuid: str):
         c = self.conn.cursor()
         c.execute("UPDATE queue SET scraped_at = CURRENT_TIMESTAMP WHERE puuid = ?", (puuid,))
-        self.conn.commit()
+        self._pending_writes += 1
+        if self._pending_writes >= self.batch_size:
+            self.flush()
 
     def queue_size(self) -> int:
         c = self.conn.cursor()
         c.execute("SELECT COUNT(*) FROM queue WHERE scraped_at IS NULL")
         return c.fetchone()[0]
+
+    def prune_queue(self, keep_hours: int = 24) -> int:
+        """Remove old scraped entries from queue. Returns number of rows deleted."""
+        c = self.conn.cursor()
+        c.execute(f"DELETE FROM queue WHERE scraped_at < datetime('now', '-{keep_hours} hours')")
+        deleted = c.rowcount
+        self.conn.commit()
+        return deleted
 
     def get_stats(self) -> dict:
         c = self.conn.cursor()
