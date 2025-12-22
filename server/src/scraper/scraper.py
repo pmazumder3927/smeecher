@@ -49,7 +49,7 @@ console = Console()
 class Smeecher:
     """TFT match scraper with pretty output."""
 
-    def __init__(self, api_key: str, platform: str = "na1", db_path: str = "data/smeecher.db"):
+    def __init__(self, api_key: str, platform: str = "na1", db_path: str = "../data/smeecher.db"):
         self.client = TFTClient(api_key, platform)
         self.db = Database(db_path)
         self.platform = platform.upper()
@@ -220,10 +220,11 @@ async def _async_main():
         return
 
     platform = os.getenv("TFT_PLATFORM", "na1")
-    db_path = os.getenv("SMEECHER_DB", "data/smeecher.db")
+    data_dir = Path(os.environ.get("DATA_DIR", "../data"))
+    db_path = str(data_dir / "smeecher.db")
 
     # Ensure data directory exists
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     scraper = Smeecher(api_key, platform, db_path)
 

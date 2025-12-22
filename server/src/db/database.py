@@ -10,7 +10,7 @@ from ..scraper.models import PlayerRank, ScrapedMatch
 class Database:
     """SQLite storage for TFT match data."""
 
-    def __init__(self, db_path: str = "data/smeecher.db", batch_size: int = 100):
+    def __init__(self, db_path: str = "../data/smeecher.db", batch_size: int = 100):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row

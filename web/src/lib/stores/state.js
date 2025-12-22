@@ -9,6 +9,9 @@ export const graphData = writable(null);
 // Active node types for filtering
 export const activeTypes = writable(new Set(['unit', 'item', 'trait']));
 
+// Highlighted tokens (e.g., cluster selection)
+export const highlightedTokens = writable(new Set());
+
 // Tooltip state
 export const tooltip = writable({
     visible: false,
@@ -42,6 +45,28 @@ export function addToken(token) {
     });
 }
 
+export function addTokens(tokensToAdd) {
+    selectedTokens.update(tokens => {
+        const existing = new Set(tokens);
+        const next = [...tokens];
+        for (const t of tokensToAdd) {
+            if (!existing.has(t)) {
+                existing.add(t);
+                next.push(t);
+            }
+        }
+        return next;
+    });
+}
+
+export function setTokens(tokens) {
+    selectedTokens.set(tokens);
+}
+
+export function clearTokens() {
+    selectedTokens.set([]);
+}
+
 export function removeToken(token) {
     selectedTokens.update(tokens => tokens.filter(t => t !== token));
 }
@@ -73,4 +98,12 @@ export function hideTooltip() {
 
 export function forceHideTooltip() {
     tooltip.set({ visible: false, x: 0, y: 0, content: null, fromTouch: false });
+}
+
+export function setHighlightedTokens(tokens) {
+    highlightedTokens.set(new Set(tokens));
+}
+
+export function clearHighlightedTokens() {
+    highlightedTokens.set(new Set());
 }

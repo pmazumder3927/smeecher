@@ -24,6 +24,23 @@ export async function fetchGraphData(tokens, topK = 15) {
 }
 
 /**
+ * Fetch clustering results (comp archetypes) for given tokens
+ */
+export async function fetchClusters(tokens, params = {}) {
+    const tokensParam = tokens.join(',');
+    const search = new URLSearchParams({
+        tokens: tokensParam,
+        t: String(Date.now()),
+        ...Object.fromEntries(
+            Object.entries(params).map(([k, v]) => [k, String(v)])
+        )
+    });
+
+    const response = await fetch(`${API_BASE}/clusters?${search.toString()}`);
+    return response.json();
+}
+
+/**
  * Get engine stats
  */
 export async function getStats() {

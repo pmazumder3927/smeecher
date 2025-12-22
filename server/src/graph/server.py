@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 import uvicorn
 
 from .engine import GraphEngine, build_engine
+from .clustering import ClusterParams, compute_clusters
 
 
 ENGINE: GraphEngine = None
@@ -568,6 +569,40 @@ def get_graph(
         "nodes": nodes,
         "edges": edges
     }
+
+
+@app.get("/clusters")
+def get_clusters(
+    tokens: str = Query(default="", description="Comma-separated tokens (filters)"),
+    n_clusters: int = Query(default=15, ge=2, le=50),
+    use_units: bool = Query(default=True),
+    use_traits: bool = Query(default=True),
+    use_items: bool = Query(default=False),
+    min_token_freq: int = Query(default=100, ge=1),
+    min_cluster_size: int = Query(default=50, ge=1),
+    top_k_tokens: int = Query(default=10, ge=1, le=30),
+    random_state: int = Query(default=42),
+):
+    """
+    Cluster comps (player matches) into archetypes within the current filters.
+
+    This is intended for interactive exploration in the frontend.
+    """
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    token_list = [t.strip() for t in tokens.split(",") if t.strip()]
+    params = ClusterParams(
+        n_clusters=n_clusters,
+        use_units=use_units,
+        use_traits=use_traits,
+        use_items=use_items,
+        min_token_freq=min_token_freq,
+        min_cluster_size=min_cluster_size,
+        top_k_tokens=top_k_tokens,
+        random_state=random_state,
+    )
+    return compute_clusters(ENGINE, token_list, params)
 
 
 @app.get("/search")

@@ -1,35 +1,6 @@
 {
   "$schema": "https://schema.railpack.com",
-  "packages": {
-    "python": "3.13",
-    "uv": "*",
-    "node": "*"
-  },
-  "caches": {
-    "uv-cache": {
-      "directory": "/root/.cache/uv",
-      "type": "shared"
-    },
-    "npm-cache": {
-      "directory": "/root/.npm",
-      "type": "shared"
-    }
-  },
-  "steps": {
-    "install": {
-      "inputs": [{"local": true, "include": ["."]}],
-      "commands": [
-        "pwd && ls -la",
-        "uv sync --frozen --directory server",
-        "cd web && npm ci && npm run build"
-      ],
-      "caches": ["uv-cache", "npm-cache"]
-    }
-  },
   "deploy": {
-    "startCommand": "uv run --directory server smeecher-graph",
-    "inputs": [
-      { "step": "install", "include": ["."] }
-    ]
+    "startCommand": "uv run --directory server smeecher-graph"
   }
 }
