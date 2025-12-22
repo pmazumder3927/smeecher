@@ -6,6 +6,6 @@
     "uv": "*"
   },
   "deploy": {
-    "startCommand": "uv run --directory server smeecher-graph"
+    "startCommand": "cd server && .venv/bin/python -m src.graph.server"
   }
 }

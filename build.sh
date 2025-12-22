@@ -1,4 +1,4 @@
 #!/bin/bash
 set -e
-uv sync --frozen --directory server
-cd web && npm ci && npm run build
+cd server && uv sync --frozen
+cd ../web && npm ci && npm run build
