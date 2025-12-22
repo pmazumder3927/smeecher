@@ -1,7 +1,6 @@
 <script>
     import { onMount, onDestroy } from 'svelte';
     import * as d3 from 'd3';
-    import ClusterExplorer from './ClusterExplorer.svelte';
     import {
         graphData,
         activeTypes,
@@ -633,7 +632,6 @@
 <div class="graph-section">
     <div class="graph-container">
         <svg bind:this={container} id="graph"></svg>
-        <ClusterExplorer />
     </div>
 </div>
 

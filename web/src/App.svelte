@@ -6,6 +6,7 @@
     import Stats from './lib/components/Stats.svelte';
     import Chips from './lib/components/Chips.svelte';
     import TopKInput from './lib/components/TopKInput.svelte';
+    import ClusterExplorer from './lib/components/ClusterExplorer.svelte';
     import Graph from './lib/components/Graph.svelte';
     import Legend from './lib/components/Legend.svelte';
     import Tooltip from './lib/components/Tooltip.svelte';
@@ -49,6 +50,8 @@
             <TopKInput on:change={() => fetchGraph($selectedTokens, $topK)} />
         </div>
     </div>
+
+    <ClusterExplorer />
 
     <Graph />
     <Legend />

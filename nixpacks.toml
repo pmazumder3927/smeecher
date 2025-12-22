@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["python313", "uv", "nodejs_22"]
+
+[phases.install]
+cmds = [
+    "uv sync --frozen --directory server",
+    "cd web && npm ci && npm run build"
+]
+
+[start]
+cmd = "uv run --directory server smeecher-graph"

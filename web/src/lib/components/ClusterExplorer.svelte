@@ -429,39 +429,36 @@
 
 <style>
     .cluster-explorer {
-        position: absolute;
-        top: 14px;
-        right: 14px;
-        z-index: 20;
-        pointer-events: auto;
+        margin-bottom: 16px;
+        flex-shrink: 0;
     }
 
     .toggle {
-        background: rgba(17, 17, 17, 0.75);
+        width: 100%;
+        background: var(--bg-secondary);
         border: 1px solid var(--border);
         color: var(--text-primary);
         border-radius: 10px;
-        padding: 8px 10px;
+        padding: 10px 12px;
         cursor: pointer;
         display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 2px;
-        backdrop-filter: blur(10px);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
         transition: border-color 0.2s ease, background 0.2s ease;
         font-family: inherit;
     }
 
     .toggle:hover {
         border-color: var(--border-hover);
-        background: rgba(17, 17, 17, 0.9);
+        background: var(--bg-tertiary);
     }
 
     .toggle-title {
-        font-size: 12px;
-        font-weight: 800;
+        font-size: 11px;
+        font-weight: 900;
         letter-spacing: 0.02em;
+        text-transform: uppercase;
     }
 
     .toggle-sub {
@@ -473,14 +470,13 @@
     }
 
     .panel {
-        width: min(860px, calc(100vw - 28px));
-        height: min(640px, calc(100vh - 220px));
+        width: 100%;
+        height: min(520px, 46vh);
         margin-top: 10px;
-        background: rgba(10, 10, 10, 0.92);
+        background: var(--bg-secondary);
         border: 1px solid var(--border);
         border-radius: 12px;
         overflow: hidden;
-        backdrop-filter: blur(12px);
         box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
         display: flex;
         flex-direction: column;
@@ -1051,7 +1047,7 @@
 
     @media (max-width: 940px) {
         .panel {
-            height: min(620px, calc(100vh - 240px));
+            height: min(560px, 52vh);
         }
         .content {
             grid-template-columns: 300px 1fr;
@@ -1059,14 +1055,8 @@
     }
 
     @media (max-width: 780px) {
-        .cluster-explorer {
-            right: 10px;
-            top: 10px;
-        }
-
         .panel {
-            width: calc(100vw - 20px);
-            height: min(680px, calc(100vh - 180px));
+            height: min(720px, 70vh);
         }
 
         .content {
