@@ -18,14 +18,14 @@
   "steps": {
     "install": {
       "commands": [
-        "cd server && uv sync --frozen",
+        "uv sync --frozen --directory server",
         "cd web && npm ci && npm run build"
       ],
       "caches": ["uv-cache", "npm-cache"]
     }
   },
   "deploy": {
-    "startCommand": "cd server && uv run smeecher-graph",
+    "startCommand": "uv run --directory server smeecher-graph",
     "inputs": [
       { "step": "install", "include": ["."] }
     ]
