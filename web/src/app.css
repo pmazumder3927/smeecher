@@ -1,0 +1,56 @@
+/* Smeecher - Global Styles */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    /* Colors - Background */
+    --bg-primary: #000000;
+    --bg-secondary: #0a0a0a;
+    --bg-tertiary: #111111;
+
+    /* Colors - Border */
+    --border: #1a1a1a;
+    --border-hover: #2a2a2a;
+
+    /* Colors - Text */
+    --text-primary: #ffffff;
+    --text-secondary: #a0a0a0;
+    --text-tertiary: #666666;
+
+    /* Colors - Accent */
+    --accent: #0070f3;
+    --accent-hover: #0051cc;
+
+    /* Colors - Status */
+    --success: #00d9a5;
+    --error: #ff4444;
+    --warning: #f5a623;
+
+    /* Colors - Entity Types */
+    --unit: #ff6b9d;
+    --item: #00d9ff;
+    --trait: #a855f7;
+    --equipped: #f5a623;
+
+    /* Effects */
+    --shadow: rgba(0, 0, 0, 0.3);
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', 'Helvetica Neue', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    height: 100vh;
+    overflow: hidden;
+}
+
+#app {
+    height: 100%;
+}

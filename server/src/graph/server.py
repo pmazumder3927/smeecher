@@ -23,7 +23,7 @@ ENGINE: GraphEngine = None
 async def lifespan(app: FastAPI):
     import os
     global ENGINE
-    data_dir = Path(os.environ.get("DATA_DIR", "data"))
+    data_dir = Path(os.environ.get("DATA_DIR", "../data"))
     engine_path = data_dir / "engine.bin"
     db_path = data_dir / "smeecher.db"
 
@@ -84,7 +84,7 @@ async def upload_data(
     if filename not in ("smeecher.db", "engine.bin"):
         raise HTTPException(status_code=400, detail="Only smeecher.db or engine.bin allowed")
 
-    data_dir = Path(os.environ.get("DATA_DIR", "data"))
+    data_dir = Path(os.environ.get("DATA_DIR", "../data"))
     data_dir.mkdir(parents=True, exist_ok=True)
 
     dest = data_dir / filename
@@ -597,8 +597,16 @@ def get_stats():
     return ENGINE.stats()
 
 
-# Serve static files
-static_path = Path(__file__).parent.parent.parent / "static"
+# Serve static files (Vite build output)
+# server/src/graph/server.py -> server/src/graph -> server/src -> server -> root
+static_path = Path(__file__).parent.parent.parent.parent / "static"
+
+# Serve assets directory for JS/CSS bundles
+assets_path = static_path / "assets"
+if assets_path.exists():
+    app.mount("/assets", StaticFiles(directory=str(assets_path)), name="assets")
+
+# Also mount static for backwards compatibility
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
 

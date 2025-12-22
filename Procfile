@@ -1,1 +1,1 @@
-web: uv run smeecher-graph
+web: cd server && uv run smeecher-graph
