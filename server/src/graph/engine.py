@@ -9,13 +9,13 @@ Designed to scale to millions of games with:
 - Single SQL JOIN query for index building
 - Memory-mapped binary serialization
 """
-import json
 import sqlite3
 import struct
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import orjson
 from pyroaring import BitMap
 
 # Type aliases
@@ -155,7 +155,7 @@ class GraphEngine:
 
             unit_name = self._clean_unit_name(unit_name_raw)
             items_json = row["items"]
-            items = json.loads(items_json) if items_json else []
+            items = orjson.loads(items_json) if items_json else []
 
             # Unit presence token
             unit_token = f"U:{unit_name}"
@@ -202,7 +202,7 @@ class GraphEngine:
             if not traits_json:
                 continue
 
-            traits = json.loads(traits_json)
+            traits = orjson.loads(traits_json)
             for trait in traits:
                 trait_name = self._clean_trait_name(trait["name"])
                 tier = trait.get("tier", 1)
@@ -235,9 +235,9 @@ class GraphEngine:
         # Convert accumulated data to roaring bitmaps
         for token_id, (ids, psum) in token_data.items():
             # Deduplicate IDs (units can appear multiple times per board)
-            unique_ids = list(set(ids))
-            # Recalculate sum for unique IDs (use int() to avoid numpy int8 overflow)
-            actual_sum = sum(int(self.placements[pid]) for pid in unique_ids)
+            unique_ids = np.array(list(set(ids)), dtype=np.int64)
+            # Vectorized sum using numpy indexing (much faster than Python loop)
+            actual_sum = int(self.placements[unique_ids].astype(np.int32).sum())
             self.tokens[token_id] = TokenStats(
                 bitmap=BitMap(unique_ids),
                 placement_sum=actual_sum,
@@ -505,9 +505,17 @@ class GraphEngine:
         }
 
 
-def build_engine(db_path: str = "data/smeecher.db", save_path: str = "data/engine.bin"):
+def build_engine(db_path: str = None, save_path: str = None):
     """CLI entry point for building the engine."""
-    print("Building optimized graph engine...")
+    import os
+    data_dir = Path(os.environ.get("DATA_DIR", "../data"))
+
+    if db_path is None:
+        db_path = str(data_dir / "smeecher.db")
+    if save_path is None:
+        save_path = str(data_dir / "engine.bin")
+
+    print(f"Building optimized graph engine from {db_path}...")
     engine = GraphEngine()
     engine.build_from_db(db_path)
 
