@@ -1,5 +1,5 @@
 <script>
-    import { selectedTokens, removeToken } from '../stores/state.js';
+    import { selectedTokens, removeToken, clearTokens } from '../stores/state.js';
     import { getDisplayName } from '../stores/assets.js';
     import { getTokenType } from '../utils/tokens.js';
 
@@ -36,6 +36,12 @@
                     </button>
                 </div>
             {/each}
+            <div class="chip clear-all">
+                <span>Clear all ({$selectedTokens.length})</span>
+                <button on:click={clearTokens} aria-label="Clear all filters">
+                    ×
+                </button>
+            </div>
         {/if}
     </div>
 </div>
@@ -112,6 +118,23 @@
         background: var(--bg-tertiary);
     }
 
+    .chip.clear-all {
+        color: rgba(255, 68, 68, 0.95);
+        border-style: dashed;
+        border-color: rgba(255, 68, 68, 0.35);
+        background: rgba(255, 68, 68, 0.07);
+    }
+
+    .chip.clear-all::before {
+        background: var(--error);
+    }
+
+    .chip.clear-all:hover {
+        border-color: rgba(255, 68, 68, 0.6);
+        background: rgba(255, 68, 68, 0.11);
+        color: rgba(255, 68, 68, 0.98);
+    }
+
     .chip button {
         background: none;
         border: none;
@@ -132,5 +155,10 @@
     .chip button:hover {
         color: var(--text-primary);
         background: var(--bg-tertiary);
+    }
+
+    .chip.clear-all button:hover {
+        color: rgba(255, 255, 255, 0.95);
+        background: rgba(255, 68, 68, 0.18);
     }
 </style>

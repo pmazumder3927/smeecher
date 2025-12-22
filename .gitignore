@@ -16,6 +16,9 @@ data/*.db-shm
 data/*.pkl
 data/*.bin
 
+# Web build output
+static/assets/
+
 # IDE
 .claude/
 .idea/
