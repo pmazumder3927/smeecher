@@ -1,4 +1,5 @@
 <script>
+    import { onMount } from 'svelte';
     import { fetchClusters } from '../api.js';
     import {
         selectedTokens,
@@ -12,12 +13,25 @@
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { getPlacementColor } from '../utils/colors.js';
 
+    const COLLAPSED_WIDTH_PX = 46;
+    const MIN_WIDTH_PX = 340;
+    const MAX_WIDTH_PX = 720;
+    const SPLIT_THRESHOLD_PX = 640;
+
     let open = false;
     let loading = false;
     let error = null;
     let data = null;
     let selectedClusterId = null;
     let sortBy = 'avg'; // avg | size | top4
+
+    let rootEl;
+    let measuredWidth = 0;
+    let widthPx = 440;
+    let view = 'list'; // list | details (only used in narrow mode)
+    let resizing = false;
+    let resizeStartX = 0;
+    let resizeStartWidth = 0;
 
     let params = {
         n_clusters: 15,
@@ -48,15 +62,43 @@
     })();
 
     $: selectedCluster = sortedClusters.find(c => c.cluster_id === selectedClusterId) ?? null;
+    $: if (view === 'details' && !selectedCluster) view = 'list';
+
+    $: sidebarWidth = open ? widthPx : COLLAPSED_WIDTH_PX;
+    $: isNarrow = open && (measuredWidth || sidebarWidth) < SPLIT_THRESHOLD_PX;
+
+    function clamp(n, min, max) {
+        return Math.max(min, Math.min(max, n));
+    }
+
+    onMount(() => {
+        try {
+            const saved = parseInt(localStorage.getItem('clusterExplorerWidth') || '', 10);
+            if (Number.isFinite(saved)) {
+                widthPx = clamp(saved, MIN_WIDTH_PX, MAX_WIDTH_PX);
+            }
+        } catch {
+            // ignore
+        }
+
+        const ro = new ResizeObserver(entries => {
+            const entry = entries[0];
+            if (entry) measuredWidth = entry.contentRect.width;
+        });
+        if (rootEl) ro.observe(rootEl);
+        return () => ro.disconnect();
+    });
 
     function toggleOpen() {
         open = !open;
         if (!open) {
             selectedClusterId = null;
+            view = 'list';
             stale = false;
             clearHighlightedTokens();
             return;
         }
+        view = 'list';
         if (!data) run();
     }
 
@@ -65,6 +107,7 @@
         error = null;
         stale = false;
         selectedClusterId = null;
+        view = 'list';
         clearHighlightedTokens();
         lastTokensKey = tokensKey;
 
@@ -80,6 +123,7 @@
     function selectCluster(c) {
         selectedClusterId = c.cluster_id;
         setHighlightedTokens(c.signature_tokens ?? []);
+        if (isNarrow) view = 'details';
     }
 
     function tokenText(token) {
@@ -124,10 +168,42 @@
         if (x >= 9.95) return '×10+';
         return `×${x.toFixed(2)}`;
     }
+
+    function onResizeStart(event) {
+        resizing = true;
+        resizeStartX = event.clientX;
+        resizeStartWidth = widthPx;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        event.preventDefault();
+    }
+
+    function onResizeMove(event) {
+        if (!resizing) return;
+        const next = resizeStartWidth + (resizeStartX - event.clientX);
+        widthPx = clamp(next, MIN_WIDTH_PX, MAX_WIDTH_PX);
+        event.preventDefault();
+    }
+
+    function onResizeEnd(event) {
+        if (!resizing) return;
+        resizing = false;
+        try {
+            localStorage.setItem('clusterExplorerWidth', String(Math.round(widthPx)));
+        } catch {
+            // ignore
+        }
+        event.preventDefault();
+    }
 </script>
 
-<div class="cluster-explorer" class:open>
-    <button class="toggle" on:click={toggleOpen} aria-label="Toggle cluster explorer">
+<div
+    class="cluster-explorer"
+    class:open
+    class:resizing
+    bind:this={rootEl}
+    style={`width: ${sidebarWidth}px;`}
+>
+    <button class="toggle" on:click={toggleOpen} aria-label="Toggle cluster explorer" aria-expanded={open}>
         <span class="toggle-title">Clusters</span>
         {#if open}
             <span class="toggle-sub">close</span>
@@ -137,6 +213,17 @@
     </button>
 
     {#if open}
+        <div
+            class="resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize cluster explorer"
+            on:pointerdown={onResizeStart}
+            on:pointermove={onResizeMove}
+            on:pointerup={onResizeEnd}
+            on:pointercancel={onResizeEnd}
+        ></div>
+
         <div class="panel">
             <div class="panel-header">
                 <div class="panel-title">Cluster exploration</div>
@@ -213,7 +300,7 @@
                 </div>
             {/if}
 
-            <div class="content">
+            <div class="content" class:narrow={isNarrow} class:showDetails={isNarrow && view === 'details'}>
                 <div class="cluster-list">
                     {#each sortedClusters as c}
                         <button
@@ -265,11 +352,18 @@
                 <div class="details">
                     {#if selectedCluster}
                         <div class="details-header">
-                            <div class="details-title">
-                                Cluster #{selectedCluster.cluster_id}
-                                <span class="details-sub">
-                                    {selectedCluster.size.toLocaleString()} games
-                                </span>
+                            <div class="details-title-wrap">
+                                {#if isNarrow}
+                                    <button class="back" on:click={() => (view = 'list')} aria-label="Back to clusters">
+                                        Back
+                                    </button>
+                                {/if}
+                                <div class="details-title">
+                                    Cluster #{selectedCluster.cluster_id}
+                                    <span class="details-sub">
+                                        {selectedCluster.size.toLocaleString()} games
+                                    </span>
+                                </div>
                             </div>
                             <div class="details-actions">
                                 <button class="action" on:click={exploreAdd} disabled={!selectedCluster.signature_tokens?.length}>
@@ -429,29 +523,45 @@
 
 <style>
     .cluster-explorer {
-        margin-bottom: 16px;
-        flex-shrink: 0;
+        position: relative;
+        height: 100%;
+        min-height: 0;
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: column;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+        min-width: 46px;
+    }
+
+    .cluster-explorer:not(.resizing) {
+        transition: width 0.18s ease;
+    }
+
+    .cluster-explorer.resizing {
+        user-select: none;
     }
 
     .toggle {
         width: 100%;
-        background: var(--bg-secondary);
-        border: 1px solid var(--border);
+        background: transparent;
+        border: none;
         color: var(--text-primary);
-        border-radius: 10px;
         padding: 10px 12px;
         cursor: pointer;
         display: flex;
-        align-items: baseline;
+        align-items: center;
         justify-content: space-between;
         gap: 12px;
         transition: border-color 0.2s ease, background 0.2s ease;
         font-family: inherit;
+        border-bottom: 1px solid var(--border);
     }
 
     .toggle:hover {
-        border-color: var(--border-hover);
-        background: var(--bg-tertiary);
+        background: rgba(255, 255, 255, 0.03);
     }
 
     .toggle-title {
@@ -469,15 +579,55 @@
         font-weight: 700;
     }
 
+    .cluster-explorer:not(.open) .toggle {
+        flex: 1;
+        border-bottom: none;
+        padding: 12px 0;
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+        justify-content: center;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .cluster-explorer:not(.open) .toggle-sub {
+        display: none;
+    }
+
+    .resizer {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 8px;
+        cursor: col-resize;
+        background: transparent;
+        z-index: 5;
+    }
+
+    .resizer:hover {
+        background: rgba(255, 255, 255, 0.04);
+    }
+
+    .resizer::after {
+        content: '';
+        position: absolute;
+        left: 3px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 2px;
+        height: 54px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.10);
+        opacity: 0.75;
+    }
+
     .panel {
         width: 100%;
-        height: min(520px, 46vh);
-        margin-top: 10px;
-        background: var(--bg-secondary);
-        border: 1px solid var(--border);
-        border-radius: 12px;
+        flex: 1;
+        min-height: 0;
+        background: transparent;
         overflow: hidden;
-        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
         display: flex;
         flex-direction: column;
     }
@@ -648,8 +798,8 @@
 
     .content {
         display: grid;
-        grid-template-columns: 320px 1fr;
-        height: 100%;
+        grid-template-columns: 280px 1fr;
+        flex: 1;
         min-height: 0;
     }
 
@@ -774,6 +924,22 @@
         padding: 12px 14px 16px;
     }
 
+    .content.narrow {
+        grid-template-columns: 1fr;
+    }
+
+    .content.narrow .cluster-list {
+        border-right: none;
+    }
+
+    .content.narrow.showDetails .cluster-list {
+        display: none;
+    }
+
+    .content.narrow:not(.showDetails) .details {
+        display: none;
+    }
+
     .details-empty {
         color: var(--text-tertiary);
         font-size: 12px;
@@ -787,12 +953,42 @@
         justify-content: space-between;
         gap: 10px;
         margin-bottom: 12px;
+        flex-wrap: wrap;
+    }
+
+    .details-title-wrap {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        flex: 1;
+    }
+
+    .back {
+        border: 1px solid var(--border);
+        background: var(--bg-tertiary);
+        color: var(--text-primary);
+        border-radius: 9px;
+        padding: 8px 10px;
+        font-size: 11px;
+        font-weight: 900;
+        cursor: pointer;
+        transition: border-color 0.2s ease;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-family: inherit;
+        flex-shrink: 0;
+    }
+
+    .back:hover {
+        border-color: var(--border-hover);
     }
 
     .details-title {
         font-size: 14px;
         font-weight: 900;
         letter-spacing: -0.01em;
+        min-width: 0;
     }
 
     .details-sub {
@@ -1045,28 +1241,36 @@
         flex-shrink: 0;
     }
 
-    @media (max-width: 940px) {
-        .panel {
-            height: min(560px, 52vh);
+    @media (max-width: 768px) {
+        .cluster-explorer {
+            width: 100% !important;
+            height: auto;
         }
-        .content {
-            grid-template-columns: 300px 1fr;
-        }
-    }
 
-    @media (max-width: 780px) {
+        .cluster-explorer:not(.open) .toggle {
+            writing-mode: horizontal-tb;
+            text-orientation: unset;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 12px;
+            flex: 0 0 auto;
+            border-bottom: none;
+        }
+
+        .cluster-explorer:not(.open) .toggle-sub {
+            display: inline;
+        }
+
+        .resizer {
+            display: none;
+        }
+
         .panel {
             height: min(720px, 70vh);
         }
 
-        .content {
-            grid-template-columns: 1fr;
-        }
-
-        .cluster-list {
-            border-right: none;
-            border-bottom: 1px solid var(--border);
-            max-height: 260px;
+        .details-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
         }
     }
 </style>
