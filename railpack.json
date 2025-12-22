@@ -18,6 +18,7 @@
   "steps": {
     "install": {
       "commands": [
+        "pwd && ls -la",
         "uv sync --frozen --directory server",
         "cd web && npm ci && npm run build"
       ],
