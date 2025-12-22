@@ -51,9 +51,10 @@
         </div>
     </div>
 
-    <ClusterExplorer />
-
-    <Graph />
+    <div class="main-row">
+        <Graph />
+        <ClusterExplorer />
+    </div>
     <Legend />
 </div>
 
@@ -94,6 +95,14 @@
         min-height: 28px;
     }
 
+    .main-row {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+
     @media (max-width: 768px) {
         .container {
             padding: 20px 16px 16px;
@@ -105,6 +114,11 @@
 
         .control-panel-top {
             flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .main-row {
+            flex-direction: column;
             gap: 12px;
         }
     }
