@@ -6,9 +6,6 @@
     "uv": "*"
   },
   "deploy": {
-    "packages": {
-      "python": "3.13",
-      "uv": "*"
-    }
+    "startCommand": "uv run --directory server smeecher-graph"
   }
 }
