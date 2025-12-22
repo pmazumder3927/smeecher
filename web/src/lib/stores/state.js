@@ -1,4 +1,5 @@
 import { writable, derived } from 'svelte/store';
+import posthog from '../client/posthog';
 
 // Selected filter tokens
 export const selectedTokens = writable([]);
@@ -36,9 +37,10 @@ export const stats = derived(graphData, ($graphData) => {
 });
 
 // Helper functions
-export function addToken(token) {
+export function addToken(token, source = 'unknown') {
     selectedTokens.update(tokens => {
         if (!tokens.includes(token)) {
+            posthog.capture('token_added', { token, source });
             return [...tokens, token];
         }
         return tokens;
@@ -64,10 +66,12 @@ export function setTokens(tokens) {
 }
 
 export function clearTokens() {
+    posthog.capture('tokens_cleared');
     selectedTokens.set([]);
 }
 
 export function removeToken(token) {
+    posthog.capture('token_removed', { token });
     selectedTokens.update(tokens => tokens.filter(t => t !== token));
 }
 
@@ -76,8 +80,10 @@ export function toggleType(type) {
         const newTypes = new Set(types);
         if (newTypes.has(type)) {
             newTypes.delete(type);
+            posthog.capture('filter_toggled', { type, enabled: false });
         } else {
             newTypes.add(type);
+            posthog.capture('filter_toggled', { type, enabled: true });
         }
         return newTypes;
     });

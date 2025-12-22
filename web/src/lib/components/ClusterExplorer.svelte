@@ -12,6 +12,7 @@
     import { getTokenType, getTokenLabel } from '../utils/tokens.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { getPlacementColor } from '../utils/colors.js';
+    import posthog from '../client/posthog';
 
     const COLLAPSED_WIDTH_PX = 46;
     const MIN_WIDTH_PX = 340;
@@ -92,12 +93,14 @@
     function toggleOpen() {
         open = !open;
         if (!open) {
+            posthog.capture('explorer_closed');
             selectedClusterId = null;
             view = 'list';
             stale = false;
             clearHighlightedTokens();
             return;
         }
+        posthog.capture('explorer_opened');
         view = 'list';
         if (!data) run();
     }
@@ -113,6 +116,14 @@
 
         try {
             data = await fetchClusters($selectedTokens, params);
+            posthog.capture('clustering_run', {
+                n_clusters: params.n_clusters,
+                use_units: params.use_units,
+                use_traits: params.use_traits,
+                use_items: params.use_items,
+                filter_count: $selectedTokens.length,
+                result_count: data?.clusters?.length ?? 0
+            });
         } catch (e) {
             error = e?.message ?? String(e);
         } finally {
@@ -123,6 +134,11 @@
     function selectCluster(c) {
         selectedClusterId = c.cluster_id;
         setHighlightedTokens(c.signature_tokens ?? []);
+        posthog.capture('cluster_selected', {
+            cluster_id: c.cluster_id,
+            cluster_size: c.size,
+            avg_placement: c.avg_placement
+        });
         if (isNarrow) view = 'details';
     }
 
@@ -143,16 +159,18 @@
 
     function exploreReplace() {
         if (!selectedCluster?.signature_tokens?.length) return;
+        posthog.capture('cluster_explored', { cluster_id: selectedCluster.cluster_id, action: 'replace' });
         setTokens(selectedCluster.signature_tokens);
     }
 
     function exploreAdd() {
         if (!selectedCluster?.signature_tokens?.length) return;
+        posthog.capture('cluster_explored', { cluster_id: selectedCluster.cluster_id, action: 'add' });
         addTokens(selectedCluster.signature_tokens);
     }
 
     function addOne(token) {
-        addToken(token);
+        addToken(token, 'cluster');
     }
 
     function maxHist(hist) {

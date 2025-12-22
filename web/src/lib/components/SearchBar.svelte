@@ -3,6 +3,7 @@
     import { addToken } from '../stores/state.js';
     import { displayNameIndex, getDisplayName } from '../stores/assets.js';
     import { get } from 'svelte/store';
+    import posthog from '../client/posthog';
 
     let query = '';
     let results = [];
@@ -47,6 +48,7 @@
 
                 results = [...backendResults, ...localMatches];
                 showResults = results.length > 0;
+                posthog.capture('search', { query, result_count: results.length });
             } catch (error) {
                 console.error('Search error:', error);
             }
@@ -55,6 +57,7 @@
 
     function handleSelect(token) {
         addToken(token);
+        posthog.capture('search_result_selected', { token, source: 'search' });
         query = '';
         results = [];
         showResults = false;

@@ -13,6 +13,7 @@
     } from '../stores/state.js';
     import { getIconUrl, getDisplayName, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { get } from 'svelte/store';
+    import posthog from '../client/posthog';
 
     let container;
     let svg;
@@ -442,11 +443,12 @@
 
     function handleNodeClick(event, d, data) {
         event.stopPropagation();
+        posthog.capture('graph_node_clicked', { node_id: d.id, node_type: d.type, is_center: d.isCenter });
         const edge = data.edges.find(e => (e.from === d.id || e.to === d.id) && !d.isCenter);
         if (edge) {
-            addToken(edge.token);
+            addToken(edge.token, 'graph');
         } else if (!d.isCenter) {
-            addToken(d.id);
+            addToken(d.id, 'graph');
         }
     }
 
