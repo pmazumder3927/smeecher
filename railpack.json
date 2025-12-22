@@ -4,5 +4,11 @@
     "python": "3.13",
     "node": "*",
     "uv": "*"
+  },
+  "deploy": {
+    "packages": {
+      "python": "3.13",
+      "uv": "*"
+    }
   }
 }
