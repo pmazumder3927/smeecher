@@ -4,17 +4,5 @@
     "python": "3.13",
     "node": "*",
     "uv": "*"
-  },
-  "steps": {
-    "build": {
-      "commands": [
-        "uv sync --frozen --directory server",
-        "cd web && npm ci && npm run build"
-      ]
-    }
-  },
-  "deploy": {
-    "inputs": [{"step": "build", "include": ["."]}],
-    "startCommand": "uv run --directory server smeecher-graph"
   }
 }
