@@ -1,5 +1,18 @@
 {
   "$schema": "https://schema.railpack.com",
+  "packages": {
+    "python": "3.13",
+    "uv": "*",
+    "node": "*"
+  },
+  "steps": {
+    "install": {
+      "commands": [
+        "uv sync --frozen --directory server",
+        "cd web && npm ci && npm run build"
+      ]
+    }
+  },
   "deploy": {
     "startCommand": "uv run --directory server smeecher-graph"
   }

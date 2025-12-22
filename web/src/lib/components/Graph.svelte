@@ -1,10 +1,12 @@
 <script>
     import { onMount, onDestroy } from 'svelte';
     import * as d3 from 'd3';
+    import ClusterExplorer from './ClusterExplorer.svelte';
     import {
         graphData,
         activeTypes,
         addToken,
+        highlightedTokens,
         showTooltip,
         hideTooltip,
         forceHideTooltip,
@@ -23,10 +25,16 @@
     let panVelocity = { x: 0, y: 0 };
     let lastTransform = null;
     let currentNodes = [];
+    let nodeSelection = null;
 
     // Reactively render when data or filters change
     $: if (svg && $graphData) {
         renderGraph($graphData, $activeTypes);
+    }
+
+    // Update highlights without re-rendering
+    $: if (nodeSelection) {
+        applyHighlights($highlightedTokens);
     }
 
     onMount(() => {
@@ -67,6 +75,7 @@
         if (!svg) return;
 
         svg.selectAll('*').remove();
+        nodeSelection = null;
 
         const width = container.clientWidth;
         const height = container.clientHeight;
@@ -221,6 +230,8 @@
 
         // Nodes
         const node = createNodes(g, nodes, simulation, data);
+        nodeSelection = node;
+        applyHighlights(get(highlightedTokens));
 
         // Tick handler
         simulation.on('tick', () => {
@@ -240,6 +251,19 @@
 
             node.attr('transform', d => `translate(${d.x},${d.y})`);
         });
+    }
+
+    function applyHighlights(highlightSet) {
+        if (!nodeSelection) return;
+        const hasHighlights = highlightSet && highlightSet.size > 0;
+
+        nodeSelection
+            .classed('highlight', d => hasHighlights && highlightSet.has(d.id))
+            .classed('dimmed', d => hasHighlights && !highlightSet.has(d.id) && !d.isCenter);
+
+        if (hasHighlights) {
+            nodeSelection.filter(d => highlightSet.has(d.id)).raise();
+        }
     }
 
     function createGridPattern(g, gridSize) {
@@ -609,6 +633,7 @@
 <div class="graph-section">
     <div class="graph-container">
         <svg bind:this={container} id="graph"></svg>
+        <ClusterExplorer />
     </div>
 </div>
 
@@ -667,6 +692,15 @@
     :global(.node:hover .node-ring) {
         stroke-width: 5px;
         filter: drop-shadow(0 0 12px currentColor);
+    }
+
+    :global(.node.highlight .node-ring) {
+        stroke-width: 6px;
+        filter: drop-shadow(0 0 16px rgba(0, 112, 243, 0.55));
+    }
+
+    :global(.node.dimmed) {
+        opacity: 0.28;
     }
 
     :global(.node .node-bg) { fill: var(--bg-tertiary); }

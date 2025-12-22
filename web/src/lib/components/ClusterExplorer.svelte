@@ -137,7 +137,7 @@
     </button>
 
     {#if open}
-        <div class="panel" on:click|stopPropagation>
+        <div class="panel">
             <div class="panel-header">
                 <div class="panel-title">Cluster exploration</div>
                 <div class="panel-meta">
@@ -245,7 +245,7 @@
                                             height: {Math.max(2, (count / maxHist(c.placement_hist)) * 100)}%;
                                             background: {getPlacementColor(idx + 1)};
                                         "
-                                    />
+                                    ></div>
                                 {/each}
                             </div>
 
@@ -1080,4 +1080,3 @@
         }
     }
 </style>
-

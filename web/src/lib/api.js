@@ -37,7 +37,11 @@ export async function fetchClusters(tokens, params = {}) {
     });
 
     const response = await fetch(`${API_BASE}/clusters?${search.toString()}`);
-    return response.json();
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data?.detail || 'Failed to fetch clusters');
+    }
+    return data;
 }
 
 /**
