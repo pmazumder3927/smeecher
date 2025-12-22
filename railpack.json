@@ -17,6 +17,7 @@
   },
   "steps": {
     "install": {
+      "inputs": ["."],
       "commands": [
         "pwd && ls -la",
         "uv sync --frozen --directory server",
