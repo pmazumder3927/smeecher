@@ -10,12 +10,14 @@
     import Legend from './lib/components/Legend.svelte';
     import Tooltip from './lib/components/Tooltip.svelte';
 
-    import { loadCDragonData } from './lib/stores/assets.js';
+    import { loadCDragonData, assetsLoaded } from './lib/stores/assets.js';
     import { selectedTokens, topK, graphData } from './lib/stores/state.js';
     import { fetchGraphData } from './lib/api.js';
 
-    // Fetch graph when tokens or topK change
-    $: fetchGraph($selectedTokens, $topK);
+    let ready = false;
+
+    // Fetch graph when tokens or topK change (but only after assets loaded)
+    $: if (ready) fetchGraph($selectedTokens, $topK);
 
     async function fetchGraph(tokens, k) {
         try {
@@ -28,6 +30,7 @@
 
     onMount(async () => {
         await loadCDragonData();
+        ready = true;
         await fetchGraph($selectedTokens, $topK);
     });
 </script>
