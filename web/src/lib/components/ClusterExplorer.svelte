@@ -169,6 +169,64 @@
         return `×${x.toFixed(2)}`;
     }
 
+    function signaturePreview(cluster, maxIcons = 8) {
+        const sig = cluster?.signature_tokens ?? [];
+        const tokens = sig.slice(0, maxIcons);
+        const more = Math.max(0, sig.length - tokens.length);
+        return { tokens, more };
+    }
+
+    function clusterShortName(cluster) {
+        const sig = cluster?.signature_tokens ?? [];
+        const units = sig.filter(t => t.startsWith('U:'));
+        const traits = sig.filter(t => t.startsWith('T:'));
+        const items = sig.filter(t => t.startsWith('I:'));
+
+        if (units.length) {
+            const u = units.slice(0, 2).map(tokenText);
+            let name = u.join(' + ');
+            if (traits.length) name += ` — ${tokenText(traits[0])}`;
+            return name;
+        }
+
+        if (traits.length) {
+            return traits.slice(0, 2).map(tokenText).join(' + ');
+        }
+
+        if (items.length) {
+            return items.slice(0, 2).map(tokenText).join(' + ');
+        }
+
+        return `Cluster #${cluster?.cluster_id ?? ''}`.trim();
+    }
+
+    function clusterKeyToken(cluster) {
+        const defs = cluster?.defining_units ?? [];
+        if (defs.length) return defs[0];
+
+        const topTraits = cluster?.top_traits ?? [];
+        const trait = topTraits.find(t => (t.lift ?? 0) >= 1.6 && (t.pct ?? 0) >= 0.25);
+        if (trait) return trait;
+
+        const topUnits = cluster?.top_units ?? [];
+        const unit = topUnits.find(t => (t.lift ?? 0) >= 1.6 && (t.pct ?? 0) >= 0.25);
+        if (unit) return unit;
+
+        return null;
+    }
+
+    function clusterBlurb(cluster) {
+        const parts = [];
+        const key = clusterKeyToken(cluster);
+        if (key?.token) {
+            parts.push(`${tokenText(key.token)} ${fmtLift(key.lift)}`);
+        }
+        parts.push(`Top4 ${fmtPct(cluster?.top4_rate)}`);
+        parts.push(`Win ${fmtPct(cluster?.win_rate)}`);
+        parts.push(`${Math.round((cluster?.share ?? 0) * 100)}% share`);
+        return parts.join(' • ');
+    }
+
     function onResizeStart(event) {
         resizing = true;
         resizeStartX = event.clientX;
@@ -203,8 +261,8 @@
     bind:this={rootEl}
     style={`width: ${sidebarWidth}px;`}
 >
-    <button class="toggle" on:click={toggleOpen} aria-label="Toggle cluster explorer" aria-expanded={open}>
-        <span class="toggle-title">Clusters</span>
+    <button class="toggle" on:click={toggleOpen} aria-label="Toggle explorer" aria-expanded={open}>
+        <span class="toggle-title">Explorer</span>
         {#if open}
             <span class="toggle-sub">close</span>
         {:else}
@@ -226,7 +284,7 @@
 
         <div class="panel">
             <div class="panel-header">
-                <div class="panel-title">Cluster exploration</div>
+                <div class="panel-title">Explorer</div>
                 <div class="panel-meta">
                     {#if data?.base}
                         <span>{data.base.n.toLocaleString()} games</span>
@@ -303,48 +361,74 @@
             <div class="content" class:narrow={isNarrow} class:showDetails={isNarrow && view === 'details'}>
                 <div class="cluster-list">
                     {#each sortedClusters as c}
+                        {@const preview = signaturePreview(c)}
                         <button
                             class="cluster"
                             class:selected={c.cluster_id === selectedClusterId}
                             on:click={() => selectCluster(c)}
                         >
-                            <div class="cluster-top">
-                                <div class="cluster-id">#{c.cluster_id}</div>
-                                <div class="cluster-size">{c.size.toLocaleString()}</div>
+                            <div class="cluster-header">
+                                <div class="cluster-left">
+                                    <div class="cluster-name-row">
+                                        <span class="cluster-tag">#{c.cluster_id}</span>
+                                        <span class="cluster-name" title={clusterShortName(c)}>
+                                            {clusterShortName(c)}
+                                        </span>
+                                    </div>
+                                    <div class="cluster-blurb" title={clusterBlurb(c)}>
+                                        {clusterBlurb(c)}
+                                    </div>
+                                </div>
+
+                                <div class="cluster-metrics">
+                                    <div class="metric-top">
+                                        <span class="avg" style="color: {getPlacementColor(c.avg_placement)}">
+                                            {c.avg_placement.toFixed(2)}
+                                        </span>
+                                        <span class="delta" class:pos={c.delta_vs_base < 0} class:neg={c.delta_vs_base > 0}>
+                                            {c.delta_vs_base > 0 ? '+' : ''}{c.delta_vs_base.toFixed(2)}
+                                        </span>
+                                    </div>
+                                    <div class="metric-bottom">
+                                        <span class="cluster-size">{c.size.toLocaleString()}</span>
+                                        <span class="cluster-share">{Math.round(c.share * 100)}%</span>
+                                    </div>
+                                </div>
                             </div>
 
-                            <div class="cluster-stats">
-                                <span class="avg" style="color: {getPlacementColor(c.avg_placement)}">
-                                    {c.avg_placement.toFixed(2)}
-                                </span>
-                                <span class="delta" class:pos={c.delta_vs_base < 0} class:neg={c.delta_vs_base > 0}>
-                                    {c.delta_vs_base > 0 ? '+' : ''}{c.delta_vs_base.toFixed(2)}
-                                </span>
-                                <span class="share">{Math.round(c.share * 100)}%</span>
-                                <span class="tiny">top4 {fmtPct(c.top4_rate)}</span>
-                            </div>
+                            <div class="cluster-visual">
+                                <div class="sig-icons" aria-label="Signature">
+                                    {#each preview.tokens as t}
+                                        <div class="sig-icon {tokenTypeClass(t)}" title={tokenText(t)}>
+                                            {#if tokenIcon(t) && !hasIconFailed(getTokenType(t), t.slice(2))}
+                                                <img
+                                                    src={tokenIcon(t)}
+                                                    alt=""
+                                                    loading="lazy"
+                                                    on:error={() => markIconFailed(getTokenType(t), t.slice(2))}
+                                                />
+                                            {:else}
+                                                <div class="sig-fallback {tokenTypeClass(t)}"></div>
+                                            {/if}
+                                        </div>
+                                    {/each}
+                                    {#if preview.more > 0}
+                                        <div class="sig-more" title={`+${preview.more} more`}>+{preview.more}</div>
+                                    {/if}
+                                </div>
 
-                            <div class="hist">
-                                {#each c.placement_hist as count, idx}
-                                    <div
-                                        class="bar"
-                                        style="
-                                            height: {Math.max(2, (count / maxHist(c.placement_hist)) * 100)}%;
-                                            background: {getPlacementColor(idx + 1)};
-                                        "
-                                    ></div>
-                                {/each}
-                            </div>
-
-                            {#if c.defining_units?.length}
-                                <div class="defining">
-                                    {#each c.defining_units as u, i}
-                                        <span class="def">{tokenText(u.token)}{i < c.defining_units.length - 1 ? ', ' : ''}</span>
+                                <div class="hist" aria-label="Placement distribution">
+                                    {#each c.placement_hist as count, idx}
+                                        <div
+                                            class="bar"
+                                            style="
+                                                height: {Math.max(2, (count / maxHist(c.placement_hist)) * 100)}%;
+                                                background: {getPlacementColor(idx + 1)};
+                                            "
+                                        ></div>
                                     {/each}
                                 </div>
-                            {:else}
-                                <div class="defining muted">(mixed)</div>
-                            {/if}
+                            </div>
                         </button>
                     {/each}
                 </div>
@@ -819,7 +903,7 @@
         border: 1px solid var(--border);
         background: rgba(17, 17, 17, 0.5);
         border-radius: 10px;
-        padding: 10px;
+        padding: 10px 10px 12px;
         cursor: pointer;
         transition: border-color 0.2s ease, background 0.2s ease;
         color: var(--text-primary);
@@ -836,32 +920,62 @@
         box-shadow: 0 0 0 1px rgba(0, 112, 243, 0.25);
     }
 
-    .cluster-top {
+    .cluster-header {
         display: flex;
         justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 6px;
+        align-items: flex-start;
+        gap: 10px;
     }
 
-    .cluster-id {
-        font-weight: 900;
-        letter-spacing: 0.03em;
-        font-size: 11px;
-        color: var(--text-secondary);
+    .cluster-left {
+        flex: 1;
+        min-width: 0;
     }
 
-    .cluster-size {
-        font-weight: 800;
-        font-size: 11px;
-        color: var(--text-tertiary);
-    }
-
-    .cluster-stats {
+    .cluster-name-row {
         display: flex;
         align-items: baseline;
         gap: 8px;
-        margin-bottom: 8px;
-        flex-wrap: wrap;
+        margin-bottom: 3px;
+    }
+
+    .cluster-tag {
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        font-size: 10px;
+        color: var(--text-tertiary);
+        text-transform: uppercase;
+    }
+
+    .cluster-name {
+        font-size: 13px;
+        font-weight: 900;
+        letter-spacing: -0.01em;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .cluster-blurb {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .cluster-metrics {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
+        flex-shrink: 0;
+    }
+
+    .metric-top {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
     }
 
     .avg {
@@ -876,15 +990,24 @@
         color: var(--text-tertiary);
     }
 
-    .delta.pos {
-        color: var(--success);
+    .delta.pos { color: var(--success); }
+    .delta.neg { color: var(--error); }
+
+    .metric-bottom {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
     }
 
-    .delta.neg {
-        color: var(--error);
+    .cluster-size {
+        font-weight: 800;
+        font-size: 11px;
+        color: var(--text-tertiary);
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: "tnum" 1;
     }
 
-    .share {
+    .cluster-share {
         font-size: 10px;
         font-weight: 800;
         color: var(--text-tertiary);
@@ -892,30 +1015,90 @@
         letter-spacing: 0.08em;
     }
 
+    .cluster-visual {
+        margin-top: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .sig-icons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+    }
+
+    .sig-icon {
+        width: 22px;
+        height: 22px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.02);
+        overflow: hidden;
+        flex-shrink: 0;
+        position: relative;
+    }
+
+    .sig-icon.unit { box-shadow: inset 0 0 0 1px rgba(255, 107, 157, 0.18); }
+    .sig-icon.item { box-shadow: inset 0 0 0 1px rgba(0, 217, 255, 0.18); }
+    .sig-icon.trait { box-shadow: inset 0 0 0 1px rgba(168, 85, 247, 0.18); }
+
+    .sig-icon img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+    }
+
+    .sig-fallback {
+        width: 100%;
+        height: 100%;
+        position: relative;
+        background: rgba(255, 255, 255, 0.04);
+    }
+
+    .sig-fallback.unit::after,
+    .sig-fallback.item::after,
+    .sig-fallback.trait::after {
+        content: '';
+        position: absolute;
+        inset: 5px;
+        border-radius: 6px;
+        opacity: 0.9;
+    }
+
+    .sig-fallback.unit::after { background: rgba(255, 107, 157, 0.45); }
+    .sig-fallback.item::after { background: rgba(0, 217, 255, 0.45); }
+    .sig-fallback.trait::after { background: rgba(168, 85, 247, 0.45); }
+
+    .sig-more {
+        height: 22px;
+        padding: 0 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text-tertiary);
+        font-size: 10px;
+        font-weight: 900;
+        display: inline-flex;
+        align-items: center;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
     .hist {
         display: grid;
         grid-template-columns: repeat(8, 1fr);
         gap: 2px;
         align-items: end;
-        height: 22px;
-        margin-bottom: 8px;
+        height: 18px;
     }
 
     .bar {
         width: 100%;
         border-radius: 2px;
         opacity: 0.85;
-    }
-
-    .defining {
-        font-size: 11px;
-        color: var(--text-secondary);
-        line-height: 1.35;
-        min-height: 14px;
-    }
-
-    .defining.muted {
-        color: var(--text-tertiary);
     }
 
     .details {

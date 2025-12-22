@@ -1,6 +1,6 @@
 <script>
     import { searchTokens } from '../api.js';
-    import { addToken } from '../stores/state.js';
+    import { selectedTokens, addToken, clearTokens } from '../stores/state.js';
     import { displayNameIndex, getDisplayName } from '../stores/assets.js';
     import { get } from 'svelte/store';
 
@@ -60,6 +60,13 @@
         showResults = false;
     }
 
+    function handleClearAll() {
+        clearTokens();
+        query = '';
+        results = [];
+        showResults = false;
+    }
+
     function handleFocus() {
         if (results.length > 0) {
             showResults = true;
@@ -89,7 +96,21 @@
         on:focus={handleFocus}
         placeholder="Search units, items, traits..."
         autocomplete="off"
+        class:with-clear={$selectedTokens.length > 0}
     />
+
+    {#if $selectedTokens.length > 0}
+        <button
+            class="clear-filters"
+            type="button"
+            on:click={handleClearAll}
+            title="Clear all filters"
+            aria-label="Clear all filters"
+        >
+            Clear
+            <span class="count">{$selectedTokens.length}</span>
+        </button>
+    {/if}
 
     {#if showResults}
         <div class="search-results">
@@ -135,6 +156,10 @@
         font-family: inherit;
     }
 
+    input.with-clear {
+        padding-right: 86px;
+    }
+
     input::placeholder {
         color: var(--text-tertiary);
     }
@@ -143,6 +168,49 @@
         border-color: var(--accent);
         background: var(--bg-tertiary);
         box-shadow: 0 4px 16px rgba(0, 112, 243, 0.15);
+    }
+
+    .clear-filters {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text-secondary);
+        border-radius: 999px;
+        padding: 5px 10px;
+        font-size: 11px;
+        font-weight: 800;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+        font-family: inherit;
+    }
+
+    .clear-filters:hover {
+        border-color: var(--border-hover);
+        background: rgba(255, 255, 255, 0.07);
+        color: var(--text-primary);
+    }
+
+    .clear-filters .count {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 16px;
+        height: 16px;
+        padding: 0 6px;
+        border-radius: 999px;
+        background: rgba(0, 112, 243, 0.18);
+        border: 1px solid rgba(0, 112, 243, 0.35);
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 10px;
+        font-weight: 900;
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: "tnum" 1;
     }
 
     .search-results {
