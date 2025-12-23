@@ -171,6 +171,8 @@ class GraphEngine:
             # Equipped tokens and track board items
             for item_id in items:
                 item_name = self._clean_item_name(item_id)
+                if item_name == "EmptyBag":  # Placeholder for Thief's Gloves random items
+                    continue
                 board_items.add(item_name)
 
                 # Equipped token
