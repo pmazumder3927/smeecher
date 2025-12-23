@@ -14,11 +14,15 @@ export async function searchTokens(query) {
 
 /**
  * Fetch graph data for given tokens
+ * @param {string[]} tokens - Filter tokens
+ * @param {number} topK - Max edges to return per type
+ * @param {Set<string>} activeTypes - Active node types (unit, item, trait)
  */
-export async function fetchGraphData(tokens, topK = 15) {
+export async function fetchGraphData(tokens, topK = 15, activeTypes = null) {
     const tokensParam = tokens.join(',');
+    const typesParam = activeTypes ? [...activeTypes].join(',') : 'unit,item,trait';
     const response = await fetch(
-        `${API_BASE}/graph?tokens=${encodeURIComponent(tokensParam)}&top_k=${topK}&t=${Date.now()}`
+        `${API_BASE}/graph?tokens=${encodeURIComponent(tokensParam)}&top_k=${topK}&types=${typesParam}&t=${Date.now()}`
     );
     return response.json();
 }

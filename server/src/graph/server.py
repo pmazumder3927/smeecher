@@ -277,7 +277,8 @@ def generate_candidates(center_info: dict, current_tokens: list[str]) -> list[tu
 def get_graph(
     tokens: str = Query(default="", description="Comma-separated tokens"),
     min_sample: int = Query(default=10, description="Minimum sample size"),
-    top_k: int = Query(default=15, description="Max edges to return (0 = unlimited)")
+    top_k: int = Query(default=15, description="Max edges to return (0 = unlimited)"),
+    types: str = Query(default="unit,item,trait", description="Comma-separated types to include")
 ):
     """
     Get graph data for the given filter tokens.
@@ -286,6 +287,7 @@ def get_graph(
     where n is the size of the smallest set.
     """
     token_list = [t.strip() for t in tokens.split(",") if t.strip()]
+    active_types = set(t.strip().lower() for t in types.split(",") if t.strip())
 
     if not token_list:
         # Special case: return all root nodes (units, items, base traits)
@@ -333,10 +335,21 @@ def get_graph(
     for score in scored:
         score["edge_type"] = edge_types.get(score["token"], "cooccur")
 
+    # Filter by active types before applying top_k
+    # equipped edges are included if either unit or item is in active_types
+    def matches_type_filter(score_entry):
+        token_type = get_token_type(score_entry["token"])
+        if token_type == "equipped":
+            # Include equipped edges if either unit or item type is active
+            return "unit" in active_types or "item" in active_types
+        return token_type in active_types
+
+    scored = [s for s in scored if matches_type_filter(s)]
+
     # Sort by absolute delta (most impactful first)
     scored.sort(key=lambda x: abs(x["delta"]), reverse=True)
 
-    # Apply top_k limit if specified
+    # Apply top_k limit if specified (now applied to filtered results)
     if top_k > 0:
         scored = scored[:top_k]
 

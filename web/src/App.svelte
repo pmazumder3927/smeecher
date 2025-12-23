@@ -12,17 +12,17 @@
     import Tooltip from './lib/components/Tooltip.svelte';
 
     import { loadCDragonData, assetsLoaded } from './lib/stores/assets.js';
-    import { selectedTokens, topK, graphData } from './lib/stores/state.js';
+    import { selectedTokens, topK, graphData, activeTypes } from './lib/stores/state.js';
     import { fetchGraphData } from './lib/api.js';
 
     let ready = false;
 
-    // Fetch graph when tokens or topK change (but only after assets loaded)
-    $: if (ready) fetchGraph($selectedTokens, $topK);
+    // Fetch graph when tokens, topK, or activeTypes change (but only after assets loaded)
+    $: if (ready) fetchGraph($selectedTokens, $topK, $activeTypes);
 
-    async function fetchGraph(tokens, k) {
+    async function fetchGraph(tokens, k, types) {
         try {
-            const data = await fetchGraphData(tokens, k);
+            const data = await fetchGraphData(tokens, k, types);
             graphData.set(data);
         } catch (error) {
             console.error('Failed to fetch graph:', error);
@@ -32,7 +32,7 @@
     onMount(async () => {
         await loadCDragonData();
         ready = true;
-        await fetchGraph($selectedTokens, $topK);
+        await fetchGraph($selectedTokens, $topK, $activeTypes);
     });
 </script>
 
@@ -47,7 +47,7 @@
         </div>
         <div class="control-panel-bottom">
             <Chips />
-            <TopKInput on:change={() => fetchGraph($selectedTokens, $topK)} />
+            <TopKInput on:change={() => fetchGraph($selectedTokens, $topK, $activeTypes)} />
         </div>
     </div>
 

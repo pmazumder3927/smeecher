@@ -3,6 +3,7 @@
     import { fetchClusters } from '../api.js';
     import {
         selectedTokens,
+        activeTypes,
         addToken,
         addTokens,
         setTokens,
@@ -36,9 +37,6 @@
 
     let params = {
         n_clusters: 15,
-        use_units: true,
-        use_traits: true,
-        use_items: true,
         min_token_freq: 100,
         min_cluster_size: 50,
         top_k_tokens: 10,
@@ -50,6 +48,19 @@
 
     $: tokensKey = $selectedTokens.slice().sort().join(',');
     $: if (open && lastTokensKey && tokensKey !== lastTokensKey) stale = true;
+
+    // Derive API params from global activeTypes store
+    $: apiParams = {
+        ...params,
+        use_units: $activeTypes.has('unit'),
+        use_traits: $activeTypes.has('trait'),
+        use_items: $activeTypes.has('item')
+    };
+
+    // Track activeTypes changes for stale detection
+    let lastActiveTypesKey = '';
+    $: activeTypesKey = [...$activeTypes].sort().join(',');
+    $: if (open && data && lastActiveTypesKey && activeTypesKey !== lastActiveTypesKey) stale = true;
 
     $: clusters = data?.clusters ?? [];
     $: warning = data?.meta?.warning ?? null;
@@ -64,6 +75,29 @@
 
     $: selectedCluster = sortedClusters.find(c => c.cluster_id === selectedClusterId) ?? null;
     $: if (view === 'details' && !selectedCluster) view = 'list';
+
+    // Unified token list sorted by lift
+    $: unifiedTokens = (() => {
+        if (!selectedCluster) return [];
+        const all = [];
+        if ($activeTypes.has('unit')) {
+            for (const tok of (selectedCluster.top_units ?? [])) {
+                all.push({ ...tok, type: 'unit' });
+            }
+        }
+        if ($activeTypes.has('trait')) {
+            for (const tok of (selectedCluster.top_traits ?? [])) {
+                all.push({ ...tok, type: 'trait' });
+            }
+        }
+        if ($activeTypes.has('item')) {
+            for (const tok of (selectedCluster.top_items ?? [])) {
+                all.push({ ...tok, type: 'item' });
+            }
+        }
+        all.sort((a, b) => (b.lift ?? 0) - (a.lift ?? 0));
+        return all;
+    })();
 
     $: sidebarWidth = open ? widthPx : COLLAPSED_WIDTH_PX;
     $: isNarrow = open && (measuredWidth || sidebarWidth) < SPLIT_THRESHOLD_PX;
@@ -113,14 +147,15 @@
         view = 'list';
         clearHighlightedTokens();
         lastTokensKey = tokensKey;
+        lastActiveTypesKey = activeTypesKey;
 
         try {
-            data = await fetchClusters($selectedTokens, params);
+            data = await fetchClusters($selectedTokens, apiParams);
             posthog.capture('clustering_run', {
-                n_clusters: params.n_clusters,
-                use_units: params.use_units,
-                use_traits: params.use_traits,
-                use_items: params.use_items,
+                n_clusters: apiParams.n_clusters,
+                use_units: apiParams.use_units,
+                use_traits: apiParams.use_traits,
+                use_items: apiParams.use_items,
                 filter_count: $selectedTokens.length,
                 result_count: data?.clusters?.length ?? 0
             });
@@ -171,6 +206,12 @@
 
     function addOne(token) {
         addToken(token, 'cluster');
+    }
+
+    function goBack() {
+        selectedClusterId = null;
+        clearHighlightedTokens();
+        if (isNarrow) view = 'list';
     }
 
     function maxHist(hist) {
@@ -316,35 +357,19 @@
                 </div>
             </div>
 
-            <div class="controls">
-                <label class="control">
-                    <span>k</span>
-                    <input type="number" min="2" max="50" step="1" bind:value={params.n_clusters} />
-                </label>
+            <div class="controls compact">
+                <div class="controls-left">
+                    <label class="control">
+                        <span>k</span>
+                        <input type="number" min="2" max="50" step="1" bind:value={params.n_clusters} />
+                    </label>
 
-                <label class="checkbox">
-                    <input type="checkbox" bind:checked={params.use_traits} />
-                    <span>traits</span>
-                </label>
+                    <label class="control">
+                        <span>min</span>
+                        <input type="number" min="1" max="5000" step="10" bind:value={params.min_token_freq} />
+                    </label>
 
-                <label class="checkbox">
-                    <input type="checkbox" bind:checked={params.use_items} />
-                    <span>items</span>
-                </label>
-
-                <label class="control">
-                    <span>min</span>
-                    <input type="number" min="1" max="5000" step="10" bind:value={params.min_token_freq} />
-                </label>
-
-                <button class="run" disabled={loading} on:click={run}>
-                    {#if loading}Running…{:else if stale}Refresh{:else}Run{/if}
-                </button>
-            </div>
-
-            <div class="subcontrols">
-                <div class="subcontrols-left">
-                    <label class="select">
+                    <label class="select inline">
                         <span>Sort</span>
                         <select bind:value={sortBy}>
                             <option value="avg">best avg</option>
@@ -352,15 +377,15 @@
                             <option value="size">most played</option>
                         </select>
                     </label>
-                </div>
-                <div class="subcontrols-right">
+
                     {#if data?.meta?.compute_ms}
                         <span class="tiny">{data.meta.compute_ms}ms</span>
                     {/if}
-                    {#if data?.meta?.features_used}
-                        <span class="tiny">{data.meta.features_used} features</span>
-                    {/if}
                 </div>
+
+                <button class="run" disabled={loading} on:click={run}>
+                    {#if loading}Running…{:else if stale}Refresh{:else}Run{/if}
+                </button>
             </div>
 
             {#if warning}
@@ -454,28 +479,30 @@
                 <div class="details">
                     {#if selectedCluster}
                         <div class="details-header">
-                            <div class="details-title-wrap">
-                                {#if isNarrow}
-                                    <button class="back" on:click={() => (view = 'list')} aria-label="Back to clusters">
-                                        Back
-                                    </button>
-                                {/if}
-                                <div class="details-title">
-                                    Cluster #{selectedCluster.cluster_id}
-                                    <span class="details-sub">
-                                        {selectedCluster.size.toLocaleString()} games
-                                    </span>
-                                </div>
-                            </div>
-                            <div class="details-actions">
-                                <button class="action" on:click={exploreAdd} disabled={!selectedCluster.signature_tokens?.length}>
-                                    Add
-                                </button>
-                                <button class="action primary" on:click={exploreReplace} disabled={!selectedCluster.signature_tokens?.length}>
-                                    Explore
-                                </button>
+                            <button class="back-btn" on:click={goBack} aria-label="Back to clusters">
+                                ← Back
+                            </button>
+                            <div class="details-title">
+                                Cluster #{selectedCluster.cluster_id}
+                                <span class="details-sub">{selectedCluster.size.toLocaleString()} games</span>
                             </div>
                         </div>
+
+                        <button
+                            class="explore-hero"
+                            on:click={exploreReplace}
+                            disabled={!selectedCluster.signature_tokens?.length}
+                        >
+                            Explore This Cluster
+                        </button>
+
+                        <button
+                            class="add-secondary"
+                            on:click={exploreAdd}
+                            disabled={!selectedCluster.signature_tokens?.length}
+                        >
+                            + Add to current filters
+                        </button>
 
                         <div class="details-grid">
                             <div class="metric">
@@ -513,105 +540,44 @@
                             </div>
                         {/if}
 
-                        <div class="token-groups">
-                            <div class="group">
-                                <div class="group-title">Units</div>
-                                <div class="tokens">
-                                    {#each selectedCluster.top_units as tok}
-                                        <button class="token" on:click={() => addOne(tok.token)}>
+                        {#if unifiedTokens.length > 0}
+                            <div class="unified-tokens">
+                                <div class="tokens-header">
+                                    <span class="tokens-title">Top Tokens</span>
+                                    <span class="tokens-count">{unifiedTokens.length} tokens</span>
+                                </div>
+                                <div class="tokens-list">
+                                    {#each unifiedTokens as tok}
+                                        <button class="token-row {tok.type}" on:click={() => addOne(tok.token)}>
                                             {#if tokenIcon(tok.token) && !hasIconFailed(getTokenType(tok.token), tok.token.slice(2))}
                                                 <img
-                                                    class="icon"
+                                                    class="token-icon"
                                                     src={tokenIcon(tok.token)}
                                                     alt=""
                                                     loading="lazy"
                                                     on:error={() => markIconFailed(getTokenType(tok.token), tok.token.slice(2))}
                                                 />
                                             {:else}
-                                                <div class="fallback {tokenTypeClass(tok.token)}"></div>
+                                                <div class="token-fallback {tok.type}"></div>
                                             {/if}
-                                            <div class="token-main">
-                                                <div class="name">{tokenText(tok.token)}</div>
-                                                <div class="sub">
-                                                    <span class="mono">{fmtPct(tok.pct)}</span>
-                                                    <span class="dot">•</span>
-                                                    <span class="mono">{fmtLift(tok.lift)}</span>
-                                                    <span class="dot">•</span>
-                                                    <span class="muted">base {fmtPct(tok.base_pct)}</span>
+                                            <div class="token-info">
+                                                <div class="token-name">{tokenText(tok.token)}</div>
+                                                <div class="token-stats">
+                                                    <span class="lift">{fmtLift(tok.lift)}</span>
+                                                    <span class="sep">|</span>
+                                                    <span class="pct">{fmtPct(tok.pct)}</span>
+                                                    <span class="base">vs {fmtPct(tok.base_pct)} base</span>
                                                 </div>
                                             </div>
-                                            <div class="plus">+</div>
+                                            <div class="token-type-badge {tok.type}">
+                                                {tok.type.charAt(0).toUpperCase()}
+                                            </div>
+                                            <div class="plus-icon">+</div>
                                         </button>
                                     {/each}
                                 </div>
                             </div>
-
-                            <div class="group">
-                                <div class="group-title">Traits</div>
-                                <div class="tokens">
-                                    {#each selectedCluster.top_traits as tok}
-                                        <button class="token" on:click={() => addOne(tok.token)}>
-                                            {#if tokenIcon(tok.token) && !hasIconFailed(getTokenType(tok.token), tok.token.slice(2))}
-                                                <img
-                                                    class="icon"
-                                                    src={tokenIcon(tok.token)}
-                                                    alt=""
-                                                    loading="lazy"
-                                                    on:error={() => markIconFailed(getTokenType(tok.token), tok.token.slice(2))}
-                                                />
-                                            {:else}
-                                                <div class="fallback {tokenTypeClass(tok.token)}"></div>
-                                            {/if}
-                                            <div class="token-main">
-                                                <div class="name">{tokenText(tok.token)}</div>
-                                                <div class="sub">
-                                                    <span class="mono">{fmtPct(tok.pct)}</span>
-                                                    <span class="dot">•</span>
-                                                    <span class="mono">{fmtLift(tok.lift)}</span>
-                                                    <span class="dot">•</span>
-                                                    <span class="muted">base {fmtPct(tok.base_pct)}</span>
-                                                </div>
-                                            </div>
-                                            <div class="plus">+</div>
-                                        </button>
-                                    {/each}
-                                </div>
-                            </div>
-
-                            {#if params.use_items}
-                                <div class="group">
-                                    <div class="group-title">Items</div>
-                                    <div class="tokens">
-                                        {#each selectedCluster.top_items as tok}
-                                            <button class="token" on:click={() => addOne(tok.token)}>
-                                                {#if tokenIcon(tok.token) && !hasIconFailed(getTokenType(tok.token), tok.token.slice(2))}
-                                                    <img
-                                                        class="icon"
-                                                        src={tokenIcon(tok.token)}
-                                                        alt=""
-                                                        loading="lazy"
-                                                        on:error={() => markIconFailed(getTokenType(tok.token), tok.token.slice(2))}
-                                                    />
-                                                {:else}
-                                                    <div class="fallback {tokenTypeClass(tok.token)}"></div>
-                                                {/if}
-                                                <div class="token-main">
-                                                    <div class="name">{tokenText(tok.token)}</div>
-                                                    <div class="sub">
-                                                        <span class="mono">{fmtPct(tok.pct)}</span>
-                                                        <span class="dot">•</span>
-                                                        <span class="mono">{fmtLift(tok.lift)}</span>
-                                                        <span class="dot">•</span>
-                                                        <span class="muted">base {fmtPct(tok.base_pct)}</span>
-                                                    </div>
-                                                </div>
-                                                <div class="plus">+</div>
-                                            </button>
-                                        {/each}
-                                    </div>
-                                </div>
-                            {/if}
-                        </div>
+                        {/if}
                     {:else}
                         <div class="details-empty">
                             Select a cluster to inspect defining units, traits, and item prevalence.
@@ -791,7 +757,7 @@
     }
 
     .control input {
-        width: 64px;
+        width: 54px;
         background: transparent;
         border: none;
         outline: none;
@@ -801,29 +767,28 @@
         font-family: inherit;
     }
 
-    .checkbox {
+    .controls.compact {
         display: flex;
+        justify-content: space-between;
         align-items: center;
-        gap: 6px;
-        color: var(--text-secondary);
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.02em;
-        text-transform: lowercase;
-        user-select: none;
+        gap: 8px;
     }
 
-    .checkbox input {
-        accent-color: var(--accent);
+    .controls-left {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        flex: 1;
+        min-width: 0;
     }
 
     .run {
-        margin-left: auto;
         background: var(--accent);
         color: #000;
         border: none;
         border-radius: 8px;
-        padding: 8px 10px;
+        padding: 8px 12px;
         font-size: 11px;
         font-weight: 900;
         cursor: pointer;
@@ -831,6 +796,7 @@
         text-transform: uppercase;
         letter-spacing: 0.08em;
         font-family: inherit;
+        flex-shrink: 0;
     }
 
     .run:disabled {
@@ -842,24 +808,23 @@
         background: var(--accent-hover);
     }
 
-    .subcontrols {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 8px 14px;
-        border-bottom: 1px solid var(--border);
-        gap: 10px;
-    }
-
     .select {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
         color: var(--text-tertiary);
         font-size: 10px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.1em;
+        letter-spacing: 0.08em;
+    }
+
+    .select.inline span {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        color: var(--text-tertiary);
     }
 
     select {
@@ -867,7 +832,7 @@
         border: 1px solid var(--border);
         color: var(--text-primary);
         border-radius: 8px;
-        padding: 6px 8px;
+        padding: 5px 8px;
         font-size: 11px;
         font-weight: 700;
         font-family: inherit;
@@ -877,7 +842,6 @@
         font-size: 10px;
         color: var(--text-tertiary);
         font-weight: 600;
-        margin-left: 10px;
         white-space: nowrap;
     }
 
@@ -1151,84 +1115,97 @@
     .details-header {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        margin-bottom: 12px;
-        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 14px;
     }
 
-    .details-title-wrap {
+    .back-btn {
         display: flex;
         align-items: center;
-        gap: 10px;
-        min-width: 0;
-        flex: 1;
-    }
-
-    .back {
-        border: 1px solid var(--border);
+        gap: 4px;
+        padding: 8px 12px;
         background: var(--bg-tertiary);
-        color: var(--text-primary);
-        border-radius: 9px;
-        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text-secondary);
         font-size: 11px;
-        font-weight: 900;
-        cursor: pointer;
-        transition: border-color 0.2s ease;
+        font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.04em;
+        cursor: pointer;
+        transition: all 0.2s ease;
         font-family: inherit;
         flex-shrink: 0;
     }
 
-    .back:hover {
+    .back-btn:hover {
         border-color: var(--border-hover);
+        color: var(--text-primary);
     }
 
     .details-title {
-        font-size: 14px;
+        font-size: 16px;
         font-weight: 900;
-        letter-spacing: -0.01em;
+        letter-spacing: -0.02em;
+        flex: 1;
         min-width: 0;
     }
 
     .details-sub {
-        font-size: 11px;
+        font-size: 12px;
         color: var(--text-tertiary);
-        font-weight: 700;
-        margin-left: 8px;
+        font-weight: 600;
+        margin-left: 10px;
     }
 
-    .details-actions {
-        display: flex;
-        gap: 8px;
-    }
-
-    .action {
-        border: 1px solid var(--border);
-        background: var(--bg-tertiary);
-        color: var(--text-primary);
-        border-radius: 9px;
-        padding: 8px 10px;
-        font-size: 11px;
+    .explore-hero {
+        width: 100%;
+        padding: 14px 20px;
+        margin-bottom: 10px;
+        background: var(--accent);
+        color: #000;
+        border: none;
+        border-radius: 12px;
+        font-size: 14px;
         font-weight: 900;
-        cursor: pointer;
-        transition: border-color 0.2s ease;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.06em;
+        cursor: pointer;
+        transition: background 0.2s ease, transform 0.1s ease;
         font-family: inherit;
     }
 
-    .action:hover:not(:disabled) {
+    .explore-hero:hover:not(:disabled) {
+        background: var(--accent-hover);
+        transform: translateY(-1px);
+    }
+
+    .explore-hero:disabled {
+        opacity: 0.5;
+        cursor: default;
+    }
+
+    .add-secondary {
+        width: 100%;
+        padding: 10px 16px;
+        margin-bottom: 14px;
+        background: transparent;
+        color: var(--text-secondary);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: border-color 0.2s ease, color 0.2s ease;
+        font-family: inherit;
+    }
+
+    .add-secondary:hover:not(:disabled) {
         border-color: var(--border-hover);
+        color: var(--text-primary);
     }
 
-    .action.primary {
-        border-color: rgba(0, 112, 243, 0.8);
-        background: rgba(0, 112, 243, 0.12);
-    }
-
-    .action:disabled {
+    .add-secondary:disabled {
         opacity: 0.5;
         cursor: default;
     }
@@ -1322,124 +1299,174 @@
         box-shadow: inset 0 0 0 1px rgba(168, 85, 247, 0.25);
     }
 
-    .token-groups {
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
+    .unified-tokens {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(17, 17, 17, 0.4);
+        overflow: hidden;
     }
 
-    .group-title {
-        font-size: 9px;
+    .tokens-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .tokens-title {
+        font-size: 10px;
         letter-spacing: 0.12em;
         text-transform: uppercase;
         color: var(--text-tertiary);
         font-weight: 900;
-        margin-bottom: 8px;
     }
 
-    .tokens {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
+    .tokens-count {
+        font-size: 10px;
+        color: var(--text-tertiary);
+        font-weight: 600;
     }
 
-    .token {
+    .tokens-list {
+        max-height: 400px;
+        overflow-y: auto;
+    }
+
+    .token-row {
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 10px;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        background: rgba(17, 17, 17, 0.5);
+        width: 100%;
+        padding: 10px 12px;
+        background: transparent;
+        border: none;
+        border-bottom: 1px solid var(--border);
         cursor: pointer;
-        transition: border-color 0.2s ease, background 0.2s ease;
+        transition: background 0.15s ease;
         color: var(--text-primary);
         text-align: left;
         font-family: inherit;
     }
 
-    .token:hover {
-        border-color: var(--border-hover);
-        background: rgba(17, 17, 17, 0.85);
+    .token-row:last-child {
+        border-bottom: none;
     }
 
-    .icon {
-        width: 30px;
-        height: 30px;
-        border-radius: 10px;
+    .token-row:hover {
+        background: rgba(255, 255, 255, 0.03);
+    }
+
+    .token-icon {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
         border: 1px solid var(--border);
-        background: var(--bg-tertiary);
-        flex-shrink: 0;
         object-fit: cover;
+        flex-shrink: 0;
     }
 
-    .fallback {
-        width: 30px;
-        height: 30px;
-        border-radius: 10px;
+    .token-fallback {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
         border: 1px solid var(--border);
         background: var(--bg-tertiary);
         flex-shrink: 0;
         position: relative;
     }
 
-    .fallback.unit::after,
-    .fallback.item::after,
-    .fallback.trait::after {
+    .token-fallback::after {
         content: '';
         position: absolute;
         inset: 5px;
-        border-radius: 8px;
-        opacity: 0.9;
+        border-radius: 6px;
+        opacity: 0.8;
     }
 
-    .fallback.unit::after { background: rgba(255, 107, 157, 0.45); }
-    .fallback.item::after { background: rgba(0, 217, 255, 0.45); }
-    .fallback.trait::after { background: rgba(168, 85, 247, 0.45); }
+    .token-fallback.unit::after { background: rgba(255, 107, 157, 0.5); }
+    .token-fallback.trait::after { background: rgba(168, 85, 247, 0.5); }
+    .token-fallback.item::after { background: rgba(0, 217, 255, 0.5); }
 
-    .token-main {
+    .token-info {
         flex: 1;
         min-width: 0;
     }
 
-    .name {
+    .token-name {
         font-size: 13px;
-        font-weight: 800;
+        font-weight: 700;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
 
-    .sub {
+    .token-stats {
         font-size: 11px;
         color: var(--text-tertiary);
         display: flex;
         align-items: center;
         gap: 6px;
-        margin-top: 3px;
-        flex-wrap: wrap;
+        margin-top: 2px;
     }
 
-    .mono {
-        font-variant-numeric: tabular-nums;
-        font-feature-settings: "tnum" 1;
+    .token-stats .lift {
+        font-weight: 700;
+        color: var(--text-secondary);
     }
 
-    .muted {
-        color: var(--text-tertiary);
+    .token-stats .sep {
+        opacity: 0.4;
     }
 
-    .plus {
-        width: 24px;
-        height: 24px;
-        border-radius: 8px;
+    .token-stats .base {
+        opacity: 0.6;
+    }
+
+    .token-type-badge {
+        width: 20px;
+        height: 20px;
+        border-radius: 6px;
         display: grid;
         place-items: center;
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid var(--border);
-        color: var(--text-secondary);
+        font-size: 10px;
         font-weight: 900;
         flex-shrink: 0;
+    }
+
+    .token-type-badge.unit {
+        background: rgba(255, 107, 157, 0.2);
+        color: #ff6b9d;
+    }
+
+    .token-type-badge.trait {
+        background: rgba(168, 85, 247, 0.2);
+        color: #a855f7;
+    }
+
+    .token-type-badge.item {
+        background: rgba(0, 217, 255, 0.2);
+        color: #00d9ff;
+    }
+
+    .plus-icon {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        display: grid;
+        place-items: center;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--border);
+        color: var(--text-tertiary);
+        font-weight: 900;
+        font-size: 14px;
+        flex-shrink: 0;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+    }
+
+    .token-row:hover .plus-icon {
+        opacity: 1;
     }
 
     @media (max-width: 768px) {
@@ -1470,8 +1497,31 @@
             height: min(720px, 70vh);
         }
 
+        .controls.compact {
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .controls-left {
+            width: 100%;
+            justify-content: flex-start;
+        }
+
+        .run {
+            width: 100%;
+        }
+
+        .explore-hero {
+            padding: 16px 20px;
+            font-size: 15px;
+        }
+
         .details-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .tokens-list {
+            max-height: 50vh;
         }
     }
 </style>

@@ -146,8 +146,8 @@
         // Arrow markers
         createArrowMarkers(g);
 
-        // Filter nodes
-        const filteredNodes = data.nodes.filter(n => types.has(n.type));
+        // Filter nodes - always keep center nodes (active filters) regardless of type filter
+        const filteredNodes = data.nodes.filter(n => n.isCenter || types.has(n.type));
         const filteredNodeIds = new Set(filteredNodes.map(n => n.id));
 
         const nodes = filteredNodes.map(n => {
