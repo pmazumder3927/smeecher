@@ -8,9 +8,11 @@
     `;
 </script>
 
-<div class="tooltip" {style}>
+<div class="tooltip" class:compact={$tooltip.content?.type === 'text'} {style}>
     {#if $tooltip.content}
-        {#if $tooltip.content.type === 'node'}
+        {#if $tooltip.content.type === 'text'}
+            <div class="tooltip-text">{$tooltip.content.text}</div>
+        {:else if $tooltip.content.type === 'node'}
             <div class="tooltip-title">{$tooltip.content.title}</div>
             <div class="tooltip-row">
                 <span class="label">Type</span>
@@ -75,6 +77,17 @@
         max-width: 280px;
         box-shadow: 0 8px 24px var(--shadow);
         backdrop-filter: blur(10px);
+    }
+
+    .tooltip.compact {
+        padding: 8px 12px;
+        max-width: 220px;
+    }
+
+    .tooltip-text {
+        color: var(--text-primary);
+        font-size: 12px;
+        line-height: 1.4;
     }
 
     .tooltip-title {
