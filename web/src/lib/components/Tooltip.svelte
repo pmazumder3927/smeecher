@@ -16,6 +16,18 @@
                 <span class="label">Type</span>
                 <span class="value">{$tooltip.content.nodeType}</span>
             </div>
+            {#if $tooltip.content.avgDelta !== undefined}
+                <div class="tooltip-row">
+                    <span class="label">Avg Placement Δ</span>
+                    <span
+                        class="value impact"
+                        class:positive={$tooltip.content.avgDelta <= 0}
+                        class:negative={$tooltip.content.avgDelta > 0}
+                    >
+                        {$tooltip.content.avgDelta > 0 ? '+' : ''}{$tooltip.content.avgDelta.toFixed(2)}
+                    </span>
+                </div>
+            {/if}
             <div class="tooltip-row">
                 <span class="label">Action</span>
                 <span class="value">{$tooltip.content.isCenter ? 'Center node' : 'Click to add filter'}</span>

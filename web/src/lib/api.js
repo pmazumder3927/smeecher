@@ -17,12 +17,13 @@ export async function searchTokens(query) {
  * @param {string[]} tokens - Filter tokens
  * @param {number} topK - Max edges to return per type
  * @param {Set<string>} activeTypes - Active node types (unit, item, trait)
+ * @param {string} sortMode - Sort mode: impact, helpful, harmful
  */
-export async function fetchGraphData(tokens, topK = 15, activeTypes = null) {
+export async function fetchGraphData(tokens, topK = 15, activeTypes = null, sortMode = 'impact') {
     const tokensParam = tokens.join(',');
     const typesParam = activeTypes ? [...activeTypes].join(',') : 'unit,item,trait';
     const response = await fetch(
-        `${API_BASE}/graph?tokens=${encodeURIComponent(tokensParam)}&top_k=${topK}&types=${typesParam}&t=${Date.now()}`
+        `${API_BASE}/graph?tokens=${encodeURIComponent(tokensParam)}&top_k=${topK}&types=${typesParam}&sort_mode=${sortMode}&t=${Date.now()}`
     );
     return response.json();
 }

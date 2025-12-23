@@ -25,6 +25,9 @@ export const tooltip = writable({
 // Top-K limit
 export const topK = writable(15);
 
+// Sort mode for graph results: impact, helpful, harmful
+export const sortMode = writable('impact');
+
 // Derived stats from graph data
 export const stats = derived(graphData, ($graphData) => {
     if (!$graphData?.base) {

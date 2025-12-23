@@ -171,6 +171,52 @@
             }))
             .filter(l => l.source && l.target);
 
+        // Calculate aggregate delta for each node from connected edges
+        // Accumulate for both source and target nodes
+        const nodeDeltaMap = new Map();
+        links.forEach(link => {
+            if (link.delta !== undefined) {
+                // Add delta to both ends of the edge
+                [link.source.id, link.target.id].forEach(nodeId => {
+                    if (!nodeDeltaMap.has(nodeId)) {
+                        nodeDeltaMap.set(nodeId, { sum: 0, count: 0 });
+                    }
+                    const entry = nodeDeltaMap.get(nodeId);
+                    entry.sum += link.delta;
+                    entry.count += 1;
+                });
+            }
+        });
+
+        // Calculate normalized impact scores (0-1) for visual hierarchy
+        let minDelta = Infinity, maxDelta = -Infinity;
+        nodeDeltaMap.forEach(({ sum, count }) => {
+            const avg = sum / count;
+            if (avg < minDelta) minDelta = avg;
+            if (avg > maxDelta) maxDelta = avg;
+        });
+        const deltaRange = Math.max(0.001, maxDelta - minDelta);
+
+        // Apply delta data to nodes
+        nodes.forEach(n => {
+            const deltaData = nodeDeltaMap.get(n.id);
+            if (deltaData && !n.isCenter) {
+                n.avgDelta = deltaData.sum / deltaData.count;
+                // Normalize: 0 = best (most negative), 1 = worst (most positive)
+                n.deltaNorm = (n.avgDelta - minDelta) / deltaRange;
+                // Impact score: how far from neutral (0 = neutral, 1 = extreme)
+                n.impactScore = Math.abs(n.avgDelta) / Math.max(Math.abs(minDelta), Math.abs(maxDelta), 0.001);
+                n.hasDeltaData = true;
+            } else {
+                // Nodes without delta data (e.g. only connected by equipped edges)
+                // Treat as neutral - mid-range size and position
+                n.avgDelta = undefined;
+                n.deltaNorm = 0.5;
+                n.impactScore = undefined; // undefined = no delta data, treat specially
+                n.hasDeltaData = false;
+            }
+        });
+
         currentNodes = nodes;
 
         const centerNodes = nodes.filter(n => n.isCenter);
@@ -183,7 +229,26 @@
             .force('center', d3.forceCenter(width / 2, height / 2))
             .force('x', d3.forceX(width / 2).strength(0.04))
             .force('y', d3.forceY(height / 2).strength(0.04))
-            .force('collision', d3.forceCollide().radius(d => d.radius + 8))
+            .force('collision', d3.forceCollide().radius(d => {
+                let r = d.radius;
+                if (!d.isCenter && d.hasDeltaData) {
+                    r = d.radius * (0.5 + d.impactScore * 1.0);
+                }
+                return r + 8;
+            }))
+            // Radial force: high impact nodes closer to center, low impact further out
+            // Nodes without delta data (equipped-only) stay at neutral distance
+            .force('radial', d3.forceRadial(
+                d => {
+                    if (d.isCenter) return 0;
+                    if (!d.hasDeltaData) return 150; // Neutral position for equipped-only nodes
+                    // High impact (1.0) -> radius 60, Low impact (0.0) -> radius 400
+                    const t = 1 - d.impactScore;
+                    return 60 + (t * t) * 340;
+                },
+                width / 2,
+                height / 2
+            ).strength(d => d.isCenter ? 0 : (d.hasDeltaData ? 0.5 : 0.3)))
             .alphaDecay(0.02)
             .velocityDecay(0.3);
 
@@ -219,13 +284,17 @@
         const linkGroup = g.append('g');
         const { link, linkOverlay } = createLinks(linkGroup, links, g);
 
-        // Clip paths
+        // Clip paths - account for impact scaling
         const clipDefs = g.append('defs');
         nodes.forEach(n => {
+            let clipRadius = n.radius;
+            if (!n.isCenter && n.hasDeltaData) {
+                clipRadius = n.radius * (0.5 + n.impactScore * 1.0);
+            }
             clipDefs.append('clipPath')
                 .attr('id', `clip-${n.id.replace(/[^a-zA-Z0-9]/g, '_')}`)
                 .append('circle')
-                .attr('r', n.radius - 2);
+                .attr('r', clipRadius - 2);
         });
 
         // Nodes
@@ -364,7 +433,21 @@
             .selectAll('g')
             .data(nodes)
             .join('g')
-            .attr('class', d => `node ${d.type} ${d.isCenter ? 'center' : ''}`)
+            .attr('class', d => {
+                const classes = ['node', d.type];
+                if (d.isCenter) classes.push('center');
+                if (d.hasDeltaData) {
+                    classes.push(d.avgDelta <= 0 ? 'delta-positive' : 'delta-negative');
+                    // Impact tier for visual hierarchy (low, medium, high)
+                    if (d.impactScore > 0.7) classes.push('impact-high');
+                    else if (d.impactScore > 0.3) classes.push('impact-medium');
+                    else classes.push('impact-low');
+                } else {
+                    // Nodes without delta data (equipped-only) - neutral styling
+                    classes.push('no-delta');
+                }
+                return classes.join(' ');
+            })
             .call(createDrag(sim))
             .on('click', (event, d) => handleNodeClick(event, d, data))
             .on('mouseover', (event, d) => showNodeTooltip(event, d))
@@ -375,31 +458,50 @@
                 showNodeTooltip(event, d, true);
             }, { passive: false });
 
-        // Background circle
+        // Helper to get scaled radius - dramatic scaling from 0.5x to 1.5x
+        const getScaledRadius = (d) => {
+            if (d.isCenter || d.impactScore === undefined) return d.radius;
+            // Low impact = 0.5x, high impact = 1.5x (3x range)
+            const scale = 0.5 + (d.impactScore * 1.0);
+            return d.radius * scale;
+        };
+
+        // Background circle - scale based on impact
         node.append('circle')
             .attr('class', 'node-bg')
-            .attr('r', d => d.radius);
+            .attr('r', getScaledRadius);
 
-        // Colored ring
+        // Colored ring with dynamic glow
         node.append('circle')
             .attr('class', 'node-ring')
-            .attr('r', d => d.radius);
+            .attr('r', getScaledRadius)
+            .style('filter', d => {
+                if (d.isCenter || d.impactScore === undefined) return null;
+                // Dynamic glow based on impact and direction - much stronger
+                const glowIntensity = 2 + (d.impactScore * d.impactScore * 20);
+                const glowColor = d.avgDelta <= 0
+                    ? `rgba(0, 217, 165, ${0.2 + d.impactScore * 0.8})`
+                    : `rgba(255, 68, 68, ${0.2 + d.impactScore * 0.8})`;
+                return `drop-shadow(0 0 ${glowIntensity}px ${glowColor})`;
+            });
 
-        // Icons
+        // Icons - scale based on impact
         node.each(function(d) {
+            const iconRadius = getScaledRadius(d);
+
             if (hasIconFailed(d.type, d.label)) {
                 d3.select(this).append('circle')
                     .attr('class', 'node-fallback')
-                    .attr('r', d.radius - 4);
+                    .attr('r', iconRadius - 4);
             } else {
                 const iconUrl = getIconUrl(d.type, d.label);
                 if (iconUrl) {
                     const img = d3.select(this).append('image')
                         .attr('class', 'node-icon')
-                        .attr('x', -(d.radius - 2))
-                        .attr('y', -(d.radius - 2))
-                        .attr('width', (d.radius - 2) * 2)
-                        .attr('height', (d.radius - 2) * 2)
+                        .attr('x', -(iconRadius - 2))
+                        .attr('y', -(iconRadius - 2))
+                        .attr('width', (iconRadius - 2) * 2)
+                        .attr('height', (iconRadius - 2) * 2)
                         .attr('clip-path', `url(#clip-${d.id.replace(/[^a-zA-Z0-9]/g, '_')})`)
                         .attr('href', iconUrl)
                         .attr('preserveAspectRatio', 'xMidYMid slice');
@@ -409,15 +511,15 @@
                         d3.select(this).remove();
                         d3.select(this.parentNode).append('circle')
                             .attr('class', 'node-fallback')
-                            .attr('r', d.radius - 4);
+                            .attr('r', iconRadius - 4);
                     });
                 }
             }
         });
 
-        // Labels
+        // Labels - position based on scaled radius
         node.append('text')
-            .attr('dy', d => d.radius + 16)
+            .attr('dy', d => getScaledRadius(d) + 16)
             .text(d => getDisplayName(d.type, d.label));
 
         return node;
@@ -458,7 +560,9 @@
             type: 'node',
             title: getDisplayName(d.type, d.label),
             nodeType: d.type,
-            isCenter: d.isCenter
+            isCenter: d.isCenter,
+            avgDelta: d.avgDelta,
+            impactScore: d.impactScore
         }, fromTouch);
     }
 
@@ -701,6 +805,40 @@
 
     :global(.node.dimmed) {
         opacity: 0.28;
+    }
+
+    /* Delta-based visual hierarchy */
+    :global(.node.delta-positive .node-ring) {
+        stroke: var(--success) !important;
+    }
+
+    :global(.node.delta-negative .node-ring) {
+        stroke: var(--error) !important;
+    }
+
+    :global(.node.impact-low) {
+        opacity: 0.25;
+    }
+
+    :global(.node.impact-low text) {
+        opacity: 0.4;
+        font-size: 10px;
+    }
+
+    :global(.node.impact-medium) {
+        opacity: 0.6;
+    }
+
+    :global(.node.impact-medium text) {
+        opacity: 0.7;
+    }
+
+    :global(.node.impact-high) {
+        opacity: 1;
+    }
+
+    :global(.node.impact-high .node-ring) {
+        stroke-width: 4px;
     }
 
     :global(.node .node-bg) { fill: var(--bg-tertiary); }

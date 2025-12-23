@@ -278,7 +278,8 @@ def get_graph(
     tokens: str = Query(default="", description="Comma-separated tokens"),
     min_sample: int = Query(default=10, description="Minimum sample size"),
     top_k: int = Query(default=15, description="Max edges to return (0 = unlimited)"),
-    types: str = Query(default="unit,item,trait", description="Comma-separated types to include")
+    types: str = Query(default="unit,item,trait", description="Comma-separated types to include"),
+    sort_mode: str = Query(default="impact", description="Sort mode: impact (abs delta), helpful (most negative delta), harmful (most positive delta)")
 ):
     """
     Get graph data for the given filter tokens.
@@ -346,8 +347,16 @@ def get_graph(
 
     scored = [s for s in scored if matches_type_filter(s)]
 
-    # Sort by absolute delta (most impactful first)
-    scored.sort(key=lambda x: abs(x["delta"]), reverse=True)
+    # Sort based on sort_mode
+    if sort_mode == "helpful":
+        # Most helpful first (most negative delta = improves placement most)
+        scored.sort(key=lambda x: x["delta"])
+    elif sort_mode == "harmful":
+        # Most harmful first (most positive delta = worsens placement most)
+        scored.sort(key=lambda x: x["delta"], reverse=True)
+    else:
+        # Default: impact (abs delta, most impactful first)
+        scored.sort(key=lambda x: abs(x["delta"]), reverse=True)
 
     # Apply top_k limit if specified (now applied to filtered results)
     if top_k > 0:

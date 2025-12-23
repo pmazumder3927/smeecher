@@ -6,23 +6,24 @@
     import Stats from './lib/components/Stats.svelte';
     import Chips from './lib/components/Chips.svelte';
     import TopKInput from './lib/components/TopKInput.svelte';
+    import SortModeSelector from './lib/components/SortModeSelector.svelte';
     import ClusterExplorer from './lib/components/ClusterExplorer.svelte';
     import Graph from './lib/components/Graph.svelte';
     import Legend from './lib/components/Legend.svelte';
     import Tooltip from './lib/components/Tooltip.svelte';
 
     import { loadCDragonData, assetsLoaded } from './lib/stores/assets.js';
-    import { selectedTokens, topK, graphData, activeTypes } from './lib/stores/state.js';
+    import { selectedTokens, topK, graphData, activeTypes, sortMode } from './lib/stores/state.js';
     import { fetchGraphData } from './lib/api.js';
 
     let ready = false;
 
-    // Fetch graph when tokens, topK, or activeTypes change (but only after assets loaded)
-    $: if (ready) fetchGraph($selectedTokens, $topK, $activeTypes);
+    // Fetch graph when tokens, topK, activeTypes, or sortMode change (but only after assets loaded)
+    $: if (ready) fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode);
 
-    async function fetchGraph(tokens, k, types) {
+    async function fetchGraph(tokens, k, types, mode) {
         try {
-            const data = await fetchGraphData(tokens, k, types);
+            const data = await fetchGraphData(tokens, k, types, mode);
             graphData.set(data);
         } catch (error) {
             console.error('Failed to fetch graph:', error);
@@ -32,7 +33,7 @@
     onMount(async () => {
         await loadCDragonData();
         ready = true;
-        await fetchGraph($selectedTokens, $topK, $activeTypes);
+        await fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode);
     });
 </script>
 
@@ -47,7 +48,8 @@
         </div>
         <div class="control-panel-bottom">
             <Chips />
-            <TopKInput on:change={() => fetchGraph($selectedTokens, $topK, $activeTypes)} />
+            <SortModeSelector />
+            <TopKInput on:change={() => fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode)} />
         </div>
     </div>
 
