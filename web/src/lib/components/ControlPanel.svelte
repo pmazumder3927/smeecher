@@ -41,16 +41,20 @@
         display: flex;
         flex-direction: column;
         box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        overflow: hidden;
+        /* Allow search results and other dropdowns to overflow */
     }
 
     .primary-row {
+        position: relative;
+        z-index: 10;
         padding: 16px 20px;
         display: flex;
         gap: 24px;
         align-items: center;
         justify-content: space-between;
         background: var(--bg-secondary);
+        border-top-left-radius: 11px;
+        border-top-right-radius: 11px;
     }
 
     .search-section {
@@ -74,6 +78,8 @@
     }
 
     .secondary-row {
+        position: relative;
+        z-index: 5;
         padding: 12px 20px;
         display: flex;
         gap: 24px;
@@ -82,6 +88,8 @@
         background: var(--bg-tertiary);
         border-top: 1px solid var(--border);
         min-height: 52px;
+        border-bottom-left-radius: 11px;
+        border-bottom-right-radius: 11px;
     }
 
     .chips-container {
@@ -126,6 +134,16 @@
     @media (max-width: 768px) {
         .control-panel {
             border-radius: 8px;
+        }
+
+        .primary-row {
+            border-top-left-radius: 7px;
+            border-top-right-radius: 7px;
+        }
+
+        .secondary-row {
+            border-bottom-left-radius: 7px;
+            border-bottom-right-radius: 7px;
         }
 
         .search-section {
