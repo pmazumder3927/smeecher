@@ -15,7 +15,6 @@ dependencies = [
     "rich>=14.2.0",
     "scikit-learn>=1.8.0",
     "uvicorn>=0.38.0",
-    "websockets>=14.0",
 ]
 
 [project.scripts]

@@ -58,27 +58,6 @@ export async function getStats() {
 }
 
 /**
- * Send audio for transcription and parsing
- * @param {Blob} audioBlob - Audio blob from MediaRecorder
- * @returns {Promise<{tokens: Array, transcript: string, raw_parse: Array}>}
- */
-export async function parseVoiceAudio(audioBlob) {
-    const formData = new FormData();
-    formData.append('audio', audioBlob, 'voice.webm');
-
-    const response = await fetch(`${API_BASE}/voice-parse`, {
-        method: 'POST',
-        body: formData,
-    });
-
-    if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || 'Voice parsing failed');
-    }
-    return response.json();
-}
-
-/**
  * Fetch best items for a unit given current filters
  * @param {string} unit - Unit name (e.g., "MissFortune")
  * @param {string[]} tokens - Additional filter tokens

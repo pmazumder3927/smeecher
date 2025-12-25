@@ -1,130 +1,144 @@
 <script>
     import { onMount, onDestroy } from 'svelte';
-    import { createAudioRecorder, isRecordingSupported } from '../utils/audioRecorder.js';
-    import { parseVoiceAudio } from '../api.js';
+    import { createRealtimeVoice } from '../utils/realtimeVoice.js';
     import { addToken } from '../stores/state.js';
     import { getDisplayName } from '../stores/assets.js';
     import posthog from '../client/posthog';
 
-    // Audio recorder state
-    let recorder = null;
+    // Voice client state
+    let voiceClient = null;
     let isSupported = false;
 
     // Reactive state
-    let isRecording = false;
+    let isConnected = false;
+    let isListening = false;
     let errorMessage = null;
+    let currentTranscript = '';
     let parsedTokens = [];
-    let isParsing = false;
-    let transcript = '';
+    let vocab = null;
 
-    // Recording promise
-    let recordingPromise = null;
+    // Unsubscribe functions
+    let unsubscribers = [];
 
     onMount(async () => {
-        if (typeof window !== 'undefined') {
-            isSupported = isRecordingSupported();
+        if (typeof window !== 'undefined' && window.RTCPeerConnection) {
+            isSupported = true;
 
-            if (isSupported) {
-                recorder = createAudioRecorder();
-
-                // Subscribe to stores
-                recorder.isRecording.subscribe(v => isRecording = v);
-                recorder.error.subscribe(v => errorMessage = v);
+            // Fetch vocabulary for token validation
+            try {
+                const res = await fetch('/voice-vocab');
+                if (res.ok) {
+                    vocab = await res.json();
+                }
+            } catch (e) {
+                console.warn('Failed to fetch voice vocab:', e);
             }
         }
     });
 
     onDestroy(() => {
-        if (recorder) {
-            recorder.destroy();
+        unsubscribers.forEach(fn => fn());
+        if (voiceClient) {
+            voiceClient.disconnect();
         }
     });
 
-    async function startRecording() {
-        if (!recorder || !isSupported) return;
-        errorMessage = null;
-        parsedTokens = [];
-        transcript = '';
-        recordingPromise = recorder.start();
-    }
+    function handleToolCall(args) {
+        const tokens = validateTokens(args);
+        parsedTokens = tokens;
 
-    async function stopRecording() {
-        if (!recorder) return;
-        recorder.stop();
-
-        // Wait for the audio blob
-        const audioBlob = await recordingPromise;
-        recordingPromise = null;
-
-        if (!audioBlob) {
-            return;
-        }
-
-        // Send to server for transcription and parsing
-        isParsing = true;
-        try {
-            const result = await parseVoiceAudio(audioBlob);
-            transcript = result.transcript || '';
-            parsedTokens = result.tokens || [];
-
-            if (parsedTokens.length > 0) {
-                for (const t of parsedTokens) {
-                    addToken(t.token);
-                }
-                posthog.capture('voice_input', {
-                    transcript,
-                    tokens_added: parsedTokens.length,
-                    tokens: parsedTokens.map(t => t.token)
-                });
+        if (tokens.length > 0) {
+            for (const t of tokens) {
+                addToken(t.token);
             }
-        } catch (e) {
-            console.error('Voice parsing failed:', e);
-            errorMessage = e.message || 'Voice parsing failed';
-        } finally {
-            isParsing = false;
+            posthog.capture('voice_input', {
+                transcript: currentTranscript,
+                tokens_added: tokens.length,
+                tokens: tokens.map(t => t.token)
+            });
         }
 
-        // Reset state after a brief display
+        // Disconnect after processing
         setTimeout(() => {
+            if (voiceClient) {
+                voiceClient.disconnect();
+            }
+            // Clear after brief display
+            setTimeout(() => {
+                parsedTokens = [];
+                currentTranscript = '';
+            }, 1500);
+        }, 100);
+    }
+
+    function validateTokens(args) {
+        if (!vocab) return [];
+
+        const tokens = [];
+        const seen = new Set();
+
+        // Helper for fuzzy lookup
+        function fuzzyLookup(name, lookup) {
+            const key = name.toLowerCase().replace(/\s+/g, '');
+            if (lookup[key]) return lookup[key];
+            if (key.endsWith('s') && lookup[key.slice(0, -1)]) return lookup[key.slice(0, -1)];
+            return null;
+        }
+
+        // Units
+        for (const unit of args.units || []) {
+            const token = fuzzyLookup(unit, vocab.unit_lookup);
+            if (token && !seen.has(token)) {
+                seen.add(token);
+                tokens.push({ token, label: unit, type: 'unit' });
+            }
+        }
+
+        // Items
+        for (const item of args.items || []) {
+            const token = fuzzyLookup(item, vocab.item_lookup);
+            if (token && !seen.has(token)) {
+                seen.add(token);
+                tokens.push({ token, label: item, type: 'item' });
+            }
+        }
+
+        // Traits
+        for (const trait of args.traits || []) {
+            const name = typeof trait === 'string' ? trait : trait.name;
+            const tier = typeof trait === 'object' ? trait.tier : null;
+            const baseToken = fuzzyLookup(name, vocab.trait_lookup);
+            if (baseToken && !seen.has(baseToken)) {
+                seen.add(baseToken);
+                const token = tier && tier >= 2 ? `${baseToken}:${tier}` : baseToken;
+                tokens.push({ token, label: tier ? `${name} ${tier}` : name, type: 'trait' });
+            }
+        }
+
+        return tokens;
+    }
+
+    async function toggleVoice() {
+        if (isListening) {
+            // Stop listening
+            if (voiceClient) {
+                voiceClient.disconnect();
+            }
+        } else {
+            // Start listening
             parsedTokens = [];
-            transcript = '';
-        }, 1500);
-    }
+            currentTranscript = '';
+            errorMessage = null;
 
-    // Push-to-talk handlers
-    function handleMouseDown() {
-        startRecording();
-    }
+            voiceClient = createRealtimeVoice(handleToolCall);
 
-    function handleMouseUp() {
-        if (isRecording) {
-            stopRecording();
-        }
-    }
+            // Subscribe to stores
+            unsubscribers.push(voiceClient.isConnected.subscribe(v => isConnected = v));
+            unsubscribers.push(voiceClient.isListening.subscribe(v => isListening = v));
+            unsubscribers.push(voiceClient.error.subscribe(v => errorMessage = v));
+            unsubscribers.push(voiceClient.transcript.subscribe(v => currentTranscript = v));
 
-    function handleMouseLeave() {
-        if (isRecording) {
-            stopRecording();
-        }
-    }
-
-    // Keyboard handler for spacebar (global)
-    function handleKeyDown(event) {
-        // Only trigger if not typing in an input
-        if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
-            return;
-        }
-
-        if (event.code === 'Space' && !event.repeat && !isRecording) {
-            event.preventDefault();
-            startRecording();
-        }
-    }
-
-    function handleKeyUp(event) {
-        if (event.code === 'Space' && isRecording) {
-            event.preventDefault();
-            stopRecording();
+            await voiceClient.connect();
         }
     }
 
@@ -135,19 +149,14 @@
     }
 </script>
 
-<svelte:window on:keydown={handleKeyDown} on:keyup={handleKeyUp} />
-
 {#if isSupported}
     <div class="voice-input">
         <button
             class="voice-btn"
-            class:recording={isRecording}
-            on:mousedown={handleMouseDown}
-            on:mouseup={handleMouseUp}
-            on:mouseleave={handleMouseLeave}
-            on:touchstart|preventDefault={handleMouseDown}
-            on:touchend|preventDefault={handleMouseUp}
-            title="Hold to speak (or press Spacebar)"
+            class:listening={isListening}
+            class:connected={isConnected}
+            on:click={toggleVoice}
+            title={isListening ? "Click to stop" : "Click to speak"}
             aria-label="Voice input"
         >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -156,32 +165,30 @@
                 <line x1="12" y1="19" x2="12" y2="23"/>
                 <line x1="8" y1="23" x2="16" y2="23"/>
             </svg>
-            {#if isRecording}
+            {#if isListening}
                 <span class="pulse"></span>
             {/if}
         </button>
 
-        {#if isRecording || isParsing || parsedTokens.length > 0}
+        {#if isListening || parsedTokens.length > 0}
             <div class="voice-overlay">
                 <div class="overlay-header">
-                    {#if isRecording}
-                        <span class="recording-indicator">Recording...</span>
-                    {:else if isParsing}
-                        <span class="parsing-indicator">Transcribing...</span>
+                    {#if isListening && !isConnected}
+                        <span class="connecting-indicator">Connecting...</span>
+                    {:else if isListening}
+                        <span class="listening-indicator">Listening...</span>
                     {:else}
                         <span class="done-indicator">Added!</span>
                     {/if}
                 </div>
 
-                {#if transcript}
+                {#if currentTranscript}
                     <div class="transcript">
-                        "{transcript}"
+                        "{currentTranscript}"
                     </div>
                 {/if}
 
-                {#if isParsing}
-                    <div class="parsing-spinner"></div>
-                {:else if parsedTokens.length > 0}
+                {#if parsedTokens.length > 0}
                     <div class="parsed-tokens">
                         {#each parsedTokens as token}
                             <span class="preview-chip {getTypeClass(token.type)}">
@@ -189,7 +196,7 @@
                             </span>
                         {/each}
                     </div>
-                {:else if transcript && !isRecording}
+                {:else if currentTranscript && !isListening}
                     <div class="no-matches">No matches found</div>
                 {/if}
             </div>
@@ -230,10 +237,14 @@
         background: rgba(0, 112, 243, 0.1);
     }
 
-    .voice-btn.recording {
-        border-color: #ef4444;
-        background: rgba(239, 68, 68, 0.15);
-        color: #ef4444;
+    .voice-btn.listening {
+        border-color: #22c55e;
+        background: rgba(34, 197, 94, 0.15);
+        color: #22c55e;
+    }
+
+    .voice-btn.connected {
+        border-color: #22c55e;
     }
 
     .voice-btn svg {
@@ -245,7 +256,7 @@
         position: absolute;
         inset: -4px;
         border-radius: 12px;
-        border: 2px solid #ef4444;
+        border: 2px solid #22c55e;
         animation: pulse 1.5s ease-out infinite;
     }
 
@@ -290,8 +301,16 @@
         margin-bottom: 12px;
     }
 
-    .recording-indicator {
-        color: #ef4444;
+    .connecting-indicator {
+        color: var(--text-secondary);
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+    }
+
+    .listening-indicator {
+        color: #22c55e;
         font-size: 12px;
         font-weight: 600;
         text-transform: uppercase;
@@ -301,11 +320,11 @@
         gap: 8px;
     }
 
-    .recording-indicator::before {
+    .listening-indicator::before {
         content: '';
         width: 8px;
         height: 8px;
-        background: #ef4444;
+        background: #22c55e;
         border-radius: 50%;
         animation: blink 1s infinite;
     }
@@ -315,34 +334,12 @@
         51%, 100% { opacity: 0.3; }
     }
 
-    .parsing-indicator {
-        color: var(--text-secondary);
-        font-size: 12px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-    }
-
     .done-indicator {
         color: #22c55e;
         font-size: 12px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.1em;
-    }
-
-    .parsing-spinner {
-        width: 24px;
-        height: 24px;
-        border: 2px solid var(--border);
-        border-top-color: var(--accent);
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-        margin: 8px auto;
-    }
-
-    @keyframes spin {
-        to { transform: rotate(360deg); }
     }
 
     .transcript {

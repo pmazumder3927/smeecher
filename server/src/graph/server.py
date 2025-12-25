@@ -12,14 +12,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()  # Load .env file
 
-from fastapi import FastAPI, Query, UploadFile, File, Header, HTTPException
+from fastapi import FastAPI, Query, UploadFile, File, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import uvicorn
-import websockets
-import base64
-import asyncio
+import httpx
 
 from .engine import GraphEngine, build_engine
 from .clustering import ClusterParams, compute_clusters
@@ -788,29 +786,21 @@ def _validate_voice_tokens(tool_args: dict, vocab: dict) -> list:
     return tokens
 
 
-@app.post("/voice-parse")
-async def parse_voice_input(audio: UploadFile = File(...)):
-    """
-    Parse voice audio into TFT tokens using OpenAI Realtime API.
+def _get_realtime_session_config():
+    """Build the session config for OpenAI Realtime API (unified interface)."""
+    # Simple config per docs - tools configured via data channel
+    return {
+        "type": "realtime",
+        "model": "gpt-realtime",
+    }
 
-    Uses gpt-realtime with tool calling to transcribe and parse in one step.
-    """
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=503, detail="Voice features unavailable (no OpenAI API key)")
 
-    if ENGINE is None:
-        raise HTTPException(status_code=503, detail="Engine not loaded")
-
+def _get_session_update_event():
+    """Build session.update event to configure tools after connection."""
     vocab = _get_voice_vocab()
     if not vocab:
-        raise HTTPException(status_code=503, detail="Vocabulary not loaded")
+        return None
 
-    # Read audio data
-    audio_data = await audio.read()
-    if len(audio_data) < 100:
-        raise HTTPException(status_code=400, detail="Audio file too small")
-
-    # Build system instructions - vocab is in tool enums
     instructions = """You are a TFT (Teamfight Tactics) voice command parser. Extract ALL game entities the user mentions.
 
 ITEM ABBREVIATIONS (expand before calling tool):
@@ -822,7 +812,6 @@ RULES:
 3. Match phonetically similar words to the closest enum value
 4. Always call add_search_filters with everything detected"""
 
-    # Define the tool with enums to constrain model output
     tool_definition = {
         "type": "function",
         "name": "add_search_filters",
@@ -856,98 +845,98 @@ RULES:
         }
     }
 
-    try:
-        # Connect to OpenAI Realtime API
-        url = "wss://api.openai.com/v1/realtime?model=gpt-realtime"
-        headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "OpenAI-Beta": "realtime=v1",
+    return {
+        "type": "session.update",
+        "session": {
+            "type": "realtime",
+            "instructions": instructions,
+            "tools": [tool_definition],
+            "tool_choice": "required",
         }
+    }
 
-        transcript = ""
-        tool_args = None
 
-        async with websockets.connect(url, additional_headers=headers) as ws:
-            # Send session configuration with tool
-            session_update = {
-                "type": "session.update",
-                "session": {
-                    "modalities": ["text", "audio"],
-                    "instructions": instructions,
-                    "input_audio_format": "pcm16",
-                    "input_audio_transcription": {"model": "whisper-1"},
-                    "tools": [tool_definition],
-                    "tool_choice": "required",
-                    "temperature": 0.6,
-                }
-            }
-            await ws.send(json.dumps(session_update))
+@app.post("/realtime-session")
+async def create_realtime_session(request: Request):
+    """
+    Create a WebRTC session for OpenAI Realtime API.
 
-            # Wait for session.updated confirmation
-            while True:
-                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
-                if msg.get("type") == "session.updated":
-                    break
-                if msg.get("type") == "error":
-                    raise HTTPException(status_code=502, detail=f"OpenAI error: {msg}")
+    Receives SDP offer from browser, forwards to OpenAI with session config,
+    returns SDP answer for direct browser <-> OpenAI connection.
+    """
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="Voice features unavailable (no OpenAI API key)")
 
-            # Send audio data as base64 PCM chunks
-            # Note: Browser sends WebM, we need to convert or use a compatible format
-            # For now, send as-is and let OpenAI handle it
-            audio_b64 = base64.b64encode(audio_data).decode()
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
 
-            # Append audio buffer
-            await ws.send(json.dumps({
-                "type": "input_audio_buffer.append",
-                "audio": audio_b64
-            }))
+    session_config = _get_realtime_session_config()
+    if not session_config:
+        raise HTTPException(status_code=503, detail="Vocabulary not loaded")
 
-            # Commit the audio buffer
-            await ws.send(json.dumps({
-                "type": "input_audio_buffer.commit"
-            }))
+    # Get SDP offer from browser
+    sdp_offer = (await request.body()).decode('utf-8')
 
-            # Request a response
-            await ws.send(json.dumps({
-                "type": "response.create"
-            }))
+    try:
+        async with httpx.AsyncClient() as client:
+            # Build multipart form data - use files with None filename for text fields
+            response = await client.post(
+                "https://api.openai.com/v1/realtime/calls",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                files={
+                    'sdp': (None, sdp_offer),
+                    'session': (None, json.dumps(session_config)),
+                },
+                timeout=10.0,
+            )
 
-            # Wait for function call or completion
-            while True:
-                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=15.0))
-                msg_type = msg.get("type", "")
+            if not response.is_success:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"OpenAI error: {response.text}"
+                )
 
-                # Capture transcript if available
-                if msg_type == "conversation.item.input_audio_transcription.completed":
-                    transcript = msg.get("transcript", "")
+            # Return SDP answer to browser
+            return Response(
+                content=response.content,
+                media_type="application/sdp"
+            )
 
-                # Check for function call
-                if msg_type == "response.function_call_arguments.done":
-                    args_str = msg.get("arguments", "{}")
-                    tool_args = json.loads(args_str)
-                    break
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to connect to OpenAI: {str(e)}")
 
-                # Check for response completion without function call
-                if msg_type == "response.done":
-                    break
 
-                # Handle errors
-                if msg_type == "error":
-                    raise HTTPException(status_code=502, detail=f"OpenAI error: {msg.get('error', {})}")
+@app.get("/voice-vocab")
+async def get_voice_vocab():
+    """Return vocabulary for client-side token validation."""
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
 
-        # Validate tokens from tool call
-        if tool_args:
-            tokens = _validate_voice_tokens(tool_args, vocab)
-            return {"tokens": tokens, "transcript": transcript, "raw_parse": tool_args}
-        else:
-            return {"tokens": [], "transcript": transcript, "error": "No entities detected"}
+    vocab = _get_voice_vocab()
+    if not vocab:
+        raise HTTPException(status_code=503, detail="Vocabulary not loaded")
 
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Voice processing timed out")
-    except websockets.exceptions.WebSocketException as e:
-        raise HTTPException(status_code=502, detail=f"WebSocket error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "units": vocab['units'],
+        "items": vocab['items'],
+        "traits": vocab['traits'],
+        "unit_lookup": vocab['unit_lookup'],
+        "item_lookup": vocab['item_lookup'],
+        "trait_lookup": vocab['trait_lookup'],
+    }
+
+
+@app.get("/voice-session-config")
+async def get_voice_session_config():
+    """Return session.update event for configuring voice session via data channel."""
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    config = _get_session_update_event()
+    if not config:
+        raise HTTPException(status_code=503, detail="Vocabulary not loaded")
+
+    return config
 
 
 @app.get("/stats")
