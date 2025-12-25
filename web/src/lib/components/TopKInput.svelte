@@ -17,7 +17,7 @@
     }
 </script>
 
-<div class="topk-control" on:mouseenter={handleMouseEnter} on:mouseleave={hideTooltip} role="group" aria-label="Top K Control">
+<div class="topk-control" data-walkthrough="limit" on:mouseenter={handleMouseEnter} on:mouseleave={hideTooltip} role="group" aria-label="Top K Control">
     <span class="label">Limit</span>
     <input
         type="number"

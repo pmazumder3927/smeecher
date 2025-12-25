@@ -150,7 +150,7 @@
     }
 </script>
 
-<div class="item-explorer" class:open style={`width: ${sidebarWidth}px;`}>
+<div class="item-explorer" data-walkthrough="itemExplorer" class:open style={`width: ${sidebarWidth}px;`}>
     <button class="toggle" on:click={toggleOpen} aria-label="Toggle item explorer" aria-expanded={open}>
         <span class="toggle-title">Items</span>
         {#if open}

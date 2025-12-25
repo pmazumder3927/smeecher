@@ -1,11 +1,20 @@
 <script>
-    // Header component with logo
+    import { createEventDispatcher } from 'svelte';
+
+    const dispatch = createEventDispatcher();
+
+    function openWalkthrough() {
+        dispatch('openWalkthrough');
+    }
 </script>
 
 <header>
     <div class="logo">
         <div class="logo-text">smeecher</div>
     </div>
+    <button class="help" on:click={openWalkthrough} aria-label="Open walkthrough">
+        Walkthrough
+    </button>
     <a href="https://www.pramit.gg" target="_blank" rel="noopener" class="by-line">
         by JoyFired
     </a>
@@ -56,6 +65,31 @@
         color: var(--text-secondary);
     }
 
+    .help {
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        padding: 6px 10px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text-secondary);
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+        font-family: inherit;
+    }
+
+    .help:hover {
+        background: var(--bg-secondary);
+        border-color: var(--border-hover);
+        color: var(--text-primary);
+    }
+
     @media (max-width: 768px) {
         header {
             justify-content: center;
@@ -70,6 +104,12 @@
         .by-line {
             left: calc(50% + 70px);
             font-size: 11px;
+        }
+
+        .help {
+            padding: 6px 8px;
+            font-size: 10px;
+            border-radius: 7px;
         }
     }
 </style>

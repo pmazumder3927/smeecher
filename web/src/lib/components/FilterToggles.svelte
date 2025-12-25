@@ -14,7 +14,7 @@
     }
 </script>
 
-<div class="filter-toggles">
+<div class="filter-toggles" data-walkthrough="typeToggles">
     <button
         class="filter-toggle unit"
         class:active={unitActive}

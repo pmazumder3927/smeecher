@@ -16,7 +16,7 @@
     }
 </script>
 
-<div class="sort-control">
+<div class="sort-control" data-walkthrough="sortMode">
     <div class="button-group">
         {#each options as opt}
             <button

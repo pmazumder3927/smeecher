@@ -736,7 +736,7 @@
 </script>
 
 <div class="graph-section">
-    <div class="graph-container">
+    <div class="graph-container" data-walkthrough="graph">
         <svg bind:this={container} id="graph"></svg>
     </div>
 </div>

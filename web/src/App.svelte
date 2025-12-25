@@ -7,12 +7,15 @@
     import Graph from './lib/components/Graph.svelte';
     import Legend from './lib/components/Legend.svelte';
     import Tooltip from './lib/components/Tooltip.svelte';
+    import Walkthrough from './lib/components/Walkthrough.svelte';
 
-    import { loadCDragonData, assetsLoaded } from './lib/stores/assets.js';
+    import { loadCDragonData } from './lib/stores/assets.js';
     import { selectedTokens, topK, graphData, activeTypes, sortMode } from './lib/stores/state.js';
     import { fetchGraphData } from './lib/api.js';
 
     let ready = false;
+    let walkthroughOpen = false;
+    const WALKTHROUGH_KEY = 'smeecher_walkthrough_seen';
 
     // Fetch graph when tokens, topK, activeTypes, or sortMode change (but only after assets loaded)
     $: if (ready) fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode);
@@ -30,11 +33,28 @@
         await loadCDragonData();
         ready = true;
         await fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode);
+
+        try {
+            const seen = localStorage.getItem(WALKTHROUGH_KEY) === '1';
+            if (!seen) walkthroughOpen = true;
+        } catch {
+            // ignore
+        }
     });
+
+    function handleWalkthroughClose(event) {
+        walkthroughOpen = false;
+        if (!event?.detail?.markSeen) return;
+        try {
+            localStorage.setItem(WALKTHROUGH_KEY, '1');
+        } catch {
+            // ignore
+        }
+    }
 </script>
 
 <div class="container">
-    <Header />
+    <Header on:openWalkthrough={() => walkthroughOpen = true} />
 
     <ControlPanel />
 
@@ -47,6 +67,7 @@
 </div>
 
 <Tooltip />
+<Walkthrough open={walkthroughOpen} on:close={handleWalkthroughClose} />
 
 <style>
     .container {

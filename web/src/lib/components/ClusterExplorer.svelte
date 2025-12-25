@@ -315,6 +315,7 @@
 
 <div
     class="cluster-explorer"
+    data-walkthrough="clusterExplorer"
     class:open
     class:resizing
     bind:this={rootEl}

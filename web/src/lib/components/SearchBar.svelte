@@ -120,7 +120,7 @@
 <svelte:document on:click={handleClickOutside} />
 
 <div class="search-wrapper">
-    <div class="search-container">
+    <div class="search-container" data-walkthrough="search">
         <input
             type="text"
             bind:value={query}

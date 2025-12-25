@@ -20,7 +20,7 @@
     }
 </script>
 
-<div class="chips-section">
+<div class="chips-section" data-walkthrough="filters">
     <div class="section-title">Active Filters</div>
     <div class="chips">
         {#if $selectedTokens.length === 0}
