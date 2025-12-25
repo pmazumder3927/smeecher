@@ -1,5 +1,6 @@
 <script>
     import { onMount } from 'svelte';
+    import { fly } from 'svelte/transition';
     import { fetchSearchIndex, searchTokens } from '../api.js';
     import { addToken, addTokens } from '../stores/state.js';
     import { getDisplayName } from '../stores/assets.js';
@@ -9,8 +10,11 @@
     let query = '';
     let results = [];
     let showResults = false;
+    let hasFocus = false;
     let selectedIndex = -1;
     let analyticsTimeout;
+    let currentSegment = '';
+    let recognizedPreview = [];
 
     let searchIndex = [];
     let searchReady = false;
@@ -27,6 +31,41 @@
     function getActiveSegment(text) {
         const parts = text.split(/[\s,;]+/);
         return parts[parts.length - 1] || '';
+    }
+
+    function getTokenTypeFromToken(token) {
+        if (token.startsWith('U:')) return 'unit';
+        if (token.startsWith('I:')) return 'item';
+        if (token.startsWith('T:')) return 'trait';
+        if (token.startsWith('E:')) return 'equipped';
+        return 'unknown';
+    }
+
+    function getCompletedPrefixText(text) {
+        if (!text) return '';
+        const endsWithDelimiter = /[\s,;]$/.test(text);
+        if (endsWithDelimiter) return text;
+        const parts = text.split(/[\s,;]+/).filter(Boolean);
+        parts.pop(); // remove active segment
+        return parts.join(' ');
+    }
+
+    function buildRecognizedPreview(text) {
+        if (!searchReady) return [];
+        const prefixText = getCompletedPrefixText(text);
+        if (!prefixText.trim()) return [];
+
+        const { tokens } = parseTokensFromText(prefixText);
+        return tokens
+            .map((token) => {
+                const entry = tokenLookup.get(token);
+                return {
+                    token,
+                    type: entry?.type ?? getTokenTypeFromToken(token),
+                    label: entry?.label ?? token.slice(2),
+                };
+            })
+            .filter((t) => t.type !== 'unknown');
     }
 
     function scoreMatch(entry, qNorm) {
@@ -135,6 +174,8 @@
 
     function clearInput() {
         query = '';
+        currentSegment = '';
+        recognizedPreview = [];
         clearResults();
     }
 
@@ -153,29 +194,27 @@
         selectedIndex = -1;
 
         const segment = getActiveSegment(query);
-        if (!segment || segment.length < 1) {
-            clearResults();
-            return;
-        }
+        currentSegment = segment;
+        recognizedPreview = buildRecognizedPreview(query);
 
         try {
             if (searchReady) {
-                results = searchLocal(segment);
-                showResults = results.length > 0;
+                results = segment ? searchLocal(segment) : [];
+                showResults = hasFocus && (query.length > 0 || recognizedPreview.length > 0);
                 if (showResults) selectedIndex = 0;
                 trackSearchOnce(results.length);
                 return;
             }
 
             // Fallback: backend search (only used if the index fails to load)
-            if (segment.length < 2) {
+            if (!segment || segment.length < 2) {
                 clearResults();
                 return;
             }
 
             const backendResults = await searchTokens(segment);
             results = backendResults;
-            showResults = results.length > 0;
+            showResults = hasFocus && (results.length > 0 || query.length > 0);
             if (showResults) selectedIndex = 0;
             trackSearchOnce(results.length);
         } catch (error) {
@@ -230,6 +269,7 @@
             addMany(toAdd, 'search');
             query = nextQuery;
             clearResults();
+            handleInput();
             return;
         }
 
@@ -272,14 +312,14 @@
     }
 
     function handleFocus() {
-        if (results.length > 0) {
-            showResults = true;
-        }
+        hasFocus = true;
+        showResults = query.length > 0 || recognizedPreview.length > 0 || results.length > 0;
     }
 
     function handleClickOutside(event) {
         if (!event.target.closest('.search-container')) {
             showResults = false;
+            hasFocus = false;
         }
     }
 
@@ -323,33 +363,60 @@
             on:input={handleInput}
             on:focus={handleFocus}
             on:keydown={handleKeydown}
-            placeholder="Search units, items, traits… (Enter adds all)"
+            placeholder="Search… (multi: “diana aatrox”, Enter adds all)"
             autocomplete="off"
         />
 
     {#if showResults}
         <div class="search-results">
-            {#each results as result, i}
-                <button
-                    id="result-{i}"
-                    class="search-result"
-                    class:selected={i === selectedIndex}
-                    on:click={() => handleSelect(result.token)}
-                    on:mouseenter={() => selectedIndex = i}
-                >
-                    <span class="label">{getDisplayName(result.type, result.label)}</span>
-                    <span class="meta">
-                        <span class="type-badge {getTypeClass(result.type)}">{result.type}</span>
-                        {#if result.count > 0}
-                            <span>{result.count.toLocaleString()} games</span>
-                        {/if}
-                    </span>
-                </button>
+            {#if searchReady}
+                <div class="search-meta">
+                    {#if recognizedPreview.length > 0}
+                        <span class="meta-label">Recognized</span>
+                        <div class="recognized-chips">
+                            {#each recognizedPreview as t (t.token)}
+                                <span class="pending-chip {getTypeClass(t.type)}" transition:fly={{ y: -4, duration: 140 }}>
+                                    {getDisplayName(t.type, t.label)}
+                                </span>
+                            {/each}
+                        </div>
+                        <span class="meta-action"><kbd>Enter</kbd> adds all</span>
+                    {:else}
+                        <span class="meta-label">Multi-add</span>
+                        <span class="meta-text">Type “diana aatrox …” then press <kbd>Enter</kbd></span>
+                    {/if}
+                </div>
+            {/if}
+
+            {#if results.length > 0}
+                {#each results as result, i}
+                    <button
+                        id="result-{i}"
+                        class="search-result"
+                        class:selected={i === selectedIndex}
+                        on:click={() => handleSelect(result.token)}
+                        on:mouseenter={() => selectedIndex = i}
+                    >
+                        <span class="label">{getDisplayName(result.type, result.label)}</span>
+                        <span class="meta">
+                            <span class="type-badge {getTypeClass(result.type)}">{result.type}</span>
+                            {#if result.count > 0}
+                                <span>{result.count.toLocaleString()} games</span>
+                            {/if}
+                        </span>
+                    </button>
+                {/each}
             {:else}
                 <div class="search-result no-results">
-                    <span class="label">No results found</span>
+                    <span class="label">
+                        {#if recognizedPreview.length > 0 && !currentSegment}
+                            Type another name, or press Enter to add
+                        {:else}
+                            No results found
+                        {/if}
+                    </span>
                 </div>
-            {/each}
+            {/if}
         </div>
     {/if}
     </div>
@@ -406,6 +473,101 @@
         overflow-y: auto;
         z-index: 100;
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    }
+
+    .search-meta {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        background: rgba(17, 17, 17, 0.92);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid var(--border);
+        flex-wrap: wrap;
+    }
+
+    .meta-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+    }
+
+    .meta-text {
+        font-size: 12px;
+        color: var(--text-secondary);
+        opacity: 0.9;
+    }
+
+    .meta-action {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--text-secondary);
+        opacity: 0.9;
+        white-space: nowrap;
+    }
+
+    kbd {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1px 6px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.25);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        line-height: 1.4;
+    }
+
+    .recognized-chips {
+        display: flex;
+        flex: 1;
+        min-width: 0;
+        gap: 6px;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
+    .pending-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-primary);
+        white-space: nowrap;
+    }
+
+    .pending-chip::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--text-tertiary);
+        opacity: 0.95;
+        flex-shrink: 0;
+    }
+
+    .pending-chip.unit::before {
+        background: var(--unit);
+    }
+
+    .pending-chip.item::before {
+        background: var(--item);
+    }
+
+    .pending-chip.trait::before {
+        background: var(--trait);
     }
 
     .search-result {
