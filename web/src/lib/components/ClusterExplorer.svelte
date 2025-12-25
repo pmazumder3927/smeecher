@@ -7,6 +7,8 @@
         addToken,
         addTokens,
         setTokens,
+        clearTokens,
+        recordUiAction,
         setHighlightedTokens,
         clearHighlightedTokens
     } from '../stores/state.js';
@@ -140,6 +142,7 @@
     }
 
     async function run() {
+        recordUiAction('clusters_run', 'cluster', { tokens: $selectedTokens });
         loading = true;
         error = null;
         stale = false;
@@ -195,13 +198,13 @@
     function exploreReplace() {
         if (!selectedCluster?.signature_tokens?.length) return;
         posthog.capture('cluster_explored', { cluster_id: selectedCluster.cluster_id, action: 'replace' });
-        setTokens(selectedCluster.signature_tokens);
+        setTokens(selectedCluster.signature_tokens, 'cluster');
     }
 
     function exploreAdd() {
         if (!selectedCluster?.signature_tokens?.length) return;
         posthog.capture('cluster_explored', { cluster_id: selectedCluster.cluster_id, action: 'add' });
-        addTokens(selectedCluster.signature_tokens);
+        addTokens(selectedCluster.signature_tokens, 'cluster');
     }
 
     function addOne(token) {
@@ -398,7 +401,12 @@
 
             {#if !loading && data && sortedClusters.length === 0 && !warning}
                 <div class="callout">
-                    No clusters met the minimum size. Try lowering <span class="mono">min</span> or increasing the sample.
+                    No clusters met the minimum size. Try clearing filters, lowering <span class="mono">min</span>, or increasing the sample.
+                    {#if $selectedTokens.length > 0}
+                        <div class="callout-actions">
+                            <button class="callout-btn" on:click={clearTokens}>Clear filters</button>
+                        </div>
+                    {/if}
                 </div>
             {/if}
 
@@ -851,6 +859,30 @@
         font-size: 12px;
         color: var(--text-secondary);
         border-bottom: 1px solid var(--border);
+    }
+
+    .callout-actions {
+        margin-top: 8px;
+        display: flex;
+        gap: 8px;
+    }
+
+    .callout-btn {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        color: var(--text-primary);
+        border-radius: 8px;
+        padding: 6px 8px;
+        font-size: 11px;
+        font-weight: 700;
+        cursor: pointer;
+        font-family: inherit;
+        transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .callout-btn:hover {
+        border-color: var(--border-hover);
+        background: rgba(255, 255, 255, 0.03);
     }
 
     .callout.warning {

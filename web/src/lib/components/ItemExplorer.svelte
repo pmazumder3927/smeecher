@@ -99,7 +99,7 @@
     function applyBuild(build) {
         if (!build?.items?.length) return;
         const tokens = build.items.map(b => b.token);
-        addTokens(tokens);
+        addTokens(tokens, 'item_explorer_build');
         posthog.capture('build_applied', {
             unit: selectedUnit,
             items: build.items.map(b => b.item),

@@ -49,7 +49,7 @@
 
     if (tokens.length > 0) {
       for (const t of tokens) {
-        addToken(t.token);
+        addToken(t.token, "voice");
       }
       posthog.capture("voice_input", {
         transcript: currentTranscript,

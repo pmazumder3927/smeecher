@@ -4,6 +4,15 @@ import posthog from '../client/posthog';
 // Selected filter tokens
 export const selectedTokens = writable([]);
 
+// Last user action (for onboarding/UI flows)
+export const lastAction = writable({
+    type: null,
+    source: null,
+    token: null,
+    tokens: null,
+    timestamp: 0
+});
+
 // Graph data from API
 export const graphData = writable(null);
 
@@ -39,42 +48,71 @@ export const stats = derived(graphData, ($graphData) => {
     };
 });
 
+function recordAction(action) {
+    lastAction.set({
+        type: action?.type ?? null,
+        source: action?.source ?? null,
+        token: action?.token ?? null,
+        tokens: action?.tokens ?? null,
+        timestamp: Date.now()
+    });
+}
+
+// For UI events that don't directly change tokens (e.g. "clusters_run")
+export function recordUiAction(type, source = 'ui', payload = {}) {
+    recordAction({
+        type,
+        source,
+        token: payload?.token ?? null,
+        tokens: payload?.tokens ?? null
+    });
+}
+
 // Helper functions
 export function addToken(token, source = 'unknown') {
     selectedTokens.update(tokens => {
         if (!tokens.includes(token)) {
             posthog.capture('token_added', { token, source });
+            recordAction({ type: 'token_added', source, token });
             return [...tokens, token];
         }
         return tokens;
     });
 }
 
-export function addTokens(tokensToAdd) {
+export function addTokens(tokensToAdd, source = 'unknown') {
     selectedTokens.update(tokens => {
         const existing = new Set(tokens);
         const next = [...tokens];
+        const added = [];
         for (const t of tokensToAdd) {
             if (!existing.has(t)) {
                 existing.add(t);
                 next.push(t);
+                added.push(t);
             }
+        }
+        if (Array.isArray(tokensToAdd) && tokensToAdd.length > 0) {
+            recordAction({ type: 'tokens_added', source, tokens: added });
         }
         return next;
     });
 }
 
-export function setTokens(tokens) {
+export function setTokens(tokens, source = 'unknown') {
+    recordAction({ type: 'tokens_set', source, tokens });
     selectedTokens.set(tokens);
 }
 
 export function clearTokens() {
     posthog.capture('tokens_cleared');
+    recordAction({ type: 'tokens_cleared', source: 'ui' });
     selectedTokens.set([]);
 }
 
 export function removeToken(token) {
     posthog.capture('token_removed', { token });
+    recordAction({ type: 'token_removed', source: 'ui', token });
     selectedTokens.update(tokens => tokens.filter(t => t !== token));
 }
 

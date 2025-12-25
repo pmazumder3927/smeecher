@@ -21,6 +21,8 @@ export default defineConfig({
       '/realtime-session': 'http://localhost:8000',
       '/voice-vocab': 'http://localhost:8000',
       '/voice-session-config': 'http://localhost:8000',
+      '/unit-items': 'http://localhost:8000',
+      '/unit-build': 'http://localhost:8000',
     }
   }
 })

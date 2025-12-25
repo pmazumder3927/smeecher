@@ -90,7 +90,7 @@
     }
 
     function handleSelect(token) {
-        addToken(token);
+        addToken(token, 'search');
         posthog.capture('search_result_selected', { token, source: 'search' });
         query = '';
         results = [];
