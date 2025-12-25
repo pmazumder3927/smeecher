@@ -14,6 +14,11 @@ COPY . .
 
 # Install dependencies and build frontend
 RUN cd server && uv sync --frozen
+
+# Build args for frontend (Vite needs these at build time)
+ARG VITE_POSTHOG_KEY
+ARG VITE_POSTHOG_HOST=https://us.i.posthog.com
+
 RUN cd web && npm ci && npm run build
 
 # Run the server
