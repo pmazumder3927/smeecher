@@ -115,7 +115,7 @@ export async function fetchUnitItems(unit, tokens = [], options = {}) {
  * @param {number} options.slots - Number of item slots to fill (1-3)
  */
 export async function fetchUnitBuild(unit, tokens = [], options = {}) {
-    const { minSample = 30, slots = 3 } = options;
+    const { minSample = 10, slots = 3 } = options;
     const tokensParam = tokens.join(',');
     const search = new URLSearchParams({
         unit,

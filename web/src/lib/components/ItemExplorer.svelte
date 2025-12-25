@@ -284,19 +284,26 @@
                                 <button class="row build-row" on:click={() => applyBuild(build)}>
                                     <div class="row-rank">#{idx + 1}</div>
                                     <div class="build-icons">
-                                        {#each build.items as item, itemIdx}
-                                            <div class="build-icon-wrap" title={itemDisplayName(item.item)}>
-                                                {#if itemIcon(item.item) && !hasIconFailed('item', item.item)}
-                                                    <img
-                                                        class="build-icon"
-                                                        src={itemIcon(item.item)}
-                                                        alt=""
-                                                        on:error={() => markIconFailed('item', item.item)}
-                                                    />
-                                                {:else}
-                                                    <div class="build-icon-fallback"></div>
-                                                {/if}
-                                            </div>
+                                        {#each [0, 1, 2] as slotIdx}
+                                            {@const item = build.items[slotIdx]}
+                                            {#if item}
+                                                <div class="build-icon-wrap" title={itemDisplayName(item.item)}>
+                                                    {#if itemIcon(item.item) && !hasIconFailed('item', item.item)}
+                                                        <img
+                                                            class="build-icon"
+                                                            src={itemIcon(item.item)}
+                                                            alt=""
+                                                            on:error={() => markIconFailed('item', item.item)}
+                                                        />
+                                                    {:else}
+                                                        <div class="build-icon-fallback"></div>
+                                                    {/if}
+                                                </div>
+                                            {:else}
+                                                <div class="build-icon-wrap empty" title="Not enough data">
+                                                    <div class="build-icon-empty"></div>
+                                                </div>
+                                            {/if}
                                         {/each}
                                     </div>
                                     <div class="row-metrics">
@@ -850,6 +857,15 @@
         border-radius: 6px;
         border: 1px solid var(--border);
         background: var(--bg-tertiary);
+    }
+
+    .build-icon-empty {
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        border: 1px dashed var(--border);
+        background: transparent;
+        opacity: 0.4;
     }
 
     /* Item row specifics */

@@ -1011,7 +1011,7 @@ def get_stats():
 def get_unit_build(
     unit: str = Query(..., description="Unit name (e.g., MissFortune)"),
     tokens: str = Query(default="", description="Additional filter tokens (comma-separated)"),
-    min_sample: int = Query(default=30, description="Minimum sample size for inclusion"),
+    min_sample: int = Query(default=10, description="Minimum sample size for inclusion"),
     slots: int = Query(default=3, ge=1, le=3, description="Number of item slots to fill")
 ):
     """
@@ -1179,10 +1179,6 @@ def get_unit_build(
             "slot": 1
         })
 
-        # Only include builds with all slots filled
-        if build["num_items"] < slots:
-            continue
-
         # Deduplicate by item set (order doesn't matter for dedup)
         build_key = tuple(sorted(item["item"] for item in build["items"]))
         if build_key in seen_build_keys:
@@ -1191,8 +1187,8 @@ def get_unit_build(
 
         all_builds.append(build)
 
-    # Sort by final average placement (best first)
-    all_builds.sort(key=lambda x: x["final_avg"])
+    # Sort by: complete builds first (more items = better), then by final avg placement
+    all_builds.sort(key=lambda x: (-x["num_items"], x["final_avg"]))
 
     return {
         "unit": unit,
