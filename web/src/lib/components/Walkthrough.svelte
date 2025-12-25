@@ -32,6 +32,14 @@
       done: "Nice, the graph is now filtered for the champion selected",
     },
     {
+      id: "equip",
+      title: "Equip an item",
+      target: "equip",
+      task: "Click “Equip items” on the unit filter and add an item.",
+      hint: "Equipped items show up under the unit and update the graph instantly.",
+      done: "Nice — you’re now filtering by a unit that has a specific item equipped.",
+    },
+    {
       id: "click-node",
       title: "Explore the graph",
       body: "This graph shows Avg Placement (AVP) relationships from your filters to other nodes. Nodes with more impact are closer to the center, while nodes with less impact are further away and smaller.",
@@ -83,8 +91,8 @@
       id: "items",
       title: "Find item builds",
       target: "itemExplorer",
-      task: "Open Items and click a Build (or add an item).",
-      hint: "Builds applies a full set; Items adds a single Unit → Item filter.",
+      task: "Open Items and click a Build.",
+      hint: "Builds applies a full set for your current filters.",
       done: "Great — now you can ask “best items for this unit in this exact context?”.",
     },
     {
@@ -174,7 +182,23 @@
       case "filters": {
         const fresh =
           (last?.timestamp ?? 0) > (baselineState?.lastActionTs ?? 0);
-        return fresh && last?.type === "token_removed";
+        return (
+          fresh &&
+          (last?.type === "token_removed" || last?.type === "tokens_removed")
+        );
+      }
+
+      case "equip": {
+        const fresh =
+          (last?.timestamp ?? 0) > (baselineState?.lastActionTs ?? 0);
+        const addedEquipped =
+          (last?.type === "token_added" &&
+            typeof last?.token === "string" &&
+            last.token.startsWith("E:")) ||
+          (last?.type === "tokens_added" &&
+            Array.isArray(last?.tokens) &&
+            last.tokens.some((t) => typeof t === "string" && t.startsWith("E:")));
+        return fresh && addedEquipped;
       }
 
       case "sort":
@@ -312,6 +336,12 @@
       if (dropdown) els.push(dropdown);
     }
 
+    // Equip step: include the popover if it's open so the spotlight looks intentional.
+    if (step.target === "equip") {
+      const popover = document.querySelector(".equip-popover");
+      if (popover) els.push(popover);
+    }
+
     return els;
   }
 
@@ -327,10 +357,13 @@
     for (const el of els) resizeObserver.observe(el);
 
     // Only watch DOM changes for lightweight targets (avoid observing the graph subtree).
-    if (step?.target === "search") {
-      const root = els[0];
+    if (step?.target === "search" || step?.target === "equip") {
+      let root = els[0];
+      if (step?.target === "equip") {
+        root = root.closest('[data-walkthrough="filters"]') ?? root;
+      }
       mutationObserver = new MutationObserver(() => {
-        // Dropdown appears/disappears; refresh observed elements and reposition.
+        // Dropdown/popover appears/disappears; refresh observed elements and reposition.
         setupObserversForStep();
         scheduleUpdate();
       });

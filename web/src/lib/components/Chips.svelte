@@ -236,6 +236,7 @@
                         {/each}
 
                         <button
+                            data-walkthrough="equip"
                             class="equip-add equip-trigger"
                             on:click={() => openEquip(group.unit)}
                             aria-label="Add item to this unit filter"
