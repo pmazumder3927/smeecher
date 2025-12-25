@@ -15,6 +15,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/search': 'http://localhost:8000',
+      '/search-index': 'http://localhost:8000',
       '/graph': 'http://localhost:8000',
       '/clusters': 'http://localhost:8000',
       '/stats': 'http://localhost:8000',

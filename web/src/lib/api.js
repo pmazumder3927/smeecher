@@ -13,6 +13,17 @@ export async function searchTokens(query) {
 }
 
 /**
+ * Fetch searchable token index for client-side search
+ */
+export async function fetchSearchIndex() {
+    const response = await fetch(`${API_BASE}/search-index`);
+    if (!response.ok) {
+        throw new Error('Failed to fetch search index');
+    }
+    return response.json();
+}
+
+/**
  * Fetch graph data for given tokens
  * @param {string[]} tokens - Filter tokens
  * @param {number} topK - Max edges to return per type

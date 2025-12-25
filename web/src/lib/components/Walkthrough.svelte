@@ -151,9 +151,16 @@
         const fresh =
           (last?.timestamp ?? 0) > (baselineState?.lastActionTs ?? 0);
         const okSource = last?.source === "search" || last?.source === "voice";
-        const isUnit =
-          typeof last?.token === "string" && last.token.startsWith("U:");
-        return fresh && okSource && last?.type === "token_added" && isUnit;
+        const addedUnit =
+          (last?.type === "token_added" &&
+            typeof last?.token === "string" &&
+            last.token.startsWith("U:")) ||
+          (last?.type === "tokens_added" &&
+            Array.isArray(last?.tokens) &&
+            last.tokens.some(
+              (t) => typeof t === "string" && t.startsWith("U:")
+            ));
+        return fresh && okSource && addedUnit;
       }
 
       case "click-node": {

@@ -643,22 +643,80 @@ def get_clusters(
 @app.get("/search")
 def search_tokens(q: str = Query(..., description="Search query")):
     """Search for tokens matching query."""
-    q_lower = q.lower()
-    results = []
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
 
-    for token_str in ENGINE.id_to_token:
-        label = ENGINE.get_label(token_str)
-        if q_lower in label.lower():
-            count = ENGINE.get_token_count(token_str)
+    q_norm = _normalize_search_text(q)
+    if not q_norm:
+        return []
+
+    results = []
+    for entry in _get_search_index():
+        if q_norm in entry["_label_norm"] or q_norm in entry["_token_norm"]:
             results.append({
-                "token": token_str,
-                "label": label,
-                "type": get_token_type(token_str),
-                "count": count
+                "token": entry["token"],
+                "label": entry["label"],
+                "type": entry["type"],
+                "count": entry["count"],
             })
 
     results.sort(key=lambda x: x["count"], reverse=True)
     return results[:20]
+
+
+# Cache for client-side search index (units/items/traits only)
+_search_index_cache = None
+
+
+def _normalize_search_text(text: str) -> str:
+    """Normalize search text for fast, forgiving matching."""
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def _get_search_index():
+    """
+    Build or return cached search index.
+
+    Important: excludes equipped tokens (E:*) to keep the index small and fast.
+    """
+    global _search_index_cache
+    if _search_index_cache is not None:
+        return _search_index_cache
+
+    if ENGINE is None:
+        return []
+
+    entries = []
+    for token_str in ENGINE.id_to_token:
+        if token_str.startswith("E:"):
+            continue
+        if not (token_str.startswith("U:") or token_str.startswith("I:") or token_str.startswith("T:")):
+            continue
+
+        label = ENGINE.get_label(token_str)
+        entries.append({
+            "token": token_str,
+            "label": label,
+            "type": get_token_type(token_str),
+            "count": ENGINE.get_token_count(token_str),
+            "_label_norm": _normalize_search_text(label),
+            "_token_norm": _normalize_search_text(token_str),
+        })
+
+    _search_index_cache = entries
+    return _search_index_cache
+
+
+@app.get("/search-index")
+def get_search_index():
+    """Return full search index for client-side search (no per-keystroke API calls)."""
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    return [
+        {"token": e["token"], "label": e["label"], "type": e["type"], "count": e["count"]}
+        for e in _get_search_index()
+    ]
 
 
 # Cache for voice parsing vocabulary context
