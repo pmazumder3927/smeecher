@@ -12,6 +12,7 @@
     let equipInputEl = null;
 
     let itemIndex = [];
+    let equippedCountIndex = new Map();
     let itemsReady = false;
     let itemsError = null;
 
@@ -26,30 +27,42 @@
     }
 
     function searchItems(query) {
+        const unit = equipOpenUnit;
         const qNorm = normalizeSearchText(query);
-        if (!qNorm) return itemIndex.slice(0, 14);
+        const limit = qNorm ? 20 : 14;
 
         const matches = [];
         for (const entry of itemIndex) {
-            if (entry.labelNorm.includes(qNorm) || entry.tokenSuffixNorm.includes(qNorm)) {
+            if (!qNorm || entry.labelNorm.includes(qNorm) || entry.tokenSuffixNorm.includes(qNorm)) {
                 matches.push(entry);
             }
         }
 
         matches.sort((a, b) => {
-            const sa = scoreMatch(a, qNorm);
-            const sb = scoreMatch(b, qNorm);
-            if (sa !== sb) return sa - sb;
+            if (qNorm) {
+                const sa = scoreMatch(a, qNorm);
+                const sb = scoreMatch(b, qNorm);
+                if (sa !== sb) return sa - sb;
+            }
+            if (unit) {
+                const ca = getEquippedCount(unit, a.apiName);
+                const cb = getEquippedCount(unit, b.apiName);
+                if (ca !== cb) return cb - ca;
+            }
             if (a.count !== b.count) return b.count - a.count;
             return a.label.length - b.label.length;
         });
 
-        return matches.slice(0, 20);
+        return matches.slice(0, limit);
     }
 
     function isEquipped(unit, itemName) {
         const prefix = `E:${unit}|`;
         return $selectedTokens.includes(`${prefix}${itemName}`);
+    }
+
+    function getEquippedCount(unit, itemName) {
+        return equippedCountIndex.get(`${unit}|${itemName}`) ?? 0;
     }
 
     function openEquip(unit) {
@@ -103,17 +116,27 @@
     function handleDocClick(event) {
         if (!equipOpenUnit) return;
         if (event.target.closest('.equip-popover')) return;
-        if (event.target.closest('.equip-btn')) return;
+        if (event.target.closest('.equip-trigger')) return;
         closeEquip();
     }
 
     onMount(async () => {
         try {
             const index = await getSearchIndex();
+            equippedCountIndex = new Map();
+            for (const e of index) {
+                if (e.type !== 'equipped' || typeof e.token !== 'string' || !e.token.startsWith('E:')) continue;
+                const rest = e.token.slice(2);
+                const [unit, item] = rest.split('|');
+                if (!unit || !item) continue;
+                equippedCountIndex.set(`${unit}|${item}`, e.count || 0);
+            }
+
             itemIndex = index
                 .filter((e) => e.type === 'item')
                 .map((e) => ({
                     ...e,
+                    apiName: e.token.slice(2),
                     labelNorm: normalizeSearchText(e.label),
                     tokenSuffixNorm: normalizeSearchText(e.token.slice(2)),
                     count: e.count || 0,
@@ -186,7 +209,7 @@
                         <span>{getDisplayName('unit', group.unit)}</span>
                         <div class="unit-actions">
                             <button
-                                class="equip-btn"
+                                class="equip-btn equip-trigger"
                                 on:click={() => openEquip(group.unit)}
                                 aria-label="Equip item"
                                 title="Equip item"
@@ -204,16 +227,24 @@
                         </div>
                     </div>
 
-                    {#if group.equipped.length > 0}
-                        <div class="equipped-row">
-                            {#each group.equipped as eq (eq.token)}
-                                <div class="equip-chip">
-                                    <span class="equip-label">{getDisplayName('item', eq.item)}</span>
-                                    <button on:click={() => removeToken(eq.token)} aria-label="Remove equipped item">×</button>
-                                </div>
-                            {/each}
-                        </div>
-                    {/if}
+                    <div class="equipped-row">
+                        {#each group.equipped as eq (eq.token)}
+                            <div class="equip-chip">
+                                <span class="equip-label">{getDisplayName('item', eq.item)}</span>
+                                <button on:click={() => removeToken(eq.token)} aria-label="Remove equipped item">×</button>
+                            </div>
+                        {/each}
+
+                        <button
+                            class="equip-add equip-trigger"
+                            on:click={() => openEquip(group.unit)}
+                            aria-label="Add item to this unit filter"
+                            title="Add item"
+                        >
+                            <span class="equip-add-plus">+</span>
+                            <span>{group.equipped.length > 0 ? 'Add item' : 'Equip items'}</span>
+                        </button>
+                    </div>
 
                     {#if equipOpenUnit === group.unit}
                         <div class="equip-popover">
@@ -238,8 +269,9 @@
 
                                 <div class="equip-results">
                                     {#each equipResults as item, i (item.token)}
-                                        {@const itemName = item.token.slice(2)}
+                                        {@const itemName = item.apiName}
                                         {@const already = isEquipped(group.unit, itemName)}
+                                        {@const eqCount = getEquippedCount(group.unit, itemName)}
                                         <button
                                             class="equip-result"
                                             class:selected={i === equipSelectedIndex}
@@ -255,8 +287,10 @@
                                             <span class="equip-name">{getDisplayName('item', item.label)}</span>
                                             {#if already}
                                                 <span class="equip-status">Added</span>
-                                            {:else if item.count > 0}
-                                                <span class="equip-count">{item.count.toLocaleString()} games</span>
+                                            {:else if eqCount > 0}
+                                                <span class="equip-count">{eqCount.toLocaleString()} games</span>
+                                            {:else}
+                                                <span class="equip-count">No data</span>
                                             {/if}
                                         </button>
                                     {/each}
@@ -515,6 +549,44 @@
     .equip-chip button:hover {
         color: rgba(255, 255, 255, 0.9);
         background: rgba(0, 0, 0, 0.25);
+    }
+
+    .equip-add {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        border: 1px dashed rgba(245, 166, 35, 0.38);
+        background: rgba(245, 166, 35, 0.06);
+        font-size: 11px;
+        font-weight: 750;
+        color: rgba(245, 166, 35, 0.95);
+        cursor: pointer;
+        transition: all 0.15s ease;
+        line-height: 1;
+        white-space: nowrap;
+    }
+
+    .equip-add:hover {
+        border-style: solid;
+        border-color: rgba(245, 166, 35, 0.55);
+        background: rgba(245, 166, 35, 0.12);
+        color: var(--text-primary);
+    }
+
+    .equip-add-plus {
+        width: 16px;
+        height: 16px;
+        border-radius: 5px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(245, 166, 35, 0.35);
+        background: rgba(0, 0, 0, 0.12);
+        font-size: 14px;
+        font-weight: 800;
+        line-height: 1;
     }
 
     .equip-popover {
