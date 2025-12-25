@@ -2,9 +2,9 @@
     import { sortMode, showTooltip, hideTooltip } from '../stores/state.js';
 
     const options = [
-        { value: 'impact', label: 'Most Impactful', tooltip: 'Show nodes with the largest placement impact, positive or negative' },
-        { value: 'helpful', label: 'Most Helpful', tooltip: 'Show nodes that improve your placement the most (negative delta)' },
-        { value: 'harmful', label: 'Least Helpful', tooltip: 'Show nodes that hurt your placement the most (positive delta)' }
+        { value: 'impact', label: 'Impact', tooltip: 'Show nodes with the largest placement impact, positive or negative' },
+        { value: 'helpful', label: 'Helpful', tooltip: 'Show nodes that improve your placement the most (negative delta)' },
+        { value: 'harmful', label: 'Harmful', tooltip: 'Show nodes that hurt your placement the most (positive delta)' }
     ];
 
     function handleMouseEnter(event, opt) {
@@ -17,7 +17,6 @@
 </script>
 
 <div class="sort-control">
-    <span class="label">Show</span>
     <div class="button-group">
         {#each options as opt}
             <button
@@ -36,16 +35,7 @@
     .sort-control {
         display: flex;
         align-items: center;
-        gap: 8px;
         white-space: nowrap;
-    }
-
-    .label {
-        font-size: 10px;
-        color: var(--text-tertiary);
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        font-weight: 500;
     }
 
     .button-group {

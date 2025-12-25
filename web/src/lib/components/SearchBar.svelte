@@ -9,10 +9,12 @@
     let query = '';
     let results = [];
     let showResults = false;
+    let selectedIndex = -1;
     let searchTimeout;
 
     async function handleInput() {
         clearTimeout(searchTimeout);
+        selectedIndex = -1;
 
         if (query.length < 2) {
             results = [];
@@ -49,11 +51,42 @@
 
                 results = [...backendResults, ...localMatches];
                 showResults = results.length > 0;
+                
+                if (showResults) {
+                    selectedIndex = 0;
+                }
+
                 posthog.capture('search', { query, result_count: results.length });
             } catch (error) {
                 console.error('Search error:', error);
             }
         }, 150);
+    }
+
+    function handleKeydown(event) {
+        if (!showResults || results.length === 0) return;
+
+        if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            selectedIndex = (selectedIndex + 1) % results.length;
+            scrollIntoView(selectedIndex);
+        } else if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            selectedIndex = (selectedIndex - 1 + results.length) % results.length;
+            scrollIntoView(selectedIndex);
+        } else if (event.key === 'Enter' && selectedIndex >= 0) {
+            event.preventDefault();
+            handleSelect(results[selectedIndex].token);
+        } else if (event.key === 'Escape') {
+            showResults = false;
+        }
+    }
+
+    function scrollIntoView(index) {
+        const el = document.getElementById(`result-${index}`);
+        if (el) {
+            el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
     }
 
     function handleSelect(token) {
@@ -62,6 +95,7 @@
         query = '';
         results = [];
         showResults = false;
+        selectedIndex = -1;
     }
 
     function handleFocus() {
@@ -92,16 +126,20 @@
             bind:value={query}
             on:input={handleInput}
             on:focus={handleFocus}
+            on:keydown={handleKeydown}
             placeholder="Search units, items, traits..."
             autocomplete="off"
         />
 
     {#if showResults}
         <div class="search-results">
-            {#each results as result}
+            {#each results as result, i}
                 <button
+                    id="result-{i}"
                     class="search-result"
+                    class:selected={i === selectedIndex}
                     on:click={() => handleSelect(result.token)}
+                    on:mouseenter={() => selectedIndex = i}
                 >
                     <span class="label">{getDisplayName(result.type, result.label)}</span>
                     <span class="meta">
@@ -193,7 +231,8 @@
         border-bottom: none;
     }
 
-    .search-result:hover:not(.no-results) {
+    .search-result:hover:not(.no-results),
+    .search-result.selected:not(.no-results) {
         background: var(--bg-tertiary);
     }
 

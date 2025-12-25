@@ -1,12 +1,7 @@
 <script>
     import { onMount } from 'svelte';
     import Header from './lib/components/Header.svelte';
-    import SearchBar from './lib/components/SearchBar.svelte';
-    import FilterToggles from './lib/components/FilterToggles.svelte';
-    import Stats from './lib/components/Stats.svelte';
-    import Chips from './lib/components/Chips.svelte';
-    import TopKInput from './lib/components/TopKInput.svelte';
-    import SortModeSelector from './lib/components/SortModeSelector.svelte';
+    import ControlPanel from './lib/components/ControlPanel.svelte';
     import ClusterExplorer from './lib/components/ClusterExplorer.svelte';
     import ItemExplorer from './lib/components/ItemExplorer.svelte';
     import Graph from './lib/components/Graph.svelte';
@@ -41,18 +36,7 @@
 <div class="container">
     <Header />
 
-    <div class="control-panel">
-        <div class="control-panel-top">
-            <SearchBar />
-            <FilterToggles />
-            <Stats />
-        </div>
-        <div class="control-panel-bottom">
-            <Chips />
-            <SortModeSelector />
-            <TopKInput on:change={() => fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode)} />
-        </div>
-    </div>
+    <ControlPanel />
 
     <div class="main-row">
         <ItemExplorer />
@@ -72,31 +56,7 @@
         height: 100%;
         display: flex;
         flex-direction: column;
-    }
-
-    .control-panel {
-        background: var(--bg-secondary);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin-bottom: 16px;
-        flex-shrink: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-    }
-
-    .control-panel-top {
-        display: flex;
-        align-items: center;
-        gap: 16px;
-    }
-
-    .control-panel-bottom {
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        min-height: 28px;
+        gap: 24px;
     }
 
     .main-row {
@@ -110,15 +70,7 @@
     @media (max-width: 768px) {
         .container {
             padding: 20px 16px 16px;
-        }
-
-        .control-panel {
-            padding: 12px 14px;
-        }
-
-        .control-panel-top {
-            flex-wrap: wrap;
-            gap: 12px;
+            gap: 16px;
         }
 
         .main-row {

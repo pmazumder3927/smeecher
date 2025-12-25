@@ -1,9 +1,17 @@
 <script>
-    import { activeTypes, toggleType } from '../stores/state.js';
+    import { activeTypes, toggleType, showTooltip, hideTooltip } from '../stores/state.js';
 
     $: unitActive = $activeTypes.has('unit');
     $: itemActive = $activeTypes.has('item');
     $: traitActive = $activeTypes.has('trait');
+
+    function handleMouseEnter(event, type) {
+        const rect = event.target.getBoundingClientRect();
+        showTooltip(rect.left + rect.width / 2, rect.bottom + 8, {
+            type: 'text',
+            text: `Toggle ${type} nodes in graph`
+        });
+    }
 </script>
 
 <div class="filter-toggles">
@@ -11,6 +19,8 @@
         class="filter-toggle unit"
         class:active={unitActive}
         on:click={() => toggleType('unit')}
+        on:mouseenter={(e) => handleMouseEnter(e, 'unit')}
+        on:mouseleave={hideTooltip}
     >
         Units
     </button>
@@ -18,6 +28,8 @@
         class="filter-toggle item"
         class:active={itemActive}
         on:click={() => toggleType('item')}
+        on:mouseenter={(e) => handleMouseEnter(e, 'item')}
+        on:mouseleave={hideTooltip}
     >
         Items
     </button>
@@ -25,6 +37,8 @@
         class="filter-toggle trait"
         class:active={traitActive}
         on:click={() => toggleType('trait')}
+        on:mouseenter={(e) => handleMouseEnter(e, 'trait')}
+        on:mouseleave={hideTooltip}
     >
         Traits
     </button>
