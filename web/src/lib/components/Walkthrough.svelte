@@ -35,8 +35,8 @@
       id: "equip",
       title: "Equip an item",
       target: "equip",
-      task: "Click “Equip items” on the unit filter and add an item.",
-      hint: "Equipped items show up under the unit and update the graph instantly.",
+      task: "Click the + on the unit filter and add an item.",
+      hint: "Hover the + to see “Equip items”. Equipped items show up inside the unit chip.",
       done: "Nice — you’re now filtering by a unit that has a specific item equipped.",
     },
     {

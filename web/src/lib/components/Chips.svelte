@@ -1,7 +1,7 @@
 <script>
     import { onMount, tick } from 'svelte';
     import { selectedTokens, removeToken, clearTokens, equipItemOnUnit, removeUnitFilters } from '../stores/state.js';
-    import { getDisplayName } from '../stores/assets.js';
+    import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { getTokenType, parseToken } from '../utils/tokens.js';
     import { getSearchIndex } from '../utils/searchIndexCache.js';
 
@@ -158,6 +158,10 @@
         return getTokenType(token);
     }
 
+    function itemIcon(itemName) {
+        return getIconUrl('item', itemName);
+    }
+
     function buildUnitGroups(tokens) {
         const byUnit = new Map();
 
@@ -205,45 +209,51 @@
         {:else}
             {#each unitGroups as group (group.unit)}
                 <div class="unit-group">
-                    <div class="chip unit unit-chip">
-                        <span>{getDisplayName('unit', group.unit)}</span>
-                        <div class="unit-actions">
+                    <div class="chip unit champion-chip">
+                        <span class="champion-name">{getDisplayName('unit', group.unit)}</span>
+
+                        <div class="champion-items">
+                            {#each group.equipped as eq (eq.token)}
+                                <button
+                                    class="champion-item"
+                                    on:click={() => removeToken(eq.token)}
+                                    aria-label={`Remove ${getDisplayName('item', eq.item)} from ${getDisplayName('unit', group.unit)}`}
+                                    title={`Remove ${getDisplayName('item', eq.item)}`}
+                                >
+                                    {#if itemIcon(eq.item) && !hasIconFailed('item', eq.item)}
+                                        <img
+                                            class="champion-item-icon"
+                                            src={itemIcon(eq.item)}
+                                            alt=""
+                                            on:error={() => markIconFailed('item', eq.item)}
+                                        />
+                                    {:else}
+                                        <span class="champion-item-fallback">
+                                            {getDisplayName('item', eq.item).slice(0, 2)}
+                                        </span>
+                                    {/if}
+                                    <span class="champion-item-x">×</span>
+                                </button>
+                            {/each}
+
                             <button
-                                class="equip-btn equip-trigger"
+                                data-walkthrough="equip"
+                                class="champion-item-add equip-trigger"
                                 on:click={() => openEquip(group.unit)}
-                                aria-label="Equip item"
-                                title="Equip item"
+                                aria-label="Equip items on this unit filter"
+                                title={group.equipped.length > 0 ? 'Add item' : 'Equip items'}
                             >
-                                +
-                            </button>
-                            <button
-                                class="remove-group-btn"
-                                on:click={() => removeUnitFilters(group.unit)}
-                                aria-label="Remove unit and equipped items"
-                                title="Remove unit and equipped items"
-                            >
-                                ×
+                                <span class="champion-item-add-plus">+</span>
                             </button>
                         </div>
-                    </div>
-
-                    <div class="equipped-row">
-                        {#each group.equipped as eq (eq.token)}
-                            <div class="equip-chip">
-                                <span class="equip-label">{getDisplayName('item', eq.item)}</span>
-                                <button on:click={() => removeToken(eq.token)} aria-label="Remove equipped item">×</button>
-                            </div>
-                        {/each}
 
                         <button
-                            data-walkthrough="equip"
-                            class="equip-add equip-trigger"
-                            on:click={() => openEquip(group.unit)}
-                            aria-label="Add item to this unit filter"
-                            title="Add item"
+                            class="remove-group-btn"
+                            on:click={() => removeUnitFilters(group.unit)}
+                            aria-label="Remove unit and equipped items"
+                            title="Remove unit and equipped items"
                         >
-                            <span class="equip-add-plus">+</span>
-                            <span>{group.equipped.length > 0 ? 'Add item' : 'Equip items'}</span>
+                            ×
                         </button>
                     </div>
 
@@ -424,7 +434,7 @@
         color: rgba(255, 68, 68, 0.98);
     }
 
-    .chip button {
+    .chip > button {
         background: none;
         border: none;
         color: var(--text-tertiary);
@@ -441,12 +451,12 @@
         transition: all 0.15s ease;
     }
 
-    .chip button:hover {
+    .chip > button:hover {
         color: var(--text-primary);
         background: var(--bg-tertiary);
     }
 
-    .chip.clear-all button:hover {
+    .chip.clear-all > button:hover {
         color: rgba(255, 255, 255, 0.95);
         background: rgba(255, 68, 68, 0.18);
     }
@@ -459,19 +469,125 @@
         align-items: center;
     }
 
-    .unit-chip {
-        padding-right: 6px;
-        gap: 8px;
+    .champion-chip {
+        gap: 10px;
+        padding: 6px 8px 6px 10px;
+        border-radius: 12px;
+        flex-wrap: wrap;
     }
 
-    .unit-actions {
+    .champion-name {
+        font-weight: 800;
+        font-size: 12px;
+        letter-spacing: -0.01em;
+        white-space: nowrap;
+    }
+
+    .champion-items {
         display: inline-flex;
-        gap: 4px;
         align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        border-left: 1px solid var(--border);
+        padding-left: 8px;
         margin-left: 2px;
+        min-height: 28px;
     }
 
-    .equip-btn,
+    .champion-item {
+        position: relative;
+        width: 28px;
+        height: 28px;
+        border-radius: 9px;
+        border: 1px solid rgba(245, 166, 35, 0.25);
+        background: rgba(245, 166, 35, 0.08);
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+    }
+
+    .champion-item:hover,
+    .champion-item:focus-visible {
+        transform: translateY(-1px);
+        border-color: rgba(245, 166, 35, 0.45);
+        background: rgba(245, 166, 35, 0.13);
+        outline: none;
+    }
+
+    .champion-item-icon {
+        width: 18px;
+        height: 18px;
+        border-radius: 5px;
+    }
+
+    .champion-item-fallback {
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.03em;
+        color: rgba(255, 255, 255, 0.82);
+        text-transform: uppercase;
+    }
+
+    .champion-item-x {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.58);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: rgba(255, 255, 255, 0.86);
+        font-size: 12px;
+        line-height: 1;
+        opacity: 0;
+        transform: scale(0.9);
+        transition: opacity 0.12s ease, transform 0.12s ease;
+        pointer-events: none;
+    }
+
+    .champion-item:hover .champion-item-x,
+    .champion-item:focus-visible .champion-item-x {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    .champion-item-add {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border-radius: 9px;
+        border: 1px dashed rgba(245, 166, 35, 0.38);
+        background: rgba(245, 166, 35, 0.06);
+        color: rgba(245, 166, 35, 0.95);
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+
+    .champion-item-add:hover,
+    .champion-item-add:focus-visible {
+        border-style: solid;
+        border-color: rgba(245, 166, 35, 0.55);
+        background: rgba(245, 166, 35, 0.12);
+        color: var(--text-primary);
+        outline: none;
+    }
+
+    .champion-item-add-plus {
+        font-size: 18px;
+        font-weight: 950;
+        line-height: 1;
+    }
+
     .remove-group-btn {
         background: none;
         border: none;
@@ -485,109 +601,15 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        border-radius: 4px;
+        border-radius: 6px;
         transition: all 0.15s ease;
         flex-shrink: 0;
-    }
-
-    .equip-btn:hover {
-        color: var(--text-primary);
-        background: rgba(245, 166, 35, 0.14);
+        margin-left: auto;
     }
 
     .remove-group-btn:hover {
         color: var(--text-primary);
         background: var(--bg-tertiary);
-    }
-
-    .equipped-row {
-        display: inline-flex;
-        gap: 6px;
-        flex-wrap: wrap;
-        align-items: center;
-    }
-
-    .equip-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 5px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(245, 166, 35, 0.28);
-        background: rgba(245, 166, 35, 0.08);
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--text-primary);
-        position: relative;
-    }
-
-    .equip-chip::before {
-        content: '';
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--equipped);
-        opacity: 0.95;
-    }
-
-    .equip-chip button {
-        background: none;
-        border: none;
-        color: rgba(255, 255, 255, 0.55);
-        cursor: pointer;
-        font-size: 14px;
-        padding: 0;
-        line-height: 1;
-        width: 16px;
-        height: 16px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 3px;
-        transition: all 0.15s ease;
-    }
-
-    .equip-chip button:hover {
-        color: rgba(255, 255, 255, 0.9);
-        background: rgba(0, 0, 0, 0.25);
-    }
-
-    .equip-add {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 5px 10px;
-        border-radius: 999px;
-        border: 1px dashed rgba(245, 166, 35, 0.38);
-        background: rgba(245, 166, 35, 0.06);
-        font-size: 11px;
-        font-weight: 750;
-        color: rgba(245, 166, 35, 0.95);
-        cursor: pointer;
-        transition: all 0.15s ease;
-        line-height: 1;
-        white-space: nowrap;
-    }
-
-    .equip-add:hover {
-        border-style: solid;
-        border-color: rgba(245, 166, 35, 0.55);
-        background: rgba(245, 166, 35, 0.12);
-        color: var(--text-primary);
-    }
-
-    .equip-add-plus {
-        width: 16px;
-        height: 16px;
-        border-radius: 5px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid rgba(245, 166, 35, 0.35);
-        background: rgba(0, 0, 0, 0.12);
-        font-size: 14px;
-        font-weight: 800;
-        line-height: 1;
     }
 
     .equip-popover {
