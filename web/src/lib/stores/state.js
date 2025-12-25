@@ -80,6 +80,25 @@ export function addToken(token, source = 'unknown') {
     });
 }
 
+export function equipItemOnUnit(unit, item, source = 'equip_ui') {
+    const unitToken = `U:${unit}`;
+    const equippedToken = `E:${unit}|${item}`;
+
+    selectedTokens.update(tokens => {
+        const existing = new Set(tokens);
+        const next = [...tokens];
+        if (!existing.has(unitToken)) {
+            next.push(unitToken);
+        }
+        if (!existing.has(equippedToken)) {
+            next.push(equippedToken);
+            posthog.capture('token_added', { token: equippedToken, source });
+            recordAction({ type: 'token_added', source, token: equippedToken });
+        }
+        return next;
+    });
+}
+
 export function addTokens(tokensToAdd, source = 'unknown') {
     selectedTokens.update(tokens => {
         const existing = new Set(tokens);
@@ -114,6 +133,20 @@ export function removeToken(token) {
     posthog.capture('token_removed', { token });
     recordAction({ type: 'token_removed', source: 'ui', token });
     selectedTokens.update(tokens => tokens.filter(t => t !== token));
+}
+
+export function removeUnitFilters(unit, source = 'ui') {
+    const unitToken = `U:${unit}`;
+    const equippedPrefix = `E:${unit}|`;
+
+    selectedTokens.update(tokens => {
+        const removed = tokens.filter(t => t === unitToken || t.startsWith(equippedPrefix));
+        if (removed.length > 0) {
+            posthog.capture('unit_filters_removed', { unit, count: removed.length, source });
+            recordAction({ type: 'tokens_removed', source, tokens: removed });
+        }
+        return tokens.filter(t => !(t === unitToken || t.startsWith(equippedPrefix)));
+    });
 }
 
 export function toggleType(type) {

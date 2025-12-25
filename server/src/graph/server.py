@@ -664,7 +664,7 @@ def search_tokens(q: str = Query(..., description="Search query")):
     return results[:20]
 
 
-# Cache for client-side search index (units/items/traits only)
+# Cache for client-side search index
 _search_index_cache = None
 
 
@@ -677,7 +677,8 @@ def _get_search_index():
     """
     Build or return cached search index.
 
-    Important: excludes equipped tokens (E:*) to keep the index small and fast.
+    Includes equipped tokens (E:*), so the client can build fast UIs that treat
+    equipped items as properties of a unit without extra backend round-trips.
     """
     global _search_index_cache
     if _search_index_cache is not None:
@@ -688,9 +689,12 @@ def _get_search_index():
 
     entries = []
     for token_str in ENGINE.id_to_token:
-        if token_str.startswith("E:"):
-            continue
-        if not (token_str.startswith("U:") or token_str.startswith("I:") or token_str.startswith("T:")):
+        if not (
+            token_str.startswith("U:")
+            or token_str.startswith("I:")
+            or token_str.startswith("T:")
+            or token_str.startswith("E:")
+        ):
             continue
 
         label = ENGINE.get_label(token_str)

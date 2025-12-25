@@ -17,12 +17,30 @@
     let walkthroughOpen = false;
     const WALKTHROUGH_KEY = 'smeecher_walkthrough_seen';
 
-    // Fetch graph when tokens, topK, activeTypes, or sortMode change (but only after assets loaded)
-    $: if (ready) fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode);
+    let fetchTimer = null;
+    let fetchVersion = 0;
 
-    async function fetchGraph(tokens, k, types, mode) {
+    // Fetch graph when tokens, topK, activeTypes, or sortMode change (debounced).
+    $: if (ready) scheduleFetchGraph($selectedTokens, $topK, $activeTypes, $sortMode);
+
+    function scheduleFetchGraph(tokens, k, types, mode) {
+        clearTimeout(fetchTimer);
+
+        const version = ++fetchVersion;
+        const tokensSnapshot = [...tokens];
+        const typesSnapshot = new Set(types);
+        const modeSnapshot = mode;
+        const kSnapshot = k;
+
+        fetchTimer = setTimeout(() => {
+            fetchGraph(tokensSnapshot, kSnapshot, typesSnapshot, modeSnapshot, version);
+        }, 150);
+    }
+
+    async function fetchGraph(tokens, k, types, mode, version = fetchVersion) {
         try {
             const data = await fetchGraphData(tokens, k, types, mode);
+            if (version !== fetchVersion) return; // Ignore stale responses
             graphData.set(data);
         } catch (error) {
             console.error('Failed to fetch graph:', error);
@@ -32,7 +50,9 @@
     onMount(async () => {
         await loadCDragonData();
         ready = true;
-        await fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode);
+        const version = ++fetchVersion;
+        clearTimeout(fetchTimer);
+        await fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode, version);
 
         try {
             const seen = localStorage.getItem(WALKTHROUGH_KEY) === '1';
