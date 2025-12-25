@@ -4,6 +4,7 @@
     import { displayNameIndex, getDisplayName } from '../stores/assets.js';
     import { get } from 'svelte/store';
     import posthog from '../client/posthog';
+    import VoiceInput from './VoiceInput.svelte';
 
     let query = '';
     let results = [];
@@ -84,15 +85,16 @@
 
 <svelte:document on:click={handleClickOutside} />
 
-<div class="search-container">
-    <input
-        type="text"
-        bind:value={query}
-        on:input={handleInput}
-        on:focus={handleFocus}
-        placeholder="Search units, items, traits..."
-        autocomplete="off"
-    />
+<div class="search-wrapper">
+    <div class="search-container">
+        <input
+            type="text"
+            bind:value={query}
+            on:input={handleInput}
+            on:focus={handleFocus}
+            placeholder="Search units, items, traits..."
+            autocomplete="off"
+        />
 
     {#if showResults}
         <div class="search-results">
@@ -116,9 +118,19 @@
             {/each}
         </div>
     {/if}
+    </div>
+    <VoiceInput />
 </div>
 
 <style>
+    .search-wrapper {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex: 1;
+        min-width: 0;
+    }
+
     .search-container {
         position: relative;
         flex: 1;
@@ -241,7 +253,7 @@
     }
 
     @media (max-width: 768px) {
-        .search-container {
+        .search-wrapper {
             flex: 1 1 100%;
             order: 1;
         }

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "TFT match scraper and analysis tool"
 requires-python = ">=3.13"
 dependencies = [
+    "anthropic>=0.75.0",
     "fastapi>=0.126.0",
     "httpx>=0.28.1",
     "numpy>=2.0.0",
@@ -15,6 +16,7 @@ dependencies = [
     "rich>=14.2.0",
     "scikit-learn>=1.8.0",
     "uvicorn>=0.38.0",
+    "websockets>=14.0",
 ]
 
 [project.scripts]

@@ -4,17 +4,43 @@ Query server for the optimized graph engine.
 Uses the high-performance GraphEngine with roaring bitmaps
 for sub-millisecond query response times at scale.
 """
+import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+from dotenv import load_dotenv
+load_dotenv()  # Load .env file
 
 from fastapi import FastAPI, Query, UploadFile, File, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import uvicorn
+import anthropic
+import httpx
+import websockets
+import base64
+import asyncio
 
 from .engine import GraphEngine, build_engine
 from .clustering import ClusterParams, compute_clusters
+
+# Initialize Anthropic client (uses ANTHROPIC_API_KEY env var)
+ANTHROPIC_CLIENT = None
+if os.environ.get("ANTHROPIC_API_KEY"):
+    try:
+        ANTHROPIC_CLIENT = anthropic.Anthropic()
+        print("Anthropic client initialized")
+    except Exception as e:
+        print(f"Failed to initialize Anthropic client: {e}")
+
+# OpenAI API key for voice transcription and parsing
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    print("OpenAI API key loaded for voice transcription")
+else:
+    print("Warning: OPENAI_API_KEY not set - voice features disabled")
 
 
 ENGINE: GraphEngine = None
@@ -646,6 +672,293 @@ def search_tokens(q: str = Query(..., description="Search query")):
 
     results.sort(key=lambda x: x["count"], reverse=True)
     return results[:20]
+
+
+# Cache for voice parsing vocabulary context
+_voice_vocab_cache = None
+
+
+def _get_voice_vocab():
+    """Get cached vocabulary for voice parsing."""
+    global _voice_vocab_cache
+    if _voice_vocab_cache is None and ENGINE is not None:
+        units = [t[2:] for t in ENGINE.id_to_token if t.startswith("U:")]
+        traits = [t[2:] for t in ENGINE.id_to_token if t.startswith("T:") and ":" not in t[2:]]
+
+        # Build unit name -> token lookup for case-insensitive matching
+        unit_lookup = {}
+        for t in ENGINE.id_to_token:
+            if t.startswith("U:"):
+                name = t[2:]
+                unit_lookup[name.lower()] = t
+
+        # Build item label -> token lookup for fast matching
+        item_lookup = {}
+        items = []
+        for t in ENGINE.id_to_token:
+            if t.startswith("I:"):
+                label = ENGINE.get_label(t)
+                key = label.lower().replace(" ", "")
+                if key not in item_lookup:
+                    item_lookup[key] = t
+                    items.append(label)
+
+        # Build trait name -> token lookup
+        trait_lookup = {}
+        for t in ENGINE.id_to_token:
+            if t.startswith("T:") and ":" not in t[2:]:
+                name = t[2:]
+                trait_lookup[name.lower()] = t
+
+        _voice_vocab_cache = {
+            "units": sorted(units),
+            "items": sorted(set(items)),
+            "traits": sorted(traits),
+            "unit_lookup": unit_lookup,
+            "item_lookup": item_lookup,
+            "trait_lookup": trait_lookup,
+        }
+    return _voice_vocab_cache
+
+
+def _fuzzy_lookup(name: str, lookup: dict) -> str | None:
+    """Try to find a match with fuzzy matching for plurals and common variations."""
+    key = name.lower().replace(" ", "")
+
+    # Try exact match first
+    if key in lookup:
+        return lookup[key]
+
+    # Try removing trailing 's' (plurals)
+    if key.endswith('s') and key[:-1] in lookup:
+        return lookup[key[:-1]]
+
+    # Try removing trailing 'es' (plurals like "cashes" -> "cash")
+    if key.endswith('es') and key[:-2] in lookup:
+        return lookup[key[:-2]]
+
+    return None
+
+
+def _validate_voice_tokens(tool_args: dict, vocab: dict) -> list:
+    """Validate and convert tool call arguments to tokens."""
+    tokens = []
+    seen_tokens = set()
+    unit_lookup = vocab.get("unit_lookup", {})
+    item_lookup = vocab.get("item_lookup", {})
+    trait_lookup = vocab.get("trait_lookup", {})
+
+    def add_token(token, label, token_type):
+        if token not in seen_tokens:
+            seen_tokens.add(token)
+            tokens.append({"token": token, "label": label, "type": token_type})
+
+    # Handle units - fuzzy lookup with cross-category fallback
+    for unit_name in tool_args.get("units", []):
+        unit_token = _fuzzy_lookup(unit_name, unit_lookup)
+        if unit_token:
+            add_token(unit_token, ENGINE.get_label(unit_token), "unit")
+        else:
+            # Try as trait (model might miscategorize)
+            trait_token = _fuzzy_lookup(unit_name, trait_lookup)
+            if trait_token:
+                add_token(trait_token, trait_token[2:], "trait")
+
+    # Handle items - fuzzy lookup with cross-category fallback
+    for item_name in tool_args.get("items", []):
+        item_token = _fuzzy_lookup(item_name, item_lookup)
+        if item_token:
+            add_token(item_token, ENGINE.get_label(item_token), "item")
+        else:
+            # Try as trait
+            trait_token = _fuzzy_lookup(item_name, trait_lookup)
+            if trait_token:
+                add_token(trait_token, trait_token[2:], "trait")
+
+    # Handle traits - fuzzy lookup with tier support and cross-category fallback
+    for trait in tool_args.get("traits", []):
+        name = trait.get("name", "") if isinstance(trait, dict) else str(trait)
+        tier = trait.get("tier") if isinstance(trait, dict) else None
+        base_token = _fuzzy_lookup(name, trait_lookup)
+
+        if base_token:
+            trait_name = base_token[2:]  # Remove "T:" prefix
+            if tier and tier >= 2:
+                token = f"T:{trait_name}:{tier}"
+                label = f"{trait_name} {tier}"
+            else:
+                token = base_token
+                label = trait_name
+            add_token(token, label, "trait")
+        else:
+            # Try as unit (model might miscategorize)
+            unit_token = _fuzzy_lookup(name, unit_lookup)
+            if unit_token:
+                add_token(unit_token, ENGINE.get_label(unit_token), "unit")
+
+    return tokens
+
+
+@app.post("/voice-parse")
+async def parse_voice_input(audio: UploadFile = File(...)):
+    """
+    Parse voice audio into TFT tokens using OpenAI Realtime API.
+
+    Uses gpt-realtime with tool calling to transcribe and parse in one step.
+    """
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="Voice features unavailable (no OpenAI API key)")
+
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    vocab = _get_voice_vocab()
+    if not vocab:
+        raise HTTPException(status_code=503, detail="Vocabulary not loaded")
+
+    # Read audio data
+    audio_data = await audio.read()
+    if len(audio_data) < 100:
+        raise HTTPException(status_code=400, detail="Audio file too small")
+
+    # Build system instructions - vocab is in tool enums
+    instructions = """You are a TFT (Teamfight Tactics) voice command parser. Extract ALL game entities the user mentions.
+
+ITEM ABBREVIATIONS (expand before calling tool):
+hoj=Hand of Justice, jg=Jeweled Gauntlet, tg=Thief's Gloves, ie=Infinity Edge, bt=Bloodthirster, gs=Giant Slayer, lw=Last Whisper, db=Deathblade, ga=Guardian Angel, qss=Quicksilver, rfc=Rapid Firecannon, rb=Guinsoo's Rageblade, tr=Titan's Resolve, dcap=Rabadon's Deathcap, shiv=Statikk Shiv, shojin=Spear of Shojin, blue=Blue Buff, nashors=Nashor's Tooth, archangels=Archangel's Staff, morello=Morellonomicon, sunfire=Sunfire Cape, ionic=Ionic Spark, shroud=Shroud of Stillness, eon=Edge of Night, gargoyle=Gargoyle Stoneplate, bramble=Bramble Vest, dclaw=Dragon's Claw, warmogs=Warmog's Armor, zzrot=Zz'Rot Portal, hullbreaker=Hullcrusher, cg=Crownguard
+
+RULES:
+1. Extract EVERY entity - do not miss any
+2. Numbers before/after traits = tier (e.g., "5 demacia" = Demacia tier 5)
+3. Match phonetically similar words to the closest enum value
+4. Always call add_search_filters with everything detected"""
+
+    # Define the tool with enums to constrain model output
+    tool_definition = {
+        "type": "function",
+        "name": "add_search_filters",
+        "description": "Add TFT game filters. Use ONLY values from the provided enums.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "units": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": vocab['units']},
+                    "description": "Champion/unit names"
+                },
+                "items": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": vocab['items']},
+                    "description": "Item names (expand abbreviations first)"
+                },
+                "traits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "enum": vocab['traits']},
+                            "tier": {"type": "integer", "description": "Trait tier level (2-9)"}
+                        },
+                        "required": ["name"]
+                    },
+                    "description": "Trait filters with optional tier"
+                }
+            }
+        }
+    }
+
+    try:
+        # Connect to OpenAI Realtime API
+        url = "wss://api.openai.com/v1/realtime?model=gpt-realtime"
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "OpenAI-Beta": "realtime=v1",
+        }
+
+        transcript = ""
+        tool_args = None
+
+        async with websockets.connect(url, additional_headers=headers) as ws:
+            # Send session configuration with tool
+            session_update = {
+                "type": "session.update",
+                "session": {
+                    "modalities": ["text", "audio"],
+                    "instructions": instructions,
+                    "input_audio_format": "pcm16",
+                    "input_audio_transcription": {"model": "whisper-1"},
+                    "tools": [tool_definition],
+                    "tool_choice": "required",
+                    "temperature": 0.6,
+                }
+            }
+            await ws.send(json.dumps(session_update))
+
+            # Wait for session.updated confirmation
+            while True:
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                if msg.get("type") == "session.updated":
+                    break
+                if msg.get("type") == "error":
+                    raise HTTPException(status_code=502, detail=f"OpenAI error: {msg}")
+
+            # Send audio data as base64 PCM chunks
+            # Note: Browser sends WebM, we need to convert or use a compatible format
+            # For now, send as-is and let OpenAI handle it
+            audio_b64 = base64.b64encode(audio_data).decode()
+
+            # Append audio buffer
+            await ws.send(json.dumps({
+                "type": "input_audio_buffer.append",
+                "audio": audio_b64
+            }))
+
+            # Commit the audio buffer
+            await ws.send(json.dumps({
+                "type": "input_audio_buffer.commit"
+            }))
+
+            # Request a response
+            await ws.send(json.dumps({
+                "type": "response.create"
+            }))
+
+            # Wait for function call or completion
+            while True:
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=15.0))
+                msg_type = msg.get("type", "")
+
+                # Capture transcript if available
+                if msg_type == "conversation.item.input_audio_transcription.completed":
+                    transcript = msg.get("transcript", "")
+
+                # Check for function call
+                if msg_type == "response.function_call_arguments.done":
+                    args_str = msg.get("arguments", "{}")
+                    tool_args = json.loads(args_str)
+                    break
+
+                # Check for response completion without function call
+                if msg_type == "response.done":
+                    break
+
+                # Handle errors
+                if msg_type == "error":
+                    raise HTTPException(status_code=502, detail=f"OpenAI error: {msg.get('error', {})}")
+
+        # Validate tokens from tool call
+        if tool_args:
+            tokens = _validate_voice_tokens(tool_args, vocab)
+            return {"tokens": tokens, "transcript": transcript, "raw_parse": tool_args}
+        else:
+            return {"tokens": [], "transcript": transcript, "error": "No entities detected"}
+
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Voice processing timed out")
+    except websockets.exceptions.WebSocketException as e:
+        raise HTTPException(status_code=502, detail=f"WebSocket error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/stats")

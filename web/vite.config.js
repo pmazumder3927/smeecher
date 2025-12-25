@@ -18,6 +18,7 @@ export default defineConfig({
       '/graph': 'http://localhost:8000',
       '/clusters': 'http://localhost:8000',
       '/stats': 'http://localhost:8000',
+      '/voice-parse': 'http://localhost:8000',
     }
   }
 })
