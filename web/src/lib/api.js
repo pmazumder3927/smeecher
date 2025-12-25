@@ -56,3 +56,76 @@ export async function getStats() {
     const response = await fetch(`${API_BASE}/stats`);
     return response.json();
 }
+
+/**
+ * Fetch best items for a unit given current filters
+ * @param {string} unit - Unit name (e.g., "MissFortune")
+ * @param {string[]} tokens - Additional filter tokens
+ * @param {Object} options - Optional parameters
+ * @param {number} options.minSample - Minimum sample size
+ * @param {number} options.topK - Max items to return (0 = unlimited)
+ * @param {string} options.sortMode - Sort mode: helpful, harmful, impact
+ */
+export async function fetchUnitItems(unit, tokens = [], options = {}) {
+    const { minSample = 30, topK = 0, sortMode = 'helpful' } = options;
+    const tokensParam = tokens.join(',');
+    const search = new URLSearchParams({
+        unit,
+        tokens: tokensParam,
+        min_sample: String(minSample),
+        top_k: String(topK),
+        sort_mode: sortMode,
+        t: String(Date.now())
+    });
+
+    const response = await fetch(`${API_BASE}/unit-items?${search.toString()}`);
+
+    if (!response.ok) {
+        // Try to parse error message, but handle non-JSON responses
+        let errorMsg = 'Failed to fetch unit items';
+        try {
+            const data = await response.json();
+            errorMsg = data?.detail || errorMsg;
+        } catch {
+            // Response wasn't JSON (e.g., HTML error page)
+        }
+        throw new Error(errorMsg);
+    }
+
+    return response.json();
+}
+
+/**
+ * Fetch optimal item build for a unit (iteratively finds best items)
+ * @param {string} unit - Unit name (e.g., "MissFortune")
+ * @param {string[]} tokens - Additional filter tokens
+ * @param {Object} options - Optional parameters
+ * @param {number} options.minSample - Minimum sample size
+ * @param {number} options.slots - Number of item slots to fill (1-3)
+ */
+export async function fetchUnitBuild(unit, tokens = [], options = {}) {
+    const { minSample = 30, slots = 3 } = options;
+    const tokensParam = tokens.join(',');
+    const search = new URLSearchParams({
+        unit,
+        tokens: tokensParam,
+        min_sample: String(minSample),
+        slots: String(slots),
+        t: String(Date.now())
+    });
+
+    const response = await fetch(`${API_BASE}/unit-build?${search.toString()}`);
+
+    if (!response.ok) {
+        let errorMsg = 'Failed to fetch unit build';
+        try {
+            const data = await response.json();
+            errorMsg = data?.detail || errorMsg;
+        } catch {
+            // Response wasn't JSON
+        }
+        throw new Error(errorMsg);
+    }
+
+    return response.json();
+}

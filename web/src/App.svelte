@@ -8,6 +8,7 @@
     import TopKInput from './lib/components/TopKInput.svelte';
     import SortModeSelector from './lib/components/SortModeSelector.svelte';
     import ClusterExplorer from './lib/components/ClusterExplorer.svelte';
+    import ItemExplorer from './lib/components/ItemExplorer.svelte';
     import Graph from './lib/components/Graph.svelte';
     import Legend from './lib/components/Legend.svelte';
     import Tooltip from './lib/components/Tooltip.svelte';
@@ -54,6 +55,7 @@
     </div>
 
     <div class="main-row">
+        <ItemExplorer />
         <Graph />
         <ClusterExplorer />
     </div>

@@ -654,6 +654,322 @@ def get_stats():
     return ENGINE.stats()
 
 
+@app.get("/unit-build")
+def get_unit_build(
+    unit: str = Query(..., description="Unit name (e.g., MissFortune)"),
+    tokens: str = Query(default="", description="Additional filter tokens (comma-separated)"),
+    min_sample: int = Query(default=30, description="Minimum sample size for inclusion"),
+    slots: int = Query(default=3, ge=1, le=3, description="Number of item slots to fill")
+):
+    """
+    Get multiple optimal item builds for a unit.
+
+    This endpoint explores different starting items and finds the best
+    complete build path from each, returning multiple build options
+    ranked by final average placement.
+    """
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    # Parse additional filter tokens
+    filter_tokens = [t.strip() for t in tokens.split(",") if t.strip()]
+
+    # Build the unit token
+    unit_token = f"U:{unit}"
+
+    if unit_token not in ENGINE.token_to_id:
+        raise HTTPException(status_code=404, detail=f"Unit '{unit}' not found")
+
+    # Track which items are already in filters
+    existing_items_base = set()
+    for t in filter_tokens:
+        parsed = parse_token(t)
+        if parsed["type"] == "item":
+            existing_items_base.add(parsed["item"])
+        elif parsed["type"] == "equipped" and parsed["unit"] == unit:
+            existing_items_base.add(parsed["item"])
+
+    # Get base stats
+    base_tokens = [unit_token] + filter_tokens
+    base_bitmap = ENGINE.intersect(base_tokens)
+    n_base = len(base_bitmap)
+    avg_base = ENGINE.avg_placement_for_bitmap(base_bitmap) if n_base > 0 else 4.5
+
+    if n_base < min_sample:
+        return {
+            "unit": unit,
+            "filters": filter_tokens,
+            "base": {"n": n_base, "avg_placement": round(avg_base, 3)},
+            "builds": []
+        }
+
+    # Find all equipped tokens for this unit
+    prefix = f"E:{unit}|"
+    all_equipped = [t for t in ENGINE.id_to_token if t.startswith(prefix)]
+
+    def find_best_item(current_bitmap, used_items):
+        """Find the best item given current state."""
+        n_current = len(current_bitmap)
+        avg_current = ENGINE.avg_placement_for_bitmap(current_bitmap) if n_current > 0 else 4.5
+
+        best = None
+        for eq_token in all_equipped:
+            item_name = eq_token.split("|")[1]
+            if item_name in used_items:
+                continue
+
+            token_id = ENGINE.token_to_id.get(eq_token)
+            if token_id is None or token_id not in ENGINE.tokens:
+                continue
+
+            token_stats = ENGINE.tokens[token_id]
+            with_bitmap = current_bitmap & token_stats.bitmap
+            n_with = len(with_bitmap)
+
+            if n_with < min_sample:
+                continue
+
+            avg_with = ENGINE.avg_placement_for_bitmap(with_bitmap)
+            delta = avg_with - avg_current
+
+            if best is None or delta < best["delta"]:
+                best = {
+                    "item": item_name,
+                    "token": eq_token,
+                    "delta": round(delta, 3),
+                    "avg_placement": round(avg_with, 3),
+                    "n": n_with,
+                    "bitmap": with_bitmap
+                }
+
+        return best
+
+    def build_from_start(start_item, start_bitmap, start_stats):
+        """Build a complete item set starting from a specific item."""
+        build_items = [start_stats]
+        current_bitmap = start_bitmap
+        used = existing_items_base | {start_item}
+
+        for slot_idx in range(1, slots):
+            next_item = find_best_item(current_bitmap, used)
+            if next_item is None:
+                break
+            build_items.append({
+                "item": next_item["item"],
+                "token": next_item["token"],
+                "delta": next_item["delta"],
+                "avg_placement": next_item["avg_placement"],
+                "n": next_item["n"],
+                "slot": slot_idx + 1
+            })
+            used.add(next_item["item"])
+            current_bitmap = next_item["bitmap"]
+
+        # Calculate final stats
+        final_avg = build_items[-1]["avg_placement"] if build_items else avg_base
+        final_n = build_items[-1]["n"] if build_items else n_base
+
+        return {
+            "items": [{**item, "slot": i + 1} for i, item in enumerate(build_items)],
+            "final_avg": final_avg,
+            "final_n": final_n,
+            "total_delta": round(final_avg - avg_base, 3),
+            "num_items": len(build_items)
+        }
+
+    # Find all starting items (slot 1 candidates)
+    starting_candidates = []
+
+    for eq_token in all_equipped:
+        item_name = eq_token.split("|")[1]
+        if item_name in existing_items_base:
+            continue
+
+        token_id = ENGINE.token_to_id.get(eq_token)
+        if token_id is None or token_id not in ENGINE.tokens:
+            continue
+
+        token_stats = ENGINE.tokens[token_id]
+        with_bitmap = base_bitmap & token_stats.bitmap
+        n_with = len(with_bitmap)
+
+        if n_with < min_sample:
+            continue
+
+        avg_with = ENGINE.avg_placement_for_bitmap(with_bitmap)
+        delta = avg_with - avg_base
+
+        starting_candidates.append({
+            "item": item_name,
+            "token": eq_token,
+            "delta": round(delta, 3),
+            "avg_placement": round(avg_with, 3),
+            "n": n_with,
+            "bitmap": with_bitmap,
+            "slot": 1
+        })
+
+    # Sort by delta (best first)
+    starting_candidates.sort(key=lambda x: x["delta"])
+
+    # Build complete builds from each starting point
+    all_builds = []
+    seen_build_keys = set()
+
+    for start in starting_candidates:
+        build = build_from_start(start["item"], start["bitmap"], {
+            "item": start["item"],
+            "token": start["token"],
+            "delta": start["delta"],
+            "avg_placement": start["avg_placement"],
+            "n": start["n"],
+            "slot": 1
+        })
+
+        # Only include builds with all slots filled
+        if build["num_items"] < slots:
+            continue
+
+        # Deduplicate by item set (order doesn't matter for dedup)
+        build_key = tuple(sorted(item["item"] for item in build["items"]))
+        if build_key in seen_build_keys:
+            continue
+        seen_build_keys.add(build_key)
+
+        all_builds.append(build)
+
+    # Sort by final average placement (best first)
+    all_builds.sort(key=lambda x: x["final_avg"])
+
+    return {
+        "unit": unit,
+        "filters": filter_tokens,
+        "base": {
+            "n": n_base,
+            "avg_placement": round(avg_base, 3)
+        },
+        "builds": all_builds
+    }
+
+
+@app.get("/unit-items")
+def get_unit_items(
+    unit: str = Query(..., description="Unit name (e.g., MissFortune)"),
+    tokens: str = Query(default="", description="Additional filter tokens (comma-separated)"),
+    min_sample: int = Query(default=30, description="Minimum sample size for inclusion"),
+    top_k: int = Query(default=0, description="Max items to return (0 = unlimited)"),
+    sort_mode: str = Query(default="helpful", description="Sort mode: helpful (best avg), harmful (worst avg), impact (abs delta)")
+):
+    """
+    Get best items for a specific unit given current filters.
+
+    This endpoint returns all items that can be equipped on the unit,
+    ranked by their impact on placement when equipped on this specific unit.
+
+    The key insight is that we use E:{unit}|{item} (equipped) tokens which
+    track actual item-on-unit performance, not just co-occurrence.
+    """
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    # Parse additional filter tokens
+    filter_tokens = [t.strip() for t in tokens.split(",") if t.strip()]
+
+    # Build the unit token
+    unit_token = f"U:{unit}"
+
+    # Check unit exists
+    if unit_token not in ENGINE.token_to_id:
+        raise HTTPException(status_code=404, detail=f"Unit '{unit}' not found")
+
+    # Build base set: unit + any additional filters
+    base_tokens = [unit_token] + filter_tokens
+    base_bitmap = ENGINE.intersect(base_tokens)
+    n_base = len(base_bitmap)
+
+    if n_base == 0:
+        return {
+            "unit": unit,
+            "filters": filter_tokens,
+            "base": {"n": 0, "avg_placement": 4.5},
+            "items": []
+        }
+
+    avg_base = ENGINE.avg_placement_for_bitmap(base_bitmap)
+
+    # Find all equipped tokens for this unit: E:{unit}|*
+    prefix = f"E:{unit}|"
+    equipped_tokens = [t for t in ENGINE.id_to_token if t.startswith(prefix)]
+
+    # Track which items are already in filters (to exclude from recommendations)
+    existing_items = set()
+    for t in filter_tokens:
+        parsed = parse_token(t)
+        if parsed["type"] == "item":
+            existing_items.add(parsed["item"])
+        elif parsed["type"] == "equipped" and parsed["unit"] == unit:
+            existing_items.add(parsed["item"])
+
+    # Score each equipped token
+    results = []
+    for eq_token in equipped_tokens:
+        item_name = eq_token.split("|")[1]
+
+        # Skip items already in filters
+        if item_name in existing_items:
+            continue
+
+        token_id = ENGINE.token_to_id.get(eq_token)
+        if token_id is None or token_id not in ENGINE.tokens:
+            continue
+
+        token_stats = ENGINE.tokens[token_id]
+
+        # Intersect with base set
+        with_bitmap = base_bitmap & token_stats.bitmap
+        n_with = len(with_bitmap)
+
+        if n_with < min_sample:
+            continue
+
+        avg_with = ENGINE.avg_placement_for_bitmap(with_bitmap)
+        delta = avg_with - avg_base
+
+        results.append({
+            "item": item_name,
+            "token": eq_token,
+            "delta": round(delta, 3),
+            "avg_placement": round(avg_with, 3),
+            "n": n_with,
+            "pct_of_base": round(n_with / n_base * 100, 1) if n_base > 0 else 0
+        })
+
+    # Sort based on sort_mode
+    if sort_mode == "helpful":
+        # Best items first (most negative delta = improves placement most)
+        results.sort(key=lambda x: x["delta"])
+    elif sort_mode == "harmful":
+        # Worst items first (most positive delta = worsens placement most)
+        results.sort(key=lambda x: x["delta"], reverse=True)
+    else:
+        # Impact: absolute delta, most impactful first
+        results.sort(key=lambda x: abs(x["delta"]), reverse=True)
+
+    # Apply top_k limit
+    if top_k > 0:
+        results = results[:top_k]
+
+    return {
+        "unit": unit,
+        "filters": filter_tokens,
+        "base": {
+            "n": n_base,
+            "avg_placement": round(avg_base, 3)
+        },
+        "items": results
+    }
+
+
 # Serve static files (Vite build output)
 # server/src/graph/server.py -> server/src/graph -> server/src -> server -> root
 static_path = Path(__file__).parent.parent.parent.parent / "static"

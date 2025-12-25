@@ -1,0 +1,939 @@
+<script>
+    import { onMount } from 'svelte';
+    import { fetchUnitItems, fetchUnitBuild } from '../api.js';
+    import {
+        selectedTokens,
+        addToken,
+        addTokens
+    } from '../stores/state.js';
+    import { parseToken } from '../utils/tokens.js';
+    import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
+    import { getPlacementColor } from '../utils/colors.js';
+    import posthog from '../client/posthog';
+
+    const COLLAPSED_WIDTH_PX = 46;
+    const EXPANDED_WIDTH_PX = 340;
+
+    let open = false;
+    let loading = false;
+    let error = null;
+    let data = null;
+    let buildData = null;
+    let sortMode = 'helpful'; // helpful | harmful | impact
+    let activeTab = 'builds'; // builds | items
+
+    let lastTokensKey = '';
+    let stale = false;
+
+    // Extract the first unit from selected tokens
+    $: selectedUnit = (() => {
+        for (const token of $selectedTokens) {
+            const parsed = parseToken(token);
+            if (parsed.type === 'unit') {
+                return parsed.unit;
+            }
+            if (parsed.type === 'equipped') {
+                return parsed.unit;
+            }
+        }
+        return null;
+    })();
+
+    // Get non-unit tokens for context filtering
+    $: contextTokens = $selectedTokens.filter(t => {
+        const parsed = parseToken(t);
+        return parsed.type !== 'unit';
+    });
+
+    $: tokensKey = $selectedTokens.slice().sort().join(',');
+    $: if (open && lastTokensKey && tokensKey !== lastTokensKey) stale = true;
+
+    $: items = data?.items ?? [];
+    $: builds = buildData?.builds ?? [];
+    $: sidebarWidth = open ? EXPANDED_WIDTH_PX : COLLAPSED_WIDTH_PX;
+
+    // Auto-fetch when opening with a selected unit
+    $: if (open && selectedUnit && (!data || stale)) {
+        run();
+    }
+
+    function toggleOpen() {
+        open = !open;
+        if (!open) {
+            posthog.capture('item_explorer_closed');
+            return;
+        }
+        posthog.capture('item_explorer_opened');
+        if (selectedUnit && !data) run();
+    }
+
+    async function run() {
+        if (!selectedUnit) return;
+
+        loading = true;
+        error = null;
+        stale = false;
+        lastTokensKey = tokensKey;
+
+        try {
+            // Fetch both build recommendation and all items in parallel
+            const [buildResult, itemsResult] = await Promise.all([
+                fetchUnitBuild(selectedUnit, contextTokens, { slots: 3 }),
+                fetchUnitItems(selectedUnit, contextTokens, { sortMode })
+            ]);
+            buildData = buildResult;
+            data = itemsResult;
+            posthog.capture('item_explorer_run', {
+                unit: selectedUnit,
+                filter_count: contextTokens.length,
+                build_items: buildResult?.build?.length ?? 0,
+                result_count: itemsResult?.items?.length ?? 0
+            });
+        } catch (e) {
+            error = e?.message ?? String(e);
+        } finally {
+            loading = false;
+        }
+    }
+
+    function applyBuild(build) {
+        if (!build?.items?.length) return;
+        const tokens = build.items.map(b => b.token);
+        addTokens(tokens);
+        posthog.capture('build_applied', {
+            unit: selectedUnit,
+            items: build.items.map(b => b.item),
+            final_avg: build.final_avg
+        });
+    }
+
+    function addItem(item) {
+        const token = `E:${selectedUnit}|${item.item}`;
+        addToken(token, 'item_explorer');
+        posthog.capture('item_added_from_explorer', {
+            unit: selectedUnit,
+            item: item.item,
+            delta: item.delta
+        });
+    }
+
+    function itemIcon(itemName) {
+        return getIconUrl('item', itemName);
+    }
+
+    function itemDisplayName(itemName) {
+        return getDisplayName('item', itemName);
+    }
+
+    function unitDisplayName(unitName) {
+        return getDisplayName('unit', unitName);
+    }
+
+    function unitIcon(unitName) {
+        return getIconUrl('unit', unitName);
+    }
+
+    function fmtDelta(delta) {
+        if (delta === null || delta === undefined) return '';
+        const sign = delta > 0 ? '+' : '';
+        return `${sign}${delta.toFixed(2)}`;
+    }
+
+    function fmtPct(pct) {
+        return `${pct.toFixed(1)}%`;
+    }
+
+    function deltaClass(delta) {
+        if (delta < -0.1) return 'positive';
+        if (delta > 0.1) return 'negative';
+        return 'neutral';
+    }
+</script>
+
+<div class="item-explorer" class:open style={`width: ${sidebarWidth}px;`}>
+    <button class="toggle" on:click={toggleOpen} aria-label="Toggle item explorer" aria-expanded={open}>
+        <span class="toggle-title">Items</span>
+        {#if open}
+            <span class="toggle-sub">close</span>
+        {:else}
+            <span class="toggle-sub">best builds</span>
+        {/if}
+    </button>
+
+    {#if open}
+        <div class="panel">
+            {#if !selectedUnit}
+                <div class="empty-state">
+                    <div class="empty-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"/>
+                            <path d="m21 21-4.35-4.35"/>
+                        </svg>
+                    </div>
+                    <div class="empty-text">Select a unit to see best items</div>
+                    <div class="empty-hint">Search for a champion like "Miss Fortune" or "Lux"</div>
+                </div>
+            {:else}
+                <div class="panel-header">
+                    <div class="unit-info">
+                        {#if unitIcon(selectedUnit) && !hasIconFailed('unit', selectedUnit)}
+                            <img
+                                class="unit-icon"
+                                src={unitIcon(selectedUnit)}
+                                alt=""
+                                on:error={() => markIconFailed('unit', selectedUnit)}
+                            />
+                        {:else}
+                            <div class="unit-fallback"></div>
+                        {/if}
+                        <div class="unit-details">
+                            <div class="unit-name">{unitDisplayName(selectedUnit)}</div>
+                            <div class="unit-meta">
+                                {#if data?.base}
+                                    <span>{data.base.n.toLocaleString()} games</span>
+                                    <span class="dot">&bull;</span>
+                                    <span style="color: {getPlacementColor(data.base.avg_placement)}">
+                                        {data.base.avg_placement.toFixed(2)} avg
+                                    </span>
+                                {:else if loading}
+                                    <span>Loading...</span>
+                                {:else}
+                                    <span>Click Run to analyze</span>
+                                {/if}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tabs">
+                    <button
+                        class="tab"
+                        class:active={activeTab === 'builds'}
+                        on:click={() => activeTab = 'builds'}
+                    >
+                        Builds
+                        {#if builds.length > 0}
+                            <span class="tab-count">{builds.length}</span>
+                        {/if}
+                    </button>
+                    <button
+                        class="tab"
+                        class:active={activeTab === 'items'}
+                        on:click={() => activeTab = 'items'}
+                    >
+                        Items
+                        {#if items.length > 0}
+                            <span class="tab-count">{items.length}</span>
+                        {/if}
+                    </button>
+                    <button class="refresh-btn" disabled={loading} on:click={run} title="Refresh data">
+                        {#if loading}
+                            <span class="spinner"></span>
+                        {:else if stale}
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M1 4v6h6M23 20v-6h-6"/>
+                                <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+                            </svg>
+                        {:else}
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M1 4v6h6M23 20v-6h-6"/>
+                                <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+                            </svg>
+                        {/if}
+                    </button>
+                </div>
+
+                {#if error}
+                    <div class="callout error">{error}</div>
+                {/if}
+
+                {#if contextTokens.length > 0}
+                    <div class="context-info">
+                        Filtered by {contextTokens.length} additional condition{contextTokens.length > 1 ? 's' : ''}
+                    </div>
+                {/if}
+
+                {#if activeTab === 'items'}
+                    <div class="sort-bar">
+                        <label class="select">
+                            <span>Sort</span>
+                            <select bind:value={sortMode} on:change={run}>
+                                <option value="helpful">Best first</option>
+                                <option value="harmful">Worst first</option>
+                                <option value="impact">Most impact</option>
+                            </select>
+                        </label>
+                    </div>
+                {/if}
+
+                <div class="list-container">
+                    {#if loading && (activeTab === 'builds' ? builds.length === 0 : items.length === 0)}
+                        <div class="loading-skeleton">
+                            {#each Array(6) as _, i}
+                                <div class="skeleton-row"></div>
+                            {/each}
+                        </div>
+                    {:else if activeTab === 'builds'}
+                        {#if builds.length === 0 && !loading}
+                            <div class="no-items">
+                                No builds found with sufficient data.
+                                Try removing filters or lowering the sample threshold.
+                            </div>
+                        {:else}
+                            {#each builds as build, idx}
+                                <button class="row build-row" on:click={() => applyBuild(build)}>
+                                    <div class="row-rank">#{idx + 1}</div>
+                                    <div class="build-icons">
+                                        {#each build.items as item, itemIdx}
+                                            <div class="build-icon-wrap" title={itemDisplayName(item.item)}>
+                                                {#if itemIcon(item.item) && !hasIconFailed('item', item.item)}
+                                                    <img
+                                                        class="build-icon"
+                                                        src={itemIcon(item.item)}
+                                                        alt=""
+                                                        on:error={() => markIconFailed('item', item.item)}
+                                                    />
+                                                {:else}
+                                                    <div class="build-icon-fallback"></div>
+                                                {/if}
+                                            </div>
+                                        {/each}
+                                    </div>
+                                    <div class="row-metrics">
+                                        <div class="row-avg" style="color: {getPlacementColor(build.final_avg)}">
+                                            {build.final_avg.toFixed(2)}
+                                        </div>
+                                        <div class="row-delta {deltaClass(build.total_delta)}">
+                                            {fmtDelta(build.total_delta)}
+                                        </div>
+                                    </div>
+                                    <div class="row-n">{build.final_n.toLocaleString()}</div>
+                                    <div class="add-icon">+</div>
+                                </button>
+                            {/each}
+                        {/if}
+                    {:else}
+                        {#if items.length === 0 && !loading}
+                            <div class="no-items">
+                                No items found with sufficient data.
+                                Try adjusting filters or lowering the sample threshold.
+                            </div>
+                        {:else}
+                            {#each items as item, idx}
+                                <button class="row item-row" on:click={() => addItem(item)}>
+                                    <div class="row-rank">#{idx + 1}</div>
+                                    <div class="item-icon-wrapper">
+                                        {#if itemIcon(item.item) && !hasIconFailed('item', item.item)}
+                                            <img
+                                                class="item-icon"
+                                                src={itemIcon(item.item)}
+                                                alt=""
+                                                loading="lazy"
+                                                on:error={() => markIconFailed('item', item.item)}
+                                            />
+                                        {:else}
+                                            <div class="item-fallback"></div>
+                                        {/if}
+                                    </div>
+                                    <div class="item-info">
+                                        <div class="item-name">{itemDisplayName(item.item)}</div>
+                                        <div class="item-stats">
+                                            <span class="stat-n">{item.n.toLocaleString()}</span>
+                                            <span class="stat-sep">&bull;</span>
+                                            <span class="stat-pct">{fmtPct(item.pct_of_base)} use</span>
+                                        </div>
+                                    </div>
+                                    <div class="row-metrics">
+                                        <div class="row-avg" style="color: {getPlacementColor(item.avg_placement)}">
+                                            {item.avg_placement.toFixed(2)}
+                                        </div>
+                                        <div class="row-delta {deltaClass(item.delta)}">
+                                            {fmtDelta(item.delta)}
+                                        </div>
+                                    </div>
+                                    <div class="add-icon">+</div>
+                                </button>
+                            {/each}
+                        {/if}
+                    {/if}
+                </div>
+            {/if}
+        </div>
+    {/if}
+</div>
+
+<style>
+    .item-explorer {
+        position: relative;
+        height: 100%;
+        min-height: 0;
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: column;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+        min-width: 46px;
+        transition: width 0.18s ease;
+    }
+
+    .toggle {
+        width: 100%;
+        background: transparent;
+        border: none;
+        color: var(--text-primary);
+        padding: 10px 12px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        transition: border-color 0.2s ease, background 0.2s ease;
+        font-family: inherit;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .toggle:hover {
+        background: rgba(255, 255, 255, 0.03);
+    }
+
+    .toggle-title {
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+    }
+
+    .toggle-sub {
+        font-size: 10px;
+        color: var(--text-tertiary);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+    }
+
+    .item-explorer:not(.open) .toggle {
+        flex: 1;
+        border-bottom: none;
+        padding: 12px 0;
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+        justify-content: center;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .item-explorer:not(.open) .toggle-sub {
+        display: none;
+    }
+
+    .panel {
+        width: 100%;
+        flex: 1;
+        min-height: 0;
+        background: transparent;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .empty-state {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        text-align: center;
+        gap: 12px;
+    }
+
+    .empty-icon {
+        width: 48px;
+        height: 48px;
+        color: var(--text-tertiary);
+        opacity: 0.5;
+    }
+
+    .empty-icon svg {
+        width: 100%;
+        height: 100%;
+    }
+
+    .empty-text {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text-secondary);
+    }
+
+    .empty-hint {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        line-height: 1.5;
+    }
+
+    .panel-header {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .unit-info {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .unit-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        object-fit: cover;
+        flex-shrink: 0;
+    }
+
+    .unit-fallback {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--bg-tertiary);
+        flex-shrink: 0;
+        position: relative;
+    }
+
+    .unit-fallback::after {
+        content: '';
+        position: absolute;
+        inset: 8px;
+        border-radius: 6px;
+        background: rgba(255, 107, 157, 0.4);
+    }
+
+    .unit-details {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .unit-name {
+        font-size: 14px;
+        font-weight: 900;
+        letter-spacing: -0.01em;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .unit-meta {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 2px;
+    }
+
+    .dot {
+        opacity: 0.6;
+    }
+
+    /* Tabs */
+    .tabs {
+        display: flex;
+        align-items: center;
+        border-bottom: 1px solid var(--border);
+        padding: 0 4px;
+    }
+
+    .tab {
+        flex: 1;
+        background: transparent;
+        border: none;
+        color: var(--text-tertiary);
+        padding: 10px 12px;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        cursor: pointer;
+        transition: color 0.15s ease, border-color 0.15s ease;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        font-family: inherit;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+    }
+
+    .tab:hover {
+        color: var(--text-secondary);
+    }
+
+    .tab.active {
+        color: var(--text-primary);
+        border-bottom-color: var(--accent);
+    }
+
+    .tab-count {
+        font-size: 9px;
+        background: rgba(255, 255, 255, 0.08);
+        padding: 2px 5px;
+        border-radius: 4px;
+        font-weight: 700;
+    }
+
+    .tab.active .tab-count {
+        background: rgba(0, 217, 255, 0.15);
+        color: var(--accent);
+    }
+
+    .refresh-btn {
+        width: 32px;
+        height: 32px;
+        background: transparent;
+        border: none;
+        color: var(--text-tertiary);
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        border-radius: 6px;
+        transition: color 0.15s ease, background 0.15s ease;
+        flex-shrink: 0;
+    }
+
+    .refresh-btn:hover:not(:disabled) {
+        color: var(--text-primary);
+        background: rgba(255, 255, 255, 0.05);
+    }
+
+    .refresh-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+    }
+
+    .refresh-btn svg {
+        width: 16px;
+        height: 16px;
+    }
+
+    .spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+
+    /* Sort bar */
+    .sort-bar {
+        display: flex;
+        gap: 10px;
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--border);
+        align-items: center;
+    }
+
+    .select {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex: 1;
+    }
+
+    .select span {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        color: var(--text-tertiary);
+    }
+
+    .select select {
+        flex: 1;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        color: var(--text-primary);
+        border-radius: 6px;
+        padding: 5px 8px;
+        font-size: 11px;
+        font-weight: 700;
+        font-family: inherit;
+    }
+
+    /* Callouts */
+    .callout {
+        padding: 10px 14px;
+        font-size: 12px;
+        color: var(--text-secondary);
+        border-bottom: 1px solid var(--border);
+    }
+
+    .callout.error {
+        color: rgba(255, 68, 68, 0.95);
+        background: rgba(255, 68, 68, 0.08);
+    }
+
+    .context-info {
+        padding: 6px 14px;
+        font-size: 10px;
+        color: var(--text-tertiary);
+        border-bottom: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.02);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+    }
+
+    /* List container */
+    .list-container {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+    }
+
+    .loading-skeleton {
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .skeleton-row {
+        height: 48px;
+        background: linear-gradient(90deg,
+            var(--bg-tertiary) 25%,
+            rgba(255, 255, 255, 0.05) 50%,
+            var(--bg-tertiary) 75%
+        );
+        background-size: 200% 100%;
+        animation: shimmer 1.5s infinite;
+        border-radius: 8px;
+    }
+
+    @keyframes shimmer {
+        0% { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+    }
+
+    .no-items {
+        padding: 20px 14px;
+        font-size: 12px;
+        color: var(--text-tertiary);
+        text-align: center;
+        line-height: 1.6;
+    }
+
+    /* Shared row styles */
+    .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 10px 14px;
+        background: transparent;
+        border: none;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        transition: background 0.15s ease;
+        color: var(--text-primary);
+        text-align: left;
+        font-family: inherit;
+    }
+
+    .row:last-child {
+        border-bottom: none;
+    }
+
+    .row:hover {
+        background: rgba(255, 255, 255, 0.03);
+    }
+
+    .row-rank {
+        width: 24px;
+        font-size: 10px;
+        font-weight: 900;
+        color: var(--text-tertiary);
+        text-align: center;
+        flex-shrink: 0;
+    }
+
+    .row-metrics {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 2px;
+        flex-shrink: 0;
+    }
+
+    .row-avg {
+        font-size: 14px;
+        font-weight: 900;
+        letter-spacing: -0.01em;
+    }
+
+    .row-delta {
+        font-size: 11px;
+        font-weight: 800;
+    }
+
+    .row-delta.positive {
+        color: var(--success);
+    }
+
+    .row-delta.negative {
+        color: var(--error);
+    }
+
+    .row-delta.neutral {
+        color: var(--text-tertiary);
+    }
+
+    .row-n {
+        font-size: 10px;
+        color: var(--text-tertiary);
+        font-weight: 600;
+        min-width: 40px;
+        text-align: right;
+    }
+
+    .add-icon {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        display: grid;
+        place-items: center;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--border);
+        color: var(--text-tertiary);
+        font-weight: 900;
+        font-size: 14px;
+        flex-shrink: 0;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+    }
+
+    .row:hover .add-icon {
+        opacity: 1;
+    }
+
+    /* Build row specifics */
+    .build-icons {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex: 1;
+        min-width: 0;
+    }
+
+    .build-icon-wrap {
+        flex-shrink: 0;
+    }
+
+    .build-icon {
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        object-fit: cover;
+    }
+
+    .build-icon-fallback {
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--bg-tertiary);
+    }
+
+    /* Item row specifics */
+    .item-icon-wrapper {
+        flex-shrink: 0;
+    }
+
+    .item-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        object-fit: cover;
+    }
+
+    .item-fallback {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--bg-tertiary);
+        position: relative;
+    }
+
+    .item-fallback::after {
+        content: '';
+        position: absolute;
+        inset: 6px;
+        border-radius: 6px;
+        background: rgba(0, 217, 255, 0.4);
+    }
+
+    .item-info {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .item-name {
+        font-size: 12px;
+        font-weight: 700;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .item-stats {
+        font-size: 10px;
+        color: var(--text-tertiary);
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-top: 2px;
+    }
+
+    .stat-sep {
+        opacity: 0.5;
+    }
+
+    @media (max-width: 768px) {
+        .item-explorer {
+            width: 100% !important;
+            height: auto;
+        }
+
+        .item-explorer:not(.open) .toggle {
+            writing-mode: horizontal-tb;
+            text-orientation: unset;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 12px;
+            flex: 0 0 auto;
+            border-bottom: none;
+        }
+
+        .item-explorer:not(.open) .toggle-sub {
+            display: inline;
+        }
+
+        .panel {
+            height: min(480px, 60vh);
+        }
+
+        .list-container {
+            max-height: 50vh;
+        }
+    }
+</style>
