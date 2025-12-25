@@ -2,6 +2,7 @@
 
 # Run both backend and frontend with hot reload
 dev:
+	@lsof -ti:8000 | xargs kill -9 2>/dev/null || true
 	cd web && npm run dev
 
 # Run only the API server
