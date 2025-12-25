@@ -164,7 +164,29 @@
           ? "trait"
           : "item";
   }
+
+  // Keyboard handler for spacebar
+  function handleKeyDown(event) {
+    // Don't trigger if typing in an input
+    if (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA") {
+      return;
+    }
+
+    if (event.code === "Space" && !event.repeat && !isListening) {
+      event.preventDefault();
+      toggleVoice();
+    }
+  }
+
+  function handleKeyUp(event) {
+    if (event.code === "Space" && isListening) {
+      event.preventDefault();
+      toggleVoice();
+    }
+  }
 </script>
+
+<svelte:window on:keydown={handleKeyDown} on:keyup={handleKeyUp} />
 
 {#if isSupported}
   <div class="voice-input">
@@ -173,7 +195,7 @@
       class:listening={isListening}
       class:connected={isConnected}
       on:click={toggleVoice}
-      title={isListening ? "Click to stop" : "Click to speak"}
+      title={isListening ? "Release to stop (Space)" : "Hold Space or click to speak"}
       aria-label="Voice input"
     >
       <svg
@@ -191,6 +213,7 @@
         <span class="pulse"></span>
       {/if}
     </button>
+    <span class="kbd-hint" class:listening={isListening}>Space</span>
 
     {#if isListening || parsedTokens.length > 0}
       <div class="voice-overlay">
@@ -278,6 +301,25 @@
 
   .voice-btn.connected {
     border-color: #22c55e;
+  }
+
+  .kbd-hint {
+    font-size: 11px;
+    font-weight: 600;
+    font-family: ui-monospace, monospace;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    margin-left: 8px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+
+  .kbd-hint.listening {
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.4);
+    background: rgba(34, 197, 94, 0.1);
   }
 
   .voice-btn svg {
