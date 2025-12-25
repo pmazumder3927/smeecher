@@ -17,8 +17,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import uvicorn
-import anthropic
-import httpx
 import websockets
 import base64
 import asyncio
@@ -26,19 +24,10 @@ import asyncio
 from .engine import GraphEngine, build_engine
 from .clustering import ClusterParams, compute_clusters
 
-# Initialize Anthropic client (uses ANTHROPIC_API_KEY env var)
-ANTHROPIC_CLIENT = None
-if os.environ.get("ANTHROPIC_API_KEY"):
-    try:
-        ANTHROPIC_CLIENT = anthropic.Anthropic()
-        print("Anthropic client initialized")
-    except Exception as e:
-        print(f"Failed to initialize Anthropic client: {e}")
-
 # OpenAI API key for voice transcription and parsing
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 if OPENAI_API_KEY:
-    print("OpenAI API key loaded for voice transcription")
+    print("OpenAI API key loaded for voice features")
 else:
     print("Warning: OPENAI_API_KEY not set - voice features disabled")
 
