@@ -238,13 +238,14 @@
             }))
             // Radial force: high impact nodes closer to center, low impact further out
             // Nodes without delta data (equipped-only) stay at neutral distance
+            // Use weak strength so placement influences position without collapsing clusters
             .force('radial', d3.forceRadial(
                 d => {
                     if (d.isCenter) return 0;
                     if (!d.hasDeltaData) return 150; // Neutral position for equipped-only nodes
-                    // High impact (1.0) -> radius 60, Low impact (0.0) -> radius 400
+                    // High impact (1.0) -> radius 80, Low impact (0.0) -> radius 350
                     const t = 1 - d.impactScore;
-                    return 60 + (t * t) * 340;
+                    return 80 + (t * t) * 270;
                 },
                 width / 2,
                 height / 2
@@ -264,9 +265,9 @@
             if (Math.abs(panVelocity.y) < 0.01) panVelocity.y = 0;
         });
 
-        // Center clustering
+        // Center clustering with inter-cluster repulsion
         if (hasCenterTeam) {
-            addCenterClusterForce(simulation, centerNodes);
+            addCenterClusterForce(simulation, centerNodes, nodes, links);
         }
 
         // Team hull
@@ -600,26 +601,89 @@
         return { x: pageX + 12, y: pageY + 12 };
     }
 
-    function addCenterClusterForce(sim, centerNodes) {
-        const minDistance = 120;
+    function addCenterClusterForce(sim, centerNodes, allNodes, links) {
+        // Build map: nodeId -> Set of center node ids it's connected to
+        const nodeClusterMap = new Map();
+        centerNodes.forEach(c => nodeClusterMap.set(c.id, new Set([c.id])));
+
+        links.forEach(link => {
+            const sourceId = link.source.id || link.source;
+            const targetId = link.target.id || link.target;
+            const sourceIsCenter = centerNodes.some(c => c.id === sourceId);
+            const targetIsCenter = centerNodes.some(c => c.id === targetId);
+
+            if (sourceIsCenter && !targetIsCenter) {
+                if (!nodeClusterMap.has(targetId)) nodeClusterMap.set(targetId, new Set());
+                nodeClusterMap.get(targetId).add(sourceId);
+            }
+            if (targetIsCenter && !sourceIsCenter) {
+                if (!nodeClusterMap.has(sourceId)) nodeClusterMap.set(sourceId, new Set());
+                nodeClusterMap.get(sourceId).add(targetId);
+            }
+        });
+
+        // Count nodes per cluster for dynamic spacing
+        const clusterSizes = new Map();
+        centerNodes.forEach(c => clusterSizes.set(c.id, 0));
+        nodeClusterMap.forEach((clusters, nodeId) => {
+            if (clusters.size === 1) {
+                const clusterId = [...clusters][0];
+                clusterSizes.set(clusterId, (clusterSizes.get(clusterId) || 0) + 1);
+            }
+        });
+
         sim.force('centerCluster', () => {
+            // Attract centers toward shared centroid
             let cx = 0, cy = 0;
             centerNodes.forEach(n => { cx += n.x || 0; cy += n.y || 0; });
             cx /= centerNodes.length;
             cy /= centerNodes.length;
 
             centerNodes.forEach(n => {
-                n.vx += (cx - n.x) * 0.03;
-                n.vy += (cy - n.y) * 0.03;
+                n.vx += (cx - n.x) * 0.02;
+                n.vy += (cy - n.y) * 0.02;
             });
 
+            // Repel centers based on their cluster sizes
             for (let i = 0; i < centerNodes.length; i++) {
                 for (let j = i + 1; j < centerNodes.length; j++) {
                     const a = centerNodes[i], b = centerNodes[j];
+                    const sizeA = clusterSizes.get(a.id) || 1;
+                    const sizeB = clusterSizes.get(b.id) || 1;
+                    // Dynamic min distance: base + scaled by combined cluster size
+                    const minDistance = 120 + Math.sqrt(sizeA + sizeB) * 25;
+
                     const dx = b.x - a.x, dy = b.y - a.y;
                     const dist = Math.sqrt(dx * dx + dy * dy) || 1;
                     if (dist < minDistance) {
-                        const force = (minDistance - dist) * 0.5 / dist;
+                        const force = (minDistance - dist) * 0.4 / dist;
+                        a.vx -= dx * force; a.vy -= dy * force;
+                        b.vx += dx * force; b.vy += dy * force;
+                    }
+                }
+            }
+
+            // Repel peripheral nodes from different clusters
+            const peripheralNodes = allNodes.filter(n => !n.isCenter && nodeClusterMap.has(n.id));
+            for (let i = 0; i < peripheralNodes.length; i++) {
+                for (let j = i + 1; j < peripheralNodes.length; j++) {
+                    const a = peripheralNodes[i], b = peripheralNodes[j];
+                    const clustersA = nodeClusterMap.get(a.id);
+                    const clustersB = nodeClusterMap.get(b.id);
+
+                    // Skip if nodes share any cluster (they can be close)
+                    let sharesCluster = false;
+                    for (const c of clustersA) {
+                        if (clustersB.has(c)) { sharesCluster = true; break; }
+                    }
+                    if (sharesCluster) continue;
+
+                    // Repel nodes from different clusters
+                    const dx = b.x - a.x, dy = b.y - a.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                    const minDist = 60;
+                    if (dist < minDist) {
+                        const force = (minDist - dist) * 0.3 / dist;
                         a.vx -= dx * force; a.vy -= dy * force;
                         b.vx += dx * force; b.vy += dy * force;
                     }

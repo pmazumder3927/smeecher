@@ -1,5 +1,4 @@
 <script>
-    import { onMount } from 'svelte';
     import { fetchUnitItems, fetchUnitBuild } from '../api.js';
     import {
         selectedTokens,
@@ -22,31 +21,54 @@
     let sortMode = 'helpful'; // helpful | harmful | impact
     let activeTab = 'builds'; // builds | items
 
-    let lastTokensKey = '';
+    let lastQueryKey = '';
     let stale = false;
+    let fetchVersion = 0;
 
-    // Extract the first unit from selected tokens
-    $: selectedUnit = (() => {
+    let activeUnit = null;
+    let lastSelectedUnit = null;
+
+    // Units available from the current filter selection
+    $: availableUnits = (() => {
+        const seen = new Set();
+        const units = [];
         for (const token of $selectedTokens) {
             const parsed = parseToken(token);
-            if (parsed.type === 'unit') {
-                return parsed.unit;
-            }
-            if (parsed.type === 'equipped') {
-                return parsed.unit;
+            if (parsed.type === 'unit' && parsed.unit && !seen.has(parsed.unit)) {
+                seen.add(parsed.unit);
+                units.push(parsed.unit);
+            } else if (parsed.type === 'equipped' && parsed.unit && !seen.has(parsed.unit)) {
+                seen.add(parsed.unit);
+                units.push(parsed.unit);
             }
         }
-        return null;
+        return units;
     })();
 
-    // Get non-unit tokens for context filtering
-    $: contextTokens = $selectedTokens.filter(t => {
-        const parsed = parseToken(t);
-        return parsed.type !== 'unit';
-    });
+    // Keep activeUnit valid as filters change
+    $: if (availableUnits.length === 0) {
+        activeUnit = null;
+    } else if (!activeUnit || !availableUnits.includes(activeUnit)) {
+        activeUnit = availableUnits[0];
+    }
 
-    $: tokensKey = $selectedTokens.slice().sort().join(',');
-    $: if (open && lastTokensKey && tokensKey !== lastTokensKey) stale = true;
+    $: selectedUnit = activeUnit;
+
+    // Keep all selected filters except the explored unit token (so other unit filters still apply)
+    $: contextTokens = selectedUnit
+        ? $selectedTokens.filter(t => t !== `U:${selectedUnit}`)
+        : $selectedTokens;
+
+    // Clear stale results when switching the explored unit
+    $: if (selectedUnit !== lastSelectedUnit) {
+        data = null;
+        buildData = null;
+        error = null;
+        lastSelectedUnit = selectedUnit;
+    }
+
+    $: queryKey = `${selectedUnit ?? ''}|${sortMode}|${contextTokens.slice().sort().join(',')}`;
+    $: if (open && lastQueryKey && queryKey !== lastQueryKey) stale = true;
 
     $: items = data?.items ?? [];
     $: builds = buildData?.builds ?? [];
@@ -70,10 +92,11 @@
     async function run() {
         if (!selectedUnit) return;
 
+        const version = ++fetchVersion;
         loading = true;
         error = null;
         stale = false;
-        lastTokensKey = tokensKey;
+        lastQueryKey = queryKey;
 
         try {
             // Fetch both build recommendation and all items in parallel
@@ -81,18 +104,20 @@
                 fetchUnitBuild(selectedUnit, contextTokens, { slots: 3 }),
                 fetchUnitItems(selectedUnit, contextTokens, { sortMode })
             ]);
+            if (version !== fetchVersion) return;
             buildData = buildResult;
             data = itemsResult;
             posthog.capture('item_explorer_run', {
                 unit: selectedUnit,
                 filter_count: contextTokens.length,
-                build_items: buildResult?.build?.length ?? 0,
+                build_items: buildResult?.builds?.length ?? 0,
                 result_count: itemsResult?.items?.length ?? 0
             });
         } catch (e) {
+            if (version !== fetchVersion) return;
             error = e?.message ?? String(e);
         } finally {
-            loading = false;
+            if (version === fetchVersion) loading = false;
         }
     }
 
@@ -203,6 +228,18 @@
                             </div>
                         </div>
                     </div>
+                    {#if availableUnits.length > 1}
+                        <div class="unit-select-row">
+                            <label class="select">
+                                <span>Champion</span>
+                                <select bind:value={activeUnit} disabled={loading}>
+                                    {#each availableUnits as unit (unit)}
+                                        <option value={unit}>{unitDisplayName(unit)}</option>
+                                    {/each}
+                                </select>
+                            </label>
+                        </div>
+                    {/if}
                 </div>
 
                 <div class="tabs">
@@ -483,6 +520,9 @@
     .panel-header {
         padding: 12px 14px;
         border-bottom: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
     }
 
     .unit-info {
@@ -539,6 +579,12 @@
         align-items: center;
         gap: 6px;
         margin-top: 2px;
+    }
+
+    .unit-select-row {
+        display: flex;
+        align-items: center;
+        width: 100%;
     }
 
     .dot {
