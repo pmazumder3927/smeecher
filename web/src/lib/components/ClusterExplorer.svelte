@@ -471,13 +471,18 @@
 
                                 <div class="hist" aria-label="Placement distribution">
                                     {#each c.placement_hist as count, idx}
-                                        <div
-                                            class="bar"
-                                            style="
-                                                height: {Math.max(2, (count / maxHist(c.placement_hist)) * 100)}%;
-                                                background: {getPlacementColor(idx + 1)};
-                                            "
-                                        ></div>
+                                        <div class="hist-col">
+                                            <div class="bar-wrap">
+                                                <div
+                                                    class="bar"
+                                                    style="
+                                                        height: {Math.max(8, (count / maxHist(c.placement_hist)) * 100)}%;
+                                                        background: {getPlacementColor(idx + 1)};
+                                                    "
+                                                ></div>
+                                            </div>
+                                            <span class="hist-label">{idx + 1}</span>
+                                        </div>
                                     {/each}
                                 </div>
                             </div>
@@ -1106,14 +1111,33 @@
         display: grid;
         grid-template-columns: repeat(8, 1fr);
         gap: 2px;
-        align-items: end;
+    }
+
+    .hist-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+    }
+
+    .bar-wrap {
+        width: 100%;
         height: 18px;
+        display: flex;
+        align-items: flex-end;
     }
 
     .bar {
         width: 100%;
         border-radius: 2px;
         opacity: 0.85;
+    }
+
+    .hist-label {
+        font-size: 8px;
+        color: var(--text-tertiary);
+        font-weight: 600;
+        line-height: 1;
     }
 
     .details {
