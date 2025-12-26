@@ -3,6 +3,10 @@ import { writable, get } from "svelte/store";
 const CDRAGON_BASE =
   "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default";
 
+// Riot Data Dragon for official display names
+const DDRAGON_VERSION = "14.24.1";
+const DDRAGON_BASE = `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/data/en_US`;
+
 // Asset lookup maps
 export const itemIconMap = writable(new Map());
 export const itemDisplayMap = writable(new Map());
@@ -15,19 +19,29 @@ export const failedIcons = writable(new Set());
 export const assetsLoaded = writable(false);
 
 /**
- * Load TFT data from Community Dragon
+ * Load TFT data from Community Dragon (icons) and Data Dragon (display names)
  */
 export async function loadCDragonData() {
   try {
-    const [itemsRes, traitsRes] = await Promise.all([
+    const [itemsRes, traitsRes, ddragonItemsRes] = await Promise.all([
       fetch(`${CDRAGON_BASE}/v1/tftitems.json`),
       fetch(`${CDRAGON_BASE}/v1/tfttraits.json`),
+      fetch(`${DDRAGON_BASE}/tft-item.json`),
     ]);
 
-    const [items, traits] = await Promise.all([
+    const [items, traits, ddragonData] = await Promise.all([
       itemsRes.json(),
       traitsRes.json(),
+      ddragonItemsRes.json(),
     ]);
+
+    // Build nameId -> official display name map from Data Dragon
+    const officialNames = new Map();
+    for (const [id, data] of Object.entries(ddragonData.data || {})) {
+      if (data.name) {
+        officialNames.set(id.toLowerCase(), data.name);
+      }
+    }
 
     const newItemIconMap = new Map();
     const newItemDisplayMap = new Map();
@@ -37,9 +51,12 @@ export async function loadCDragonData() {
 
     // Build item lookups
     items.forEach((item) => {
-      const displayName = item.name?.replace(/<[^>]*>/g, "").trim();
       const nameId = item.nameId || "";
       const iconPath = item.squareIconPath || item.iconPath;
+      // Prefer Data Dragon display name, fall back to CDragon
+      const displayName =
+        officialNames.get(nameId.toLowerCase()) ||
+        item.name?.replace(/<[^>]*>/g, "").trim();
 
       if (displayName && iconPath) {
         const url = `${CDRAGON_BASE}${iconPath
