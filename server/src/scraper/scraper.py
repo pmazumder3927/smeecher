@@ -96,7 +96,8 @@ class Smeecher:
             if league and "entries" in league:
                 for entry in league["entries"][:50]:
                     if puuid := entry.get("puuid"):
-                        self.db.add_to_queue(puuid, priority=TIER_VALUE.get(name.upper(), 0))
+                        # refresh=True ensures ladder players get high priority and are scraped immediately
+                        self.db.add_to_queue(puuid, priority=TIER_VALUE.get(name.upper(), 0), refresh=True)
                         total += 1
             await asyncio.sleep(0.5)
 
@@ -155,15 +156,14 @@ class Smeecher:
             border_style="cyan"
         ))
 
-        # Seed if needed
-        if not self.db.get_next():
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-            ) as progress:
-                task = progress.add_task("[cyan]Seeding...", total=None)
-                await self.seed(progress, task)
+        # Always seed from ladder on startup to prioritize fresh top-ladder matches
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("[cyan]Seeding from ladder...", total=None)
+            await self.seed(progress, task)
 
         console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 

@@ -137,9 +137,16 @@ class Database:
         if self._pending_writes >= self.batch_size:
             self.flush()
 
-    def add_to_queue(self, puuid: str, priority: int = 0):
+    def add_to_queue(self, puuid: str, priority: int = 0, refresh: bool = False):
+        """Add player to queue. If refresh=True, update priority and reset scraped_at."""
         c = self.conn.cursor()
-        c.execute("INSERT OR IGNORE INTO queue (puuid, priority) VALUES (?, ?)", (puuid, priority))
+        if refresh:
+            # For ladder seeding: update priority and reset scraped_at so they're processed first
+            c.execute("""INSERT INTO queue (puuid, priority, scraped_at) VALUES (?, ?, NULL)
+                ON CONFLICT(puuid) DO UPDATE SET priority = MAX(priority, excluded.priority), scraped_at = NULL""",
+                (puuid, priority))
+        else:
+            c.execute("INSERT OR IGNORE INTO queue (puuid, priority) VALUES (?, ?)", (puuid, priority))
         # Don't increment pending_writes here - queue inserts are cheap and don't need batching
 
     def add_to_queue_batch(self, puuids: list[str], priority: int = 0):
