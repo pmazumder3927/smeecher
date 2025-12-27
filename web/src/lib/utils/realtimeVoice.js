@@ -87,8 +87,23 @@ export function createRealtimeVoice(onToolCall) {
             });
 
             if (!response.ok) {
-                const text = await response.text();
-                throw new Error(`Session creation failed: ${text}`);
+                const retryAfter = response.headers.get('Retry-After');
+                let message = '';
+                try {
+                    const data = await response.json();
+                    message = data?.detail ? String(data.detail) : JSON.stringify(data);
+                } catch {
+                    try {
+                        message = await response.text();
+                    } catch {
+                        message = '';
+                    }
+                }
+                if (!message) message = `Session creation failed (${response.status})`;
+                if (response.status === 429 && retryAfter) {
+                    message = `${message} (retry in ${retryAfter}s)`;
+                }
+                throw new Error(message);
             }
 
             // Set remote description from OpenAI's answer

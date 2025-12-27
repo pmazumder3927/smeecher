@@ -18,6 +18,9 @@
   // Voice client state
   let voiceClient = null;
   let isSupported = false;
+  let isStarting = false;
+  let lastStartAt = 0;
+  const START_COOLDOWN_MS = 1500;
 
   // Reactive state
   let isConnected = false;
@@ -67,11 +70,18 @@
   });
 
   onDestroy(() => {
-    unsubscribers.forEach((fn) => fn());
+    cleanupVoiceClient();
+  });
+
+  function cleanupVoiceClient() {
     if (voiceClient) {
       voiceClient.disconnect();
+      voiceClient = null;
     }
-  });
+    unsubscribers.forEach((fn) => fn());
+    unsubscribers = [];
+    isStarting = false;
+  }
 
   function handleToolCall(args) {
     const tokens = validateTokens(args);
@@ -118,9 +128,7 @@
 
     // Disconnect after processing
     setTimeout(() => {
-      if (voiceClient) {
-        voiceClient.disconnect();
-      }
+      cleanupVoiceClient();
       // Clear after brief display
       setTimeout(() => {
         parsedTokens = [];
@@ -417,17 +425,23 @@
   }
 
   async function toggleVoice() {
-    if (isListening) {
+    if (isListening || isStarting) {
       // Stop listening
-      if (voiceClient) {
-        voiceClient.disconnect();
-      }
+      cleanupVoiceClient();
     } else {
+      const now = Date.now();
+      if (now - lastStartAt < START_COOLDOWN_MS) {
+        errorMessage = "Please wait a moment before using voice again.";
+        return;
+      }
+      lastStartAt = now;
+
       // Start listening
       parsedTokens = [];
       currentTranscript = "";
       errorMessage = null;
 
+      cleanupVoiceClient();
       voiceClient = createRealtimeVoice(handleToolCall);
 
       // Subscribe to stores
@@ -444,7 +458,9 @@
         voiceClient.transcript.subscribe((v) => (currentTranscript = v))
       );
 
+      isStarting = true;
       await voiceClient.connect();
+      isStarting = false;
     }
   }
 

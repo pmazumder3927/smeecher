@@ -6,6 +6,9 @@ for sub-millisecond query response times at scale.
 """
 import json
 import os
+import threading
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -28,6 +31,145 @@ if OPENAI_API_KEY:
     print("OpenAI API key loaded for voice features")
 else:
     print("Warning: OPENAI_API_KEY not set - voice features disabled")
+
+
+def _env_int(key: str, default: int, *, min_value: int | None = None, max_value: int | None = None) -> int:
+    try:
+        value = int(os.environ.get(key, str(default)))
+    except Exception:
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+def _env_float(key: str, default: float, *, min_value: float | None = None, max_value: float | None = None) -> float:
+    try:
+        value = float(os.environ.get(key, str(default)))
+    except Exception:
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+VOICE_RATE_LIMIT_ENABLED = os.environ.get("VOICE_RATE_LIMIT_ENABLED", "1") != "0"
+VOICE_MAX_SDP_BYTES = _env_int("VOICE_MAX_SDP_BYTES", 50_000, min_value=1_000, max_value=500_000)
+VOICE_MIN_SECONDS_BETWEEN_SESSIONS = _env_float("VOICE_MIN_SECONDS_BETWEEN_SESSIONS", 2.0, min_value=0.0, max_value=60.0)
+VOICE_MAX_SESSIONS_PER_IP_PER_MINUTE = _env_int("VOICE_MAX_SESSIONS_PER_IP_PER_MINUTE", 12, min_value=1, max_value=10_000)
+VOICE_MAX_SESSIONS_PER_IP_PER_HOUR = _env_int("VOICE_MAX_SESSIONS_PER_IP_PER_HOUR", 120, min_value=1, max_value=100_000)
+VOICE_MAX_SESSIONS_GLOBAL_PER_MINUTE = _env_int("VOICE_MAX_SESSIONS_GLOBAL_PER_MINUTE", 120, min_value=1, max_value=100_000)
+VOICE_MAX_CONCURRENT_SESSION_CREATIONS = _env_int("VOICE_MAX_CONCURRENT_SESSION_CREATIONS", 4, min_value=1, max_value=1000)
+
+_voice_lock = threading.Lock()
+_voice_ip_state: dict[str, dict] = {}
+_voice_global_state = {
+    "minute": deque(),
+    "concurrent": 0,
+}
+
+
+def _get_client_ip(request: Request) -> str:
+    # Optional proxy support; only trust if explicitly enabled.
+    if os.environ.get("TRUST_PROXY_HEADERS", "0") == "1":
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _prune_times(q: deque, now: float, window_s: float) -> None:
+    cutoff = now - window_s
+    while q and q[0] < cutoff:
+        q.popleft()
+
+
+def _enforce_voice_rate_limits(request: Request) -> None:
+    if not VOICE_RATE_LIMIT_ENABLED:
+        return
+
+    now = time.time()
+    ip = _get_client_ip(request)
+
+    with _voice_lock:
+        st = _voice_ip_state.get(ip)
+        if st is None:
+            st = {"last": 0.0, "minute": deque(), "hour": deque()}
+            _voice_ip_state[ip] = st
+
+        _prune_times(st["minute"], now, 60.0)
+        _prune_times(st["hour"], now, 3600.0)
+        _prune_times(_voice_global_state["minute"], now, 60.0)
+
+        # Basic concurrency guard (prevents thundering herds / runaway retries).
+        if _voice_global_state["concurrent"] >= VOICE_MAX_CONCURRENT_SESSION_CREATIONS:
+            raise HTTPException(
+                status_code=429,
+                detail="Voice is busy right now. Try again in a few seconds.",
+                headers={"Retry-After": "5"},
+            )
+
+        # Per-IP cooldown
+        last = float(st.get("last") or 0.0)
+        if VOICE_MIN_SECONDS_BETWEEN_SESSIONS > 0 and last > 0:
+            since = now - last
+            if since < VOICE_MIN_SECONDS_BETWEEN_SESSIONS:
+                retry = max(1, int(VOICE_MIN_SECONDS_BETWEEN_SESSIONS - since) + 1)
+                raise HTTPException(
+                    status_code=429,
+                    detail="Please wait a moment before using voice again.",
+                    headers={"Retry-After": str(retry)},
+                )
+
+        # Per-IP minute/hour limits
+        if len(st["minute"]) >= VOICE_MAX_SESSIONS_PER_IP_PER_MINUTE:
+            retry = 30
+            if st["minute"]:
+                retry = max(1, int(60 - (now - st["minute"][0])) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail="Voice rate limit exceeded. Try again soon.",
+                headers={"Retry-After": str(retry)},
+            )
+        if len(st["hour"]) >= VOICE_MAX_SESSIONS_PER_IP_PER_HOUR:
+            retry = 300
+            if st["hour"]:
+                retry = max(1, int(3600 - (now - st["hour"][0])) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail="Voice hourly limit exceeded. Try again later.",
+                headers={"Retry-After": str(retry)},
+            )
+
+        # Global minute limit (helps protect against broad abuse).
+        if len(_voice_global_state["minute"]) >= VOICE_MAX_SESSIONS_GLOBAL_PER_MINUTE:
+            retry = 5
+            if _voice_global_state["minute"]:
+                retry = max(1, int(60 - (now - _voice_global_state["minute"][0])) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail="Voice is temporarily rate-limited. Try again shortly.",
+                headers={"Retry-After": str(retry)},
+            )
+
+        # Record the attempt + reserve a concurrency slot.
+        st["last"] = now
+        st["minute"].append(now)
+        st["hour"].append(now)
+        _voice_global_state["minute"].append(now)
+        _voice_global_state["concurrent"] += 1
+
+
+def _release_voice_concurrency_slot() -> None:
+    if not VOICE_RATE_LIMIT_ENABLED:
+        return
+    with _voice_lock:
+        if _voice_global_state["concurrent"] > 0:
+            _voice_global_state["concurrent"] -= 1
 
 
 ENGINE: GraphEngine = None
@@ -1183,8 +1325,34 @@ async def create_realtime_session(request: Request):
     if not session_config:
         raise HTTPException(status_code=503, detail="Vocabulary not loaded")
 
-    # Get SDP offer from browser
-    sdp_offer = (await request.body()).decode('utf-8')
+    # Get SDP offer from browser (and reject absurd requests early).
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > VOICE_MAX_SDP_BYTES:
+                raise HTTPException(status_code=413, detail="SDP offer too large")
+        except ValueError:
+            # Ignore invalid header
+            pass
+
+    raw = await request.body()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Missing SDP offer")
+    if len(raw) > VOICE_MAX_SDP_BYTES:
+        raise HTTPException(status_code=413, detail="SDP offer too large")
+
+    try:
+        sdp_offer = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        sdp_offer = raw.decode("utf-8", errors="ignore")
+
+    # Quick sanity checks to avoid spending API calls on garbage.
+    if "m=audio" not in sdp_offer or "v=" not in sdp_offer:
+        raise HTTPException(status_code=400, detail="Invalid SDP offer")
+
+    # Guardrail: prevent abusive session creation.
+    _enforce_voice_rate_limits(request)
+    reserved_slot = True
 
     try:
         async with httpx.AsyncClient() as client:
@@ -1213,6 +1381,10 @@ async def create_realtime_session(request: Request):
 
     except httpx.RequestError as e:
         raise HTTPException(status_code=502, detail=f"Failed to connect to OpenAI: {str(e)}")
+    finally:
+        # Make sure we always release the concurrency slot.
+        if reserved_slot:
+            _release_voice_concurrency_slot()
 
 
 @app.get("/voice-vocab")
