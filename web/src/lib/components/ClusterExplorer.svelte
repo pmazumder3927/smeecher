@@ -18,6 +18,7 @@
     import { getSearchIndex } from '../utils/searchIndexCache.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { getPlacementColor } from '../utils/colors.js';
+    import AvgPlacement from './AvgPlacement.svelte';
     import posthog from '../client/posthog';
 
     const COLLAPSED_WIDTH_PX = 46;
@@ -455,9 +456,7 @@
                     {#if data?.base}
                         <span>{data.base.n.toLocaleString()} games</span>
                         <span class="dot">•</span>
-                        <span style="color: {getPlacementColor(data.base.avg_placement)}">
-                            {data.base.avg_placement.toFixed(2)} avg
-                        </span>
+                        <AvgPlacement value={data.base.avg_placement} suffix=" avg" />
                     {:else}
                         <span>{$selectedTokens.length} filters</span>
                     {/if}
@@ -515,7 +514,7 @@
 
             <div class="content" class:narrow={isNarrow} class:showDetails={isNarrow && view === 'details'}>
                 <div class="cluster-list">
-                    {#each sortedClusters as c}
+                    {#each sortedClusters as c (c.cluster_id)}
                         {@const preview = signaturePreview(c)}
                         <button
                             class="cluster"
@@ -537,9 +536,7 @@
 
                                 <div class="cluster-metrics">
                                     <div class="metric-top">
-                                        <span class="avg" style="color: {getPlacementColor(c.avg_placement)}">
-                                            {c.avg_placement.toFixed(2)}
-                                        </span>
+                                        <span class="avg"><AvgPlacement value={c.avg_placement} /></span>
                                         <span class="delta" class:pos={c.delta_vs_base < 0} class:neg={c.delta_vs_base > 0}>
                                             {c.delta_vs_base > 0 ? '+' : ''}{c.delta_vs_base.toFixed(2)}
                                         </span>
@@ -624,9 +621,7 @@
                         <div class="details-grid">
                             <div class="metric">
                                 <div class="k">Avg</div>
-                                <div class="v" style="color: {getPlacementColor(selectedCluster.avg_placement)}">
-                                    {selectedCluster.avg_placement.toFixed(2)}
-                                </div>
+                                <div class="v"><AvgPlacement value={selectedCluster.avg_placement} /></div>
                             </div>
                             <div class="metric">
                                 <div class="k">Δ vs base</div>
@@ -659,12 +654,7 @@
 
 	                        <div class="playbook">
 	                            <div class="playbook-header">
-	                                <div class="playbook-title">
-	                                    Playbook
-	                                    {#if playbook?.base?.n}
-	                                        <span class="playbook-sub">{playbook.base.n.toLocaleString()} games</span>
-	                                    {/if}
-	                                </div>
+	                                <div class="playbook-title">Playbook</div>
 	                                <button
 	                                    class="playbook-run"
 	                                    disabled={playbookLoading || stale}
@@ -697,13 +687,8 @@
 	                                    <div class="skeleton-row"></div>
 	                                </div>
 	                            {:else if playbook}
-	                                <div class="playbook-base">
-	                                    <div class="base-chip">Win {fmtPct(playbook.base.win_rate)}</div>
-	                                    <div class="base-chip">Top4 {fmtPct(playbook.base.top4_rate)}</div>
-	                                    <div class="base-chip">8th {fmtPct(playbook.base.eighth_rate)}</div>
-	                                    <div class="base-chip" style="color: {getPlacementColor(playbook.base.avg_placement)}">
-	                                        Avg {playbook.base.avg_placement.toFixed(2)}
-	                                    </div>
+	                                <div class="playbook-note">
+	                                    Δs compare games <span class="mono">within this cluster</span> (with token vs without). Baseline 8th: {fmtPct(playbook.base.eighth_rate)}.
 	                                </div>
 
 	                                <div class="pb-section">
@@ -749,9 +734,8 @@
 	                                                            </div>
 	                                                        </div>
 	                                                        <div class="pb-metrics">
-	                                                            <div class="m {deltaClass('win', row.delta_win)}" title="Δ win rate (with token vs without)">W {fmtSignedPct(row.delta_win)}</div>
-	                                                            <div class="m {deltaClass('top4', row.delta_top4)}" title="Δ top4 rate (with token vs without)">T4 {fmtSignedPct(row.delta_top4)}</div>
-	                                                            <div class="m {deltaClass('avg', row.delta_avg)}" title="Δ avg placement (with token vs without)">Avg {fmtSigned(row.delta_avg)}</div>
+	                                                            <div class="m {deltaClass('win', row.delta_win)}" title="Δ win rate (with token vs without)">ΔW {fmtSignedPct(row.delta_win)}</div>
+	                                                            <div class="m {deltaClass('top4', row.delta_top4)}" title="Δ top4 rate (with token vs without)">ΔT4 {fmtSignedPct(row.delta_top4)}</div>
 	                                                        </div>
 	                                                    </button>
 	                                                    <button
@@ -808,9 +792,8 @@
 	                                                            </div>
 	                                                        </div>
 	                                                        <div class="pb-metrics">
-	                                                            <div class="m {deltaClass('win', row.delta_win)}" title="Δ win rate (with token vs without)">W {fmtSignedPct(row.delta_win)}</div>
-	                                                            <div class="m {deltaClass('top4', row.delta_top4)}" title="Δ top4 rate (with token vs without)">T4 {fmtSignedPct(row.delta_top4)}</div>
-	                                                            <div class="m {deltaClass('eighth', row.delta_eighth)}" title="Δ 8th rate (with token vs without)">8 {fmtSignedPct(row.delta_eighth)}</div>
+	                                                            <div class="m {deltaClass('win', row.delta_win)}" title="Δ win rate (with token vs without)">ΔW {fmtSignedPct(row.delta_win)}</div>
+	                                                            <div class="m {deltaClass('eighth', row.delta_eighth)}" title="Δ 8th rate (with token vs without)">Δ8 {fmtSignedPct(row.delta_eighth)}</div>
 	                                                        </div>
 	                                                    </button>
 	                                                    <button
@@ -1822,17 +1805,6 @@
         letter-spacing: 0.02em;
         text-transform: uppercase;
         color: var(--text-primary);
-        display: flex;
-        align-items: baseline;
-        gap: 8px;
-    }
-
-    .playbook-sub {
-        font-size: 10px;
-        color: var(--text-tertiary);
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
     }
 
     .playbook-run {
@@ -1854,22 +1826,14 @@
         cursor: not-allowed;
     }
 
-    .playbook-base {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        align-items: center;
+    .playbook-note {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        line-height: 1.35;
     }
 
-    .base-chip {
-        padding: 6px 10px;
-        border-radius: 999px;
-        border: 1px solid var(--border);
-        background: var(--bg-tertiary);
-        font-size: 11px;
-        font-weight: 800;
-        color: var(--text-secondary);
-        white-space: nowrap;
+    .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     }
 
     .pb-section {

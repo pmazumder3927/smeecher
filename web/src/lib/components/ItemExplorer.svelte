@@ -13,7 +13,7 @@
     } from '../stores/state.js';
     import { parseToken } from '../utils/tokens.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
-    import { getPlacementColor } from '../utils/colors.js';
+    import AvgPlacement from './AvgPlacement.svelte';
     import posthog from '../client/posthog';
 
     const COLLAPSED_WIDTH_PX = 46;
@@ -223,9 +223,7 @@
                                 {#if data?.base}
                                     <span>{data.base.n.toLocaleString()} games</span>
                                     <span class="dot">&bull;</span>
-                                    <span style="color: {getPlacementColor(data.base.avg_placement)}">
-                                        {data.base.avg_placement.toFixed(2)} avg
-                                    </span>
+                                    <AvgPlacement value={data.base.avg_placement} suffix=" avg" />
                                 {:else if loading}
                                     <span>Loading...</span>
                                 {:else}
@@ -323,7 +321,7 @@
                                 Try removing filters or lowering the sample threshold.
                             </div>
                         {:else}
-                            {#each builds as build, idx}
+                            {#each builds as build, idx (build.items?.map(i => i?.item ?? '').join('|'))}
                                 <button class="row build-row" on:click={() => applyBuild(build)}>
                                     <div class="row-rank">#{idx + 1}</div>
                                     <div class="build-icons">
@@ -350,9 +348,7 @@
                                         {/each}
                                     </div>
                                     <div class="row-metrics">
-                                        <div class="row-avg" style="color: {getPlacementColor(build.final_avg)}">
-                                            {build.final_avg.toFixed(2)}
-                                        </div>
+                                        <div class="row-avg"><AvgPlacement value={build.final_avg} /></div>
                                         <div class="row-delta {deltaClass(build.total_delta)}">
                                             {fmtDelta(build.total_delta)}
                                         </div>
@@ -369,7 +365,7 @@
                                 Try adjusting filters or lowering the sample threshold.
                             </div>
                         {:else}
-                            {#each items as item, idx}
+                            {#each items as item, idx (item.item)}
                                 <button class="row item-row" on:click={() => addItem(item)}>
                                     <div class="row-rank">#{idx + 1}</div>
                                     <div class="item-icon-wrapper">
@@ -394,9 +390,7 @@
                                         </div>
                                     </div>
                                     <div class="row-metrics">
-                                        <div class="row-avg" style="color: {getPlacementColor(item.avg_placement)}">
-                                            {item.avg_placement.toFixed(2)}
-                                        </div>
+                                        <div class="row-avg"><AvgPlacement value={item.avg_placement} /></div>
                                         <div class="row-delta {deltaClass(item.delta)}">
                                             {fmtDelta(item.delta)}
                                         </div>

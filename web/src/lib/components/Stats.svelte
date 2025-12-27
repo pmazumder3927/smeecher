@@ -1,8 +1,6 @@
 <script>
     import { stats } from '../stores/state.js';
-    import { getPlacementColor } from '../utils/colors.js';
-
-    $: placementColor = getPlacementColor($stats.avgPlacement);
+    import AvgPlacement from './AvgPlacement.svelte';
 </script>
 
 <div class="stats">
@@ -12,8 +10,8 @@
     </div>
     <div class="stat-inline">
         <span class="stat-label">Avg Place</span>
-        <span class="stat-value" style="color: {placementColor}">
-            {$stats.avgPlacement.toFixed(2)}
+        <span class="stat-value">
+            <AvgPlacement value={$stats.avgPlacement} showDelta={$stats.games > 0} />
         </span>
     </div>
 </div>
