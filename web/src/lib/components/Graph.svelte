@@ -569,10 +569,16 @@
 
     function showEdgeTooltip(event, d, fromTouch = false) {
         const { x, y } = getTooltipPosition(event);
-        let title = d.token.slice(2);
+        let title = d.label ?? d.token.slice(2);
         if (d.token.startsWith('E:')) {
             const [unit, item] = d.token.slice(2).split('|');
             title = `${getDisplayName('unit', unit)} → ${getDisplayName('item', item)}`;
+        } else if (d.token.startsWith('U:')) {
+            title = getDisplayName('unit', title);
+        } else if (d.token.startsWith('I:')) {
+            title = getDisplayName('item', title);
+        } else if (d.token.startsWith('T:')) {
+            title = getDisplayName('trait', title);
         }
 
         showTooltip(x, y, {

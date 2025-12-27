@@ -93,6 +93,22 @@
   function handleToolCall(args) {
     const tokens = validateTokens(args);
     const equipped = deriveEquippedPairs(args, currentTranscript, tokens);
+
+    // If the user specified a star-level unit in an equipped pair (e.g. "Tryndamere 2★ with Guinsoo's"),
+    // also add that star-level unit token as an explicit filter.
+    const tokenSet = new Set(tokens.map((t) => t.token));
+    for (const e of equipped) {
+      if (!e?.unitToken?.startsWith?.("U:")) continue;
+      const parsed = parseToken(e.unitToken);
+      if (parsed?.type !== "unit" || !parsed.stars) continue;
+      if (tokenSet.has(e.unitToken)) continue;
+      tokenSet.add(e.unitToken);
+      tokens.push({
+        token: e.unitToken,
+        label: `${getDisplayName("unit", parsed.unit)} ${parsed.stars}★`,
+        type: "unit",
+      });
+    }
     const equippedItemNames = new Set(equipped.map((e) => e.item));
     const tokensToAdd = tokens.filter(
       (t) => !(t.type === "item" && equippedItemNames.has(t.token.slice(2)))
@@ -368,6 +384,7 @@
       const parsedUnit = parseToken(unitToken);
       pairs.push({
         unit: parsedUnit?.unit ?? unitToken.slice(2),
+        unitToken,
         item: itemToken.slice(2),
       });
     }
@@ -381,9 +398,17 @@
 
     const units = validatedTokens.filter((x) => x.type === "unit");
     const items = validatedTokens.filter((x) => x.type === "item");
-    if (units.length !== 1 || items.length === 0) return [];
+    if (units.length === 0 || items.length === 0) return [];
 
-    const unit = (parseToken(units[0].token)?.unit ?? units[0].token.slice(2));
+    const baseUnits = new Set();
+    for (const u of units) {
+      if (!u?.token?.startsWith?.("U:")) continue;
+      const parsed = parseToken(u.token);
+      if (parsed?.type === "unit" && parsed.unit) baseUnits.add(parsed.unit);
+    }
+    if (baseUnits.size !== 1) return [];
+    const [unit] = Array.from(baseUnits);
+
     return items.map((i) => ({ unit, item: i.token.slice(2) }));
   }
 

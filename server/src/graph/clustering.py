@@ -99,7 +99,11 @@ def _rates_from_hist(hist: list[int]) -> dict[str, float]:
 def _select_features(engine: GraphEngine, params: ClusterParams) -> list[str]:
     features: list[str] = []
     if params.use_units:
-        features.extend(t for t in engine.id_to_token if t.startswith("U:"))
+        # Only include base unit tokens (U:Unit). Star-level unit tokens (U:Unit:2)
+        # are filter-only and would otherwise bloat/fragment cluster signatures.
+        features.extend(
+            t for t in engine.id_to_token if t.startswith("U:") and t.count(":") == 1
+        )
     if params.use_traits:
         features.extend(
             t
@@ -400,4 +404,3 @@ def compute_clusters(engine: GraphEngine, tokens: list[str], params: ClusterPara
 
     _cache_set(key, result)
     return result
-

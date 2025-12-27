@@ -1,6 +1,6 @@
 <script>
     import { onMount, tick } from 'svelte';
-    import { selectedTokens, removeToken, clearTokens, equipItemOnUnit, removeUnitFilters } from '../stores/state.js';
+    import { selectedTokens, removeToken, clearTokens, equipItemOnUnit, removeUnitFilters, setUnitStarFilter } from '../stores/state.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { getTokenType, getTokenLabel, parseToken } from '../utils/tokens.js';
     import { getSearchIndex } from '../utils/searchIndexCache.js';
@@ -11,9 +11,13 @@
     let equipSelectedIndex = -1;
     let equipInputEl = null;
 
+    let starOpenUnit = null;
+    let starFirstOptionEl = null;
+
     let itemIndex = [];
     let equippedCountIndex = new Map();
     let tokenLabelIndex = new Map();
+    let unitStarsIndex = new Map();
     let itemsReady = false;
     let itemsError = null;
 
@@ -67,6 +71,7 @@
     }
 
     function openEquip(unit) {
+        starOpenUnit = null;
         equipOpenUnit = unit;
         equipQuery = '';
         equipSelectedIndex = 0;
@@ -79,6 +84,43 @@
         equipQuery = '';
         equipResults = [];
         equipSelectedIndex = -1;
+    }
+
+    function openStarMenu(unit) {
+        starOpenUnit = unit;
+        tick().then(() => starFirstOptionEl?.focus?.());
+    }
+
+    function toggleStarMenu(unit) {
+        if (starOpenUnit === unit) {
+            starOpenUnit = null;
+        } else {
+            openStarMenu(unit);
+        }
+    }
+
+    function closeStarMenu() {
+        starOpenUnit = null;
+    }
+
+    function selectStar(unit, stars) {
+        setUnitStarFilter(unit, stars);
+        closeStarMenu();
+    }
+
+    function handleStarKeydown(event, unit) {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closeStarMenu();
+            return;
+        }
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleStarMenu(unit);
+        } else if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            openStarMenu(unit);
+        }
     }
 
     function handleEquipInput() {
@@ -115,16 +157,33 @@
     }
 
     function handleDocClick(event) {
-        if (!equipOpenUnit) return;
-        if (event.target.closest('.equip-popover')) return;
-        if (event.target.closest('.equip-trigger')) return;
-        closeEquip();
+        if (equipOpenUnit) {
+            if (!event.target.closest('.equip-popover') && !event.target.closest('.equip-trigger')) {
+                closeEquip();
+            }
+        }
+
+        if (starOpenUnit) {
+            if (!event.target.closest('.star-popover') && !event.target.closest('.star-trigger')) {
+                closeStarMenu();
+            }
+        }
     }
 
     onMount(async () => {
         try {
             const index = await getSearchIndex();
             tokenLabelIndex = new Map(index.map((e) => [e.token, e.label]));
+
+            unitStarsIndex = new Map();
+            for (const e of index) {
+                if (e.type !== 'unit' || typeof e.token !== 'string' || !e.token.startsWith('U:')) continue;
+                const parsed = parseToken(e.token);
+                if (parsed.type !== 'unit' || !parsed.unit || !parsed.stars) continue;
+                if (!unitStarsIndex.has(parsed.unit)) unitStarsIndex.set(parsed.unit, new Set());
+                unitStarsIndex.get(parsed.unit).add(parsed.stars);
+            }
+
             equippedCountIndex = new Map();
             for (const e of index) {
                 if (e.type !== 'equipped' || typeof e.token !== 'string' || !e.token.startsWith('E:')) continue;
@@ -174,14 +233,10 @@
                 const unit = parsed.unit;
                 if (!byUnit.has(unit)) byUnit.set(unit, { unit, unitToken: `U:${unit}`, stars: null, equipped: [] });
                 const group = byUnit.get(unit);
-                // Prefer star-level unit token (e.g. U:Ambessa:2) for display if present.
                 if (parsed.stars) {
                     if (!group.stars || parsed.stars > group.stars) {
                         group.stars = parsed.stars;
-                        group.unitToken = token;
                     }
-                } else if (!group.stars) {
-                    group.unitToken = token;
                 }
             } else if (parsed.type === 'equipped') {
                 const unit = parsed.unit;
@@ -200,6 +255,15 @@
         return Array.from(byUnit.values()).sort((a, b) =>
             getDisplayName('unit', a.unit).localeCompare(getDisplayName('unit', b.unit))
         );
+    }
+
+    function getStarOptions(unit, selectedStars) {
+        const set = unitStarsIndex.get(unit);
+        const options = set ? Array.from(set) : [1, 2, 3];
+        if (selectedStars && !options.includes(selectedStars)) options.push(selectedStars);
+        return options
+            .filter((n) => Number.isFinite(n) && n >= 1)
+            .sort((a, b) => a - b);
     }
 
     $: unitGroups = buildUnitGroups($selectedTokens);
@@ -223,7 +287,76 @@
             {#each unitGroups as group (group.unit)}
                 <div class="unit-group">
                     <div class="chip unit champion-chip">
-                        <span class="champion-name">{getChipLabel(group.unitToken)}</span>
+                        <div class="champion-header">
+                            <span class="champion-name">{getChipLabel(group.unitToken)}</span>
+                            <div class="champion-stars">
+                                <button
+                                    type="button"
+                                    class="star-trigger"
+                                    class:open={starOpenUnit === group.unit}
+                                    aria-label="Star level filter"
+                                    aria-haspopup="listbox"
+                                    aria-expanded={starOpenUnit === group.unit}
+                                    on:click={() => toggleStarMenu(group.unit)}
+                                    on:keydown={(e) => handleStarKeydown(e, group.unit)}
+                                >
+                                    <span class="star-value">
+                                        {#if group.stars}
+                                            {group.stars}★
+                                        {:else}
+                                            Any
+                                        {/if}
+                                    </span>
+                                    <span class="star-chevron" aria-hidden="true">▾</span>
+                                </button>
+
+                                {#if starOpenUnit === group.unit}
+                                    <div
+                                        class="star-popover"
+                                        role="listbox"
+                                        tabindex="-1"
+                                        aria-label="Star level filter"
+                                        on:keydown={(e) => {
+                                            if (e.key === 'Escape') {
+                                                e.preventDefault();
+                                                closeStarMenu();
+                                            }
+                                        }}
+                                    >
+                                        <button
+                                            bind:this={starFirstOptionEl}
+                                            type="button"
+                                            role="option"
+                                            class="star-option"
+                                            class:selected={!group.stars}
+                                            aria-selected={!group.stars}
+                                            on:click={() => selectStar(group.unit, null)}
+                                        >
+                                            <span class="star-option-label">Any</span>
+                                            {#if !group.stars}
+                                                <span class="star-option-check" aria-hidden="true">✓</span>
+                                            {/if}
+                                        </button>
+
+                                        {#each getStarOptions(group.unit, group.stars) as s (s)}
+                                            <button
+                                                type="button"
+                                                role="option"
+                                                class="star-option"
+                                                class:selected={group.stars === s}
+                                                aria-selected={group.stars === s}
+                                                on:click={() => selectStar(group.unit, s)}
+                                            >
+                                                <span class="star-option-label">{s}★</span>
+                                                {#if group.stars === s}
+                                                    <span class="star-option-check" aria-hidden="true">✓</span>
+                                                {/if}
+                                            </button>
+                                        {/each}
+                                    </div>
+                                {/if}
+                            </div>
+                        </div>
 
                         <div class="champion-items">
                             {#each group.equipped as eq (eq.token)}
@@ -489,11 +622,167 @@
         flex-wrap: wrap;
     }
 
+    .champion-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+    }
+
     .champion-name {
         font-weight: 800;
         font-size: 12px;
         letter-spacing: -0.01em;
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .champion-stars {
+        display: inline-flex;
+        position: relative;
+        align-items: center;
+        gap: 4px;
+        flex: 0 0 auto;
+    }
+
+    .star-trigger {
+        border: 1px solid var(--border);
+        background: linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.06),
+            rgba(255, 255, 255, 0.02)
+        );
+        color: var(--text-secondary);
+        font-size: 10px;
+        font-weight: 800;
+        padding: 3px 8px;
+        border-radius: 999px;
+        cursor: pointer;
+        line-height: 1.2;
+        opacity: 0.95;
+        transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease,
+            color 0.12s ease, opacity 0.12s ease;
+        user-select: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+    }
+
+    .star-trigger:hover {
+        opacity: 1;
+        color: var(--text-primary);
+        border-color: var(--border-hover);
+        background: linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.08),
+            rgba(255, 255, 255, 0.03)
+        );
+        transform: translateY(-1px);
+    }
+
+    .star-trigger:active {
+        transform: translateY(0);
+    }
+
+    .star-trigger:focus-visible {
+        outline: 2px solid color-mix(in oklab, var(--unit) 55%, transparent 45%);
+        outline-offset: 2px;
+    }
+
+    .star-trigger.open {
+        border-color: color-mix(in oklab, var(--unit) 38%, var(--border) 62%);
+        color: var(--text-primary);
+    }
+
+    .star-value {
+        letter-spacing: -0.01em;
+    }
+
+    .star-chevron {
+        font-size: 11px;
+        opacity: 0.75;
+        transition: transform 0.12s ease, opacity 0.12s ease;
+    }
+
+    .star-trigger.open .star-chevron {
+        transform: rotate(180deg);
+        opacity: 1;
+    }
+
+    .star-popover {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        padding: 6px;
+        min-width: 116px;
+        background: rgba(17, 17, 17, 0.92);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(10px);
+        z-index: 60;
+        display: grid;
+        gap: 4px;
+        transform-origin: top left;
+        animation: star-pop 110ms ease-out;
+    }
+
+    @keyframes star-pop {
+        from {
+            opacity: 0;
+            transform: translateY(-6px) scale(0.98);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+    }
+
+    .star-option {
+        width: 100%;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.01);
+        color: var(--text-secondary);
+        padding: 6px 8px;
+        border-radius: 10px;
+        cursor: pointer;
+        line-height: 1.2;
+        transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease,
+            color 0.12s ease;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        text-align: left;
+        font-size: 11px;
+        font-weight: 650;
+    }
+
+    .star-option:hover,
+    .star-option:focus-visible {
+        color: var(--text-primary);
+        background: rgba(255, 255, 255, 0.04);
+        border-color: rgba(255, 255, 255, 0.12);
+        transform: translateY(-1px);
+        outline: none;
+    }
+
+    .star-option:active {
+        transform: translateY(0);
+    }
+
+    .star-option.selected {
+        background: rgba(255, 107, 157, 0.12);
+        border-color: rgba(255, 107, 157, 0.22);
+        color: var(--text-primary);
+    }
+
+    .star-option-check {
+        color: var(--unit);
+        font-weight: 900;
+        opacity: 0.95;
     }
 
     .champion-items {

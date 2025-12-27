@@ -170,12 +170,12 @@ class GraphEngine:
             ids.append(pm_id)
             token_data[token_id] = (ids, psum + placement)
 
-            # Unit star-level token (2★, 3★, ...) for filtering.
+            # Unit star-level token (1★, 2★, 3★, ...) for filtering.
             # Base unit token represents any star level.
-            if isinstance(unit_tier, int) and unit_tier >= 2:
+            if isinstance(unit_tier, int) and unit_tier >= 1:
                 star_token = f"U:{unit_name}:{unit_tier}"
                 token_id = self._get_or_create_token_id(star_token)
-                self.labels[token_id] = f"{unit_name} {unit_tier}★"
+                self.labels[token_id] = f"{unit_name} {unit_tier}"
 
                 if token_id not in token_data:
                     token_data[token_id] = ([], 0)

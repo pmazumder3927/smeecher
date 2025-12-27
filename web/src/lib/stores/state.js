@@ -164,6 +164,49 @@ export function removeUnitFilters(unit, source = 'ui') {
     });
 }
 
+export function setUnitStarFilter(unit, stars, source = 'ui') {
+    const baseToken = `U:${unit}`;
+    const starPrefix = `${baseToken}:`;
+
+    const starNum = stars == null ? null : parseInt(stars, 10);
+    const desiredStarToken = Number.isFinite(starNum) ? `${baseToken}:${starNum}` : null;
+
+    selectedTokens.update((tokens) => {
+        const removed = tokens.filter((t) => t.startsWith(starPrefix));
+        let next = tokens.filter((t) => !t.startsWith(starPrefix));
+
+        const added = [];
+
+        // Always keep the base unit token so the composite chip stays consistent.
+        if (!next.includes(baseToken)) {
+            next = [...next, baseToken];
+            added.push(baseToken);
+        }
+
+        if (desiredStarToken && !next.includes(desiredStarToken)) {
+            next = [...next, desiredStarToken];
+            added.push(desiredStarToken);
+        }
+
+        if (removed.length > 0 || added.length > 0) {
+            posthog.capture('unit_star_filter_set', {
+                unit,
+                stars: Number.isFinite(starNum) ? starNum : null,
+                added_count: added.length,
+                removed_count: removed.length,
+                source
+            });
+            recordAction({
+                type: 'unit_star_filter_set',
+                source,
+                tokens: [...added, ...removed]
+            });
+        }
+
+        return next;
+    });
+}
+
 export function toggleType(type) {
     activeTypes.update(types => {
         const newTypes = new Set(types);
