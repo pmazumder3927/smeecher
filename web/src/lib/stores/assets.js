@@ -3,10 +3,6 @@ import { writable, get } from "svelte/store";
 const CDRAGON_BASE =
   "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default";
 
-// Riot Data Dragon for official display names
-const DDRAGON_VERSION = "14.24.1";
-const DDRAGON_BASE = `https://ddragon.leagueoflegends.com/cdn/${DDRAGON_VERSION}/data/en_US`;
-
 // Asset lookup maps
 export const itemIconMap = writable(new Map());
 export const itemDisplayMap = writable(new Map());
@@ -23,23 +19,41 @@ export const assetsLoaded = writable(false);
  */
 export async function loadCDragonData() {
   try {
-    const [itemsRes, traitsRes, ddragonItemsRes] = await Promise.all([
+    const [itemsRes, traitsRes] = await Promise.all([
       fetch(`${CDRAGON_BASE}/v1/tftitems.json`),
       fetch(`${CDRAGON_BASE}/v1/tfttraits.json`),
-      fetch(`${DDRAGON_BASE}/tft-item.json`),
     ]);
 
-    const [items, traits, ddragonData] = await Promise.all([
-      itemsRes.json(),
-      traitsRes.json(),
-      ddragonItemsRes.json(),
-    ]);
+    // Fetch Data Dragon TFT item names (optional). We use it for display-name mapping
+    // when available, but fall back to Community Dragon so we stay up-to-date with
+    // in-game renames.
+    const ddragonData = await (async () => {
+      try {
+        const versionsRes = await fetch(
+          "https://ddragon.leagueoflegends.com/api/versions.json"
+        );
+        const versions = await versionsRes.json();
+        const latest = Array.isArray(versions) ? versions[0] : null;
+        if (!latest) return null;
+        const res = await fetch(
+          `https://ddragon.leagueoflegends.com/cdn/${latest}/data/en_US/tft-item.json`
+        );
+        if (!res.ok) return null;
+        return await res.json();
+      } catch {
+        return null;
+      }
+    })();
+
+    const [items, traits] = await Promise.all([itemsRes.json(), traitsRes.json()]);
 
     // Build nameId -> official display name map from Data Dragon
     const officialNames = new Map();
-    for (const [id, data] of Object.entries(ddragonData.data || {})) {
-      if (data.name) {
-        officialNames.set(id.toLowerCase(), data.name);
+    if (ddragonData?.data) {
+      for (const [id, data] of Object.entries(ddragonData.data || {})) {
+        if (data?.name) {
+          officialNames.set(id.toLowerCase(), data.name);
+        }
       }
     }
 
@@ -53,10 +67,10 @@ export async function loadCDragonData() {
     items.forEach((item) => {
       const nameId = item.nameId || "";
       const iconPath = item.squareIconPath || item.iconPath;
-      // Prefer Data Dragon display name, fall back to CDragon
+      // Prefer current in-game name from CDragon; Data Dragon is optional.
       const displayName =
-        officialNames.get(nameId.toLowerCase()) ||
-        item.name?.replace(/<[^>]*>/g, "").trim();
+        item.name?.replace(/<[^>]*>/g, "").trim() ||
+        officialNames.get(nameId.toLowerCase());
 
       if (displayName && iconPath) {
         const url = `${CDRAGON_BASE}${iconPath

@@ -37,7 +37,24 @@
   ]);
 
   function normalizeSearchText(text) {
-    return text.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return (text || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  // More forgiving normalization for possessives/plurals:
+  // "Kraken's Fury" -> "krakenfury", "Runaans Hurricane" -> "runaanhurricane"
+  function normalizeSearchTextLoose(text) {
+    const cleaned = (text || "")
+      .toLowerCase()
+      .replace(/['’]s\b/g, "") // drop possessive
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+    if (!cleaned) return "";
+    const parts = cleaned.split(/\s+/).filter(Boolean);
+    const stemmed = parts.map((p) => {
+      if (p.length > 3 && p.endsWith("s") && !p.endsWith("ss")) return p.slice(0, -1);
+      return p;
+    });
+    return stemmed.join("");
   }
 
   function getActiveSegment(text) {
@@ -124,10 +141,22 @@
   }
 
   function scoreMatch(entry, qNorm) {
-    if (entry.labelNorm === qNorm || entry.tokenSuffixNorm === qNorm) return 0;
+    const qLoose = normalizeSearchTextLoose(qNorm);
+    if (
+      entry.labelNorm === qNorm ||
+      entry.tokenSuffixNorm === qNorm ||
+      entry.labelNormLoose === qLoose ||
+      entry.tokenSuffixNormLoose === qLoose
+    )
+      return 0;
     if (
       entry.labelNorm.startsWith(qNorm) ||
       entry.tokenSuffixNorm.startsWith(qNorm)
+    )
+      return 1;
+    if (
+      entry.labelNormLoose.startsWith(qLoose) ||
+      entry.tokenSuffixNormLoose.startsWith(qLoose)
     )
       return 1;
     return 2;
@@ -135,6 +164,7 @@
 
   function searchLocal(segment) {
     const qNorm = normalizeSearchText(segment);
+    const qLoose = normalizeSearchTextLoose(segment);
     if (!qNorm) return [];
 
     const matches = [];
@@ -142,7 +172,10 @@
       if (entry.type === "equipped") continue;
       if (
         entry.labelNorm.includes(qNorm) ||
-        entry.tokenSuffixNorm.includes(qNorm)
+        entry.tokenSuffixNorm.includes(qNorm) ||
+        (qLoose &&
+          (entry.labelNormLoose.includes(qLoose) ||
+            entry.tokenSuffixNormLoose.includes(qLoose)))
       ) {
         matches.push(entry);
       }
@@ -163,10 +196,13 @@
 
   function resolvePhraseToToken(phrase) {
     const key = normalizeSearchText(phrase);
+    const keyLoose = normalizeSearchTextLoose(phrase);
     if (!key) return null;
 
     const exact = exactLookup.get(key);
     if (exact) return exact;
+    const exactLoose = keyLoose ? exactLookup.get(keyLoose) : null;
+    if (exactLoose) return exactLoose;
 
     // Unique prefix match (lets users type "aat" -> Aatrox, etc.)
     let best = null;
@@ -176,7 +212,10 @@
       if (entry.type === "equipped") continue;
       if (
         entry.labelNorm.startsWith(key) ||
-        entry.tokenSuffixNorm.startsWith(key)
+        entry.tokenSuffixNorm.startsWith(key) ||
+        (keyLoose &&
+          (entry.labelNormLoose.startsWith(keyLoose) ||
+            entry.tokenSuffixNormLoose.startsWith(keyLoose)))
       ) {
         matches += 1;
         if (entry.count > bestCount) {
@@ -507,7 +546,9 @@
       searchIndex = index.map((e) => ({
         ...e,
         labelNorm: normalizeSearchText(e.label),
+        labelNormLoose: normalizeSearchTextLoose(e.label),
         tokenSuffixNorm: normalizeSearchText(e.token.slice(2)),
+        tokenSuffixNormLoose: normalizeSearchTextLoose(e.token.slice(2)),
         count: e.count || 0,
       }));
       exactLookup = new Map();
@@ -516,8 +557,15 @@
         if (entry.type !== "equipped") {
           if (entry.labelNorm && !exactLookup.has(entry.labelNorm))
             exactLookup.set(entry.labelNorm, entry.token);
+          if (entry.labelNormLoose && !exactLookup.has(entry.labelNormLoose))
+            exactLookup.set(entry.labelNormLoose, entry.token);
           if (entry.tokenSuffixNorm && !exactLookup.has(entry.tokenSuffixNorm))
             exactLookup.set(entry.tokenSuffixNorm, entry.token);
+          if (
+            entry.tokenSuffixNormLoose &&
+            !exactLookup.has(entry.tokenSuffixNormLoose)
+          )
+            exactLookup.set(entry.tokenSuffixNormLoose, entry.token);
         }
         if (entry.token && !tokenLookup.has(entry.token))
           tokenLookup.set(entry.token, entry);

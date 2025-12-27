@@ -547,6 +547,9 @@ def get_graph(
     Uses roaring bitmap intersections for O(n) performance
     where n is the size of the smallest set.
     """
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
     token_list = [t.strip() for t in tokens.split(",") if t.strip()]
     active_types = set(t.strip().lower() for t in types.split(",") if t.strip())
     allowed_item_types = _parse_item_types_param(item_types)
@@ -572,11 +575,11 @@ def get_graph(
 
         nodes = []
         for t in all_units:
-            nodes.append({"id": t, "label": t[2:], "type": "unit", "isCenter": False})
+            nodes.append({"id": t, "label": ENGINE.get_label(t), "type": "unit", "isCenter": False})
         for t in all_items:
-            nodes.append({"id": t, "label": t[2:], "type": "item", "isCenter": False})
+            nodes.append({"id": t, "label": ENGINE.get_label(t), "type": "item", "isCenter": False})
         for t in all_traits:
-            nodes.append({"id": t, "label": t[2:], "type": "trait", "isCenter": False})
+            nodes.append({"id": t, "label": ENGINE.get_label(t), "type": "trait", "isCenter": False})
 
         return {
             "center": [],
@@ -674,7 +677,7 @@ def get_graph(
             if node_id not in node_ids:
                 nodes.append({
                     "id": node_id,
-                    "label": parsed["unit"],
+                    "label": ENGINE.get_label(node_id),
                     "type": "unit",
                     "isCenter": True
                 })
@@ -684,22 +687,20 @@ def get_graph(
             if node_id not in node_ids:
                 nodes.append({
                     "id": node_id,
-                    "label": parsed["item"],
+                    "label": ENGINE.get_label(node_id),
                     "type": "item",
                     "isCenter": True
                 })
                 node_ids.add(node_id)
         elif parsed["type"] == "trait":
-            trait_label = parsed["trait"]
             if parsed.get("tier"):
                 node_id = f"T:{parsed['trait']}:{parsed['tier']}"
-                trait_label = f"{parsed['trait']} {parsed['tier']}"
             else:
                 node_id = f"T:{parsed['trait']}"
             if node_id not in node_ids:
                 nodes.append({
                     "id": node_id,
-                    "label": trait_label,
+                    "label": ENGINE.get_label(node_id),
                     "type": "trait",
                     "isCenter": True
                 })
@@ -710,7 +711,7 @@ def get_graph(
             if unit_id not in node_ids:
                 nodes.append({
                     "id": unit_id,
-                    "label": parsed["unit"],
+                    "label": ENGINE.get_label(unit_id),
                     "type": "unit",
                     "isCenter": True
                 })
@@ -718,7 +719,7 @@ def get_graph(
             if item_id not in node_ids:
                 nodes.append({
                     "id": item_id,
-                    "label": parsed["item"],
+                    "label": ENGINE.get_label(item_id),
                     "type": "item",
                     "isCenter": True
                 })
@@ -736,7 +737,7 @@ def get_graph(
             if from_id not in node_ids:
                 nodes.append({
                     "id": from_id,
-                    "label": parsed["unit"],
+                    "label": ENGINE.get_label(from_id),
                     "type": "unit",
                     "isCenter": False
                 })
@@ -744,7 +745,7 @@ def get_graph(
             if to_id not in node_ids:
                 nodes.append({
                     "id": to_id,
-                    "label": parsed["item"],
+                    "label": ENGINE.get_label(to_id),
                     "type": "item",
                     "isCenter": False
                 })
@@ -767,7 +768,7 @@ def get_graph(
             if node_id not in node_ids:
                 nodes.append({
                     "id": node_id,
-                    "label": parsed["unit"],
+                    "label": ENGINE.get_label(node_id),
                     "type": "unit",
                     "isCenter": False
                 })
@@ -782,7 +783,10 @@ def get_graph(
                 elif center_parsed["type"] == "equipped":
                     from_id = f"U:{center_parsed['unit']}"
                 elif center_parsed["type"] == "trait":
-                    from_id = f"T:{center_parsed['trait']}"
+                    if center_parsed.get("tier"):
+                        from_id = f"T:{center_parsed['trait']}:{center_parsed['tier']}"
+                    else:
+                        from_id = f"T:{center_parsed['trait']}"
                 else:
                     from_id = node_id
             else:
@@ -805,7 +809,7 @@ def get_graph(
             if node_id not in node_ids:
                 nodes.append({
                     "id": node_id,
-                    "label": parsed["item"],
+                    "label": ENGINE.get_label(node_id),
                     "type": "item",
                     "isCenter": False
                 })
@@ -820,7 +824,10 @@ def get_graph(
                 elif center_parsed["type"] == "equipped":
                     from_id = f"I:{center_parsed['item']}"
                 elif center_parsed["type"] == "trait":
-                    from_id = f"T:{center_parsed['trait']}"
+                    if center_parsed.get("tier"):
+                        from_id = f"T:{center_parsed['trait']}:{center_parsed['tier']}"
+                    else:
+                        from_id = f"T:{center_parsed['trait']}"
                 else:
                     from_id = node_id
             else:
@@ -839,17 +846,15 @@ def get_graph(
             })
 
         elif parsed["type"] == "trait":
-            trait_label = parsed["trait"]
             if parsed.get("tier"):
                 node_id = f"T:{parsed['trait']}:{parsed['tier']}"
-                trait_label = f"{parsed['trait']} {parsed['tier']}"
             else:
                 node_id = f"T:{parsed['trait']}"
 
             if node_id not in node_ids:
                 nodes.append({
                     "id": node_id,
-                    "label": trait_label,
+                    "label": ENGINE.get_label(node_id),
                     "type": "trait",
                     "isCenter": False
                 })
@@ -864,7 +869,10 @@ def get_graph(
                 elif center_parsed["type"] == "equipped":
                     from_id = f"U:{center_parsed['unit']}"
                 elif center_parsed["type"] == "trait":
-                    from_id = f"T:{center_parsed['trait']}"
+                    if center_parsed.get("tier"):
+                        from_id = f"T:{center_parsed['trait']}:{center_parsed['tier']}"
+                    else:
+                        from_id = f"T:{center_parsed['trait']}"
                 else:
                     from_id = node_id
             else:

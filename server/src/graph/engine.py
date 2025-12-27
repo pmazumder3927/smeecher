@@ -196,6 +196,10 @@ class GraphEngine:
             JOIN matches m ON m.match_id = pm.match_id
             WHERE pm.traits IS NOT NULL AND m.tft_set_number = 16
         """)
+        # Track trait breakpoints: (trait_name, tier) -> minimum observed num_units.
+        # Riot's API reports tiers as an index (1,2,3...) while the in-game UI
+        # talks in unit counts (e.g. "Demacia 3"). We infer that mapping from data.
+        trait_min_units: dict[tuple[str, int], int] = {}
         for row in c:
             pm_id = row["id"]
             placement = row["placement"]
@@ -207,7 +211,13 @@ class GraphEngine:
             traits = orjson.loads(traits_json)
             for trait in traits:
                 trait_name = self._clean_trait_name(trait["name"])
-                tier = trait.get("tier", 1)
+                tier = int(trait.get("tier", 1) or 1)
+                num_units = trait.get("num_units")
+                if isinstance(num_units, int) and num_units > 0:
+                    key = (trait_name, tier)
+                    prev = trait_min_units.get(key)
+                    if prev is None or num_units < prev:
+                        trait_min_units[key] = num_units
 
                 # Base trait token (any tier)
                 trait_token = f"T:{trait_name}"
@@ -220,17 +230,27 @@ class GraphEngine:
                 ids.append(pm_id)
                 token_data[token_id] = (ids, psum + placement)
 
-                # Tiered trait token (T:Brawler:2 means tier 2+)
+                # Tiered trait tokens: T:Brawler:2 means tier 2+ (inclusive).
                 if tier >= 2:
-                    tiered_token = f"T:{trait_name}:{tier}"
-                    token_id = self._get_or_create_token_id(tiered_token)
-                    self.labels[token_id] = f"{trait_name} {tier}"
+                    for t_level in range(2, tier + 1):
+                        tiered_token = f"T:{trait_name}:{t_level}"
+                        token_id = self._get_or_create_token_id(tiered_token)
+                        self.labels[token_id] = f"{trait_name} {t_level}"
 
-                    if token_id not in token_data:
-                        token_data[token_id] = ([], 0)
-                    ids, psum = token_data[token_id]
-                    ids.append(pm_id)
-                    token_data[token_id] = (ids, psum + placement)
+                        if token_id not in token_data:
+                            token_data[token_id] = ([], 0)
+                        ids, psum = token_data[token_id]
+                        ids.append(pm_id)
+                        token_data[token_id] = (ids, psum + placement)
+
+        # Update trait labels to show in-game unit breakpoints (e.g. Demacia 3/5/7...),
+        # not Riot's tier index (1/2/3...).
+        for (trait_name, tier), min_units in trait_min_units.items():
+            token = f"T:{trait_name}" if tier == 1 else f"T:{trait_name}:{tier}"
+            token_id = self.token_to_id.get(token)
+            if token_id is None:
+                continue
+            self.labels[token_id] = f"{trait_name} {min_units}"
 
         conn.close()
 
