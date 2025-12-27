@@ -14,6 +14,24 @@ export const failedIcons = writable(new Set());
 // Loading state
 export const assetsLoaded = writable(false);
 
+function normalizeAssetKey(type, name) {
+  const lower = String(name ?? "").toLowerCase().trim();
+  if (type === "unit") {
+    // Support unit star-level labels/tokens:
+    // - "Ambessa 2★" (label) -> "ambessa"
+    // - "Ambessa:2" (token suffix) -> "ambessa"
+    return lower
+      .replace(/:\d+\s*$/, "")
+      .replace(/\s+\d+\s*★*\s*$/, "")
+      .replace(/[^a-z0-9]/g, "")
+      .trim();
+  }
+  if (type === "trait") {
+    return lower.replace(/(?:\s|:)\d+\s*$/, "").trim();
+  }
+  return lower;
+}
+
 /**
  * Load TFT data from Community Dragon (icons) and Data Dragon (display names)
  */
@@ -158,7 +176,7 @@ export async function loadCDragonData() {
  * Get icon URL for a given type and name
  */
 export function getIconUrl(type, name) {
-  const lower = name.toLowerCase();
+  const lower = normalizeAssetKey(type, name);
 
   switch (type) {
     case "unit":
@@ -181,7 +199,7 @@ export function getIconUrl(type, name) {
         return iconMap.get(lower);
       }
       return `${CDRAGON_BASE}/assets/ux/traiticons/trait_icon_16_${lower.replace(
-        /\s/g,
+        /[^a-z0-9]/g,
         ""
       )}.tft_set16.png`;
     }
@@ -195,7 +213,7 @@ export function getIconUrl(type, name) {
  * Get display name from API name
  */
 export function getDisplayName(type, apiName) {
-  const lower = apiName.toLowerCase();
+  const lower = String(apiName ?? "").toLowerCase();
 
   if (type === "item") {
     const displayMap = get(itemDisplayMap);
@@ -209,6 +227,19 @@ export function getDisplayName(type, apiName) {
     if (displayMap.has(lower)) {
       return displayMap.get(lower);
     }
+    // Handle trait labels that include breakpoint numbers (e.g. "teamup_ambessakindred 2").
+    const m = String(apiName ?? "")
+      .trim()
+      .match(/^(.*?)(?:\s+(\d+))$/);
+    if (m) {
+      const base = m[1].trim().toLowerCase();
+      const num = m[2];
+      if (displayMap.has(base)) {
+        const display = displayMap.get(base);
+        if (num === "1") return display;
+        return `${display} ${num}`;
+      }
+    }
   }
 
   return apiName;
@@ -218,9 +249,10 @@ export function getDisplayName(type, apiName) {
  * Mark an icon as failed to load
  */
 export function markIconFailed(type, name) {
+  const key = `${type}:${normalizeAssetKey(type, name)}`;
   failedIcons.update((set) => {
     const newSet = new Set(set);
-    newSet.add(`${type}:${name}`);
+    newSet.add(key);
     return newSet;
   });
 }
@@ -229,5 +261,5 @@ export function markIconFailed(type, name) {
  * Check if an icon has failed to load
  */
 export function hasIconFailed(type, name) {
-  return get(failedIcons).has(`${type}:${name}`);
+  return get(failedIcons).has(`${type}:${normalizeAssetKey(type, name)}`);
 }

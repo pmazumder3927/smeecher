@@ -13,6 +13,7 @@
     setItemTypeFilters,
   } from "../stores/state.js";
   import { getDisplayName } from "../stores/assets.js";
+  import { parseToken } from "../utils/tokens.js";
   import posthog from "../client/posthog";
 
   // Voice client state
@@ -44,12 +45,18 @@
   // Helper for fuzzy lookup
   function fuzzyLookup(name, lookup) {
     if (!name || !lookup) return null;
-    const key = String(name).toLowerCase().replace(/\s+/g, "");
-    if (lookup[key]) return lookup[key];
-    if (key.endsWith("s") && lookup[key.slice(0, -1)])
-      return lookup[key.slice(0, -1)];
-    if (key.endsWith("es") && lookup[key.slice(0, -2)])
-      return lookup[key.slice(0, -2)];
+    const raw = String(name).toLowerCase();
+    const keys = [
+      raw.replace(/\s+/g, ""),
+      raw.replace(/[^a-z0-9]/g, ""),
+    ].filter(Boolean);
+
+    for (const key of keys) {
+      if (lookup[key]) return lookup[key];
+      if (key.endsWith("s") && lookup[key.slice(0, -1)]) return lookup[key.slice(0, -1)];
+      if (key.endsWith("es") && lookup[key.slice(0, -2)]) return lookup[key.slice(0, -2)];
+    }
+
     return null;
   }
 
@@ -210,10 +217,17 @@
         : null;
 
     const focusUnit = openItems
-      ? Array.isArray(args?.units) && args.units.length > 0
-        ? args.units[0]
-        : validatedTokens?.find?.((x) => x.type === "unit")?.token?.slice?.(2) ??
-          null
+      ? (() => {
+          const unitTok = validatedTokens?.find?.((x) => x.type === "unit")?.token;
+          if (unitTok?.startsWith?.("U:")) {
+            const parsed = parseToken(unitTok);
+            return parsed?.unit ?? null;
+          }
+          const raw =
+            Array.isArray(args?.units) && args.units.length > 0 ? args.units[0] : null;
+          if (typeof raw !== "string") return null;
+          return raw.replace(/\s+\d+\s*★*\s*$/, "").trim() || null;
+        })()
       : null;
 
     const didSomething =
@@ -351,8 +365,9 @@
       const itemToken = fuzzyLookup(itemName, vocab.item_lookup);
       if (!unitToken?.startsWith?.("U:")) continue;
       if (!itemToken?.startsWith?.("I:")) continue;
+      const parsedUnit = parseToken(unitToken);
       pairs.push({
-        unit: unitToken.slice(2),
+        unit: parsedUnit?.unit ?? unitToken.slice(2),
         item: itemToken.slice(2),
       });
     }
@@ -368,7 +383,7 @@
     const items = validatedTokens.filter((x) => x.type === "item");
     if (units.length !== 1 || items.length === 0) return [];
 
-    const unit = units[0].token.slice(2);
+    const unit = (parseToken(units[0].token)?.unit ?? units[0].token.slice(2));
     return items.map((i) => ({ unit, item: i.token.slice(2) }));
   }
 
@@ -410,14 +425,29 @@
       const name = typeof trait === "string" ? trait : trait.name;
       const tier = typeof trait === "object" ? trait.tier : null;
       const baseToken = fuzzyLookup(name, vocab.trait_lookup);
-      if (baseToken && !seen.has(baseToken)) {
-        seen.add(baseToken);
-        const token = tier && tier >= 2 ? `${baseToken}:${tier}` : baseToken;
-        tokens.push({
-          token,
-          label: tier ? `${name} ${tier}` : name,
-          type: "trait",
-        });
+      if (!baseToken) continue;
+
+      let token = baseToken;
+      let label = name;
+
+      const tierNum = tier == null ? null : parseInt(tier, 10);
+      if (Number.isFinite(tierNum)) {
+        const tierToken = vocab.trait_tier_lookup
+          ? fuzzyLookup(`${name} ${tierNum}`, vocab.trait_tier_lookup)
+          : null;
+        if (tierToken) {
+          token = tierToken;
+          label = `${name} ${tierNum}`;
+        } else if (tierNum >= 2) {
+          // Back-compat fallback: treat as internal tier index.
+          token = `${baseToken}:${tierNum}`;
+          label = `${name} ${tierNum}`;
+        }
+      }
+
+      if (!seen.has(token)) {
+        seen.add(token);
+        tokens.push({ token, label, type: "trait" });
       }
     }
 

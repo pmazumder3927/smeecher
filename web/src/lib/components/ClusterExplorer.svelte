@@ -15,6 +15,7 @@
         clusterExplorerRunRequest
     } from '../stores/state.js';
     import { getTokenType, getTokenLabel } from '../utils/tokens.js';
+    import { getSearchIndex } from '../utils/searchIndexCache.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { getPlacementColor } from '../utils/colors.js';
     import posthog from '../client/posthog';
@@ -29,6 +30,7 @@
     let data = null;
     let selectedClusterId = null;
     let sortBy = 'avg'; // avg | size | top4
+    let tokenLabelIndex = new Map();
 
     let rootEl;
     let measuredWidth = 0;
@@ -120,6 +122,15 @@
             // ignore
         }
 
+        (async () => {
+            try {
+                const index = await getSearchIndex();
+                tokenLabelIndex = new Map(index.map((e) => [e.token, e.label]));
+            } catch {
+                // ignore
+            }
+        })();
+
         const ro = new ResizeObserver(entries => {
             const entry = entries[0];
             if (entry) measuredWidth = entry.contentRect.width;
@@ -193,7 +204,7 @@
     }
 
     function tokenText(token) {
-        return getTokenLabel(token, getDisplayName);
+        return tokenLabelIndex.get(token) ?? getTokenLabel(token, getDisplayName);
     }
 
     function tokenIcon(token) {

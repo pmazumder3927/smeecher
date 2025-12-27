@@ -31,6 +31,8 @@ export async function getSearchIndex() {
     for (const entry of index) {
       if (entry.type === "item") {
         entry.label = getDisplayName("item", entry.label);
+      } else if (entry.type === "trait") {
+        entry.label = getDisplayName("trait", entry.label);
       }
     }
     cachedIndex = index;
@@ -41,4 +43,3 @@ export async function getSearchIndex() {
 
   return inflight;
 }
-

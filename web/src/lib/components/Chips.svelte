@@ -2,7 +2,7 @@
     import { onMount, tick } from 'svelte';
     import { selectedTokens, removeToken, clearTokens, equipItemOnUnit, removeUnitFilters } from '../stores/state.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
-    import { getTokenType, parseToken } from '../utils/tokens.js';
+    import { getTokenType, getTokenLabel, parseToken } from '../utils/tokens.js';
     import { getSearchIndex } from '../utils/searchIndexCache.js';
 
     let equipOpenUnit = null;
@@ -13,6 +13,7 @@
 
     let itemIndex = [];
     let equippedCountIndex = new Map();
+    let tokenLabelIndex = new Map();
     let itemsReady = false;
     let itemsError = null;
 
@@ -123,6 +124,7 @@
     onMount(async () => {
         try {
             const index = await getSearchIndex();
+            tokenLabelIndex = new Map(index.map((e) => [e.token, e.label]));
             equippedCountIndex = new Map();
             for (const e of index) {
                 if (e.type !== 'equipped' || typeof e.token !== 'string' || !e.token.startsWith('E:')) continue;
@@ -150,8 +152,9 @@
     });
 
     function getChipLabel(token) {
-        const type = getTokenType(token);
-        return getDisplayName(type, token.slice(2));
+        const label = tokenLabelIndex.get(token);
+        if (label) return label;
+        return getTokenLabel(token, getDisplayName);
     }
 
     function getChipType(token) {
@@ -169,11 +172,21 @@
             const parsed = parseToken(token);
             if (parsed.type === 'unit') {
                 const unit = parsed.unit;
-                if (!byUnit.has(unit)) byUnit.set(unit, { unit, equipped: [] });
+                if (!byUnit.has(unit)) byUnit.set(unit, { unit, unitToken: `U:${unit}`, stars: null, equipped: [] });
+                const group = byUnit.get(unit);
+                // Prefer star-level unit token (e.g. U:Ambessa:2) for display if present.
+                if (parsed.stars) {
+                    if (!group.stars || parsed.stars > group.stars) {
+                        group.stars = parsed.stars;
+                        group.unitToken = token;
+                    }
+                } else if (!group.stars) {
+                    group.unitToken = token;
+                }
             } else if (parsed.type === 'equipped') {
                 const unit = parsed.unit;
                 const item = parsed.item;
-                if (!byUnit.has(unit)) byUnit.set(unit, { unit, equipped: [] });
+                if (!byUnit.has(unit)) byUnit.set(unit, { unit, unitToken: `U:${unit}`, stars: null, equipped: [] });
                 byUnit.get(unit).equipped.push({ token, item });
             }
         }
@@ -210,7 +223,7 @@
             {#each unitGroups as group (group.unit)}
                 <div class="unit-group">
                     <div class="chip unit champion-chip">
-                        <span class="champion-name">{getDisplayName('unit', group.unit)}</span>
+                        <span class="champion-name">{getChipLabel(group.unitToken)}</span>
 
                         <div class="champion-items">
                             {#each group.equipped as eq (eq.token)}

@@ -151,15 +151,16 @@ export function removeToken(token) {
 
 export function removeUnitFilters(unit, source = 'ui') {
     const unitToken = `U:${unit}`;
+    const unitStarPrefix = `${unitToken}:`;
     const equippedPrefix = `E:${unit}|`;
 
     selectedTokens.update(tokens => {
-        const removed = tokens.filter(t => t === unitToken || t.startsWith(equippedPrefix));
+        const removed = tokens.filter(t => t === unitToken || t.startsWith(unitStarPrefix) || t.startsWith(equippedPrefix));
         if (removed.length > 0) {
             posthog.capture('unit_filters_removed', { unit, count: removed.length, source });
             recordAction({ type: 'tokens_removed', source, tokens: removed });
         }
-        return tokens.filter(t => !(t === unitToken || t.startsWith(equippedPrefix)));
+        return tokens.filter(t => !(t === unitToken || t.startsWith(unitStarPrefix) || t.startsWith(equippedPrefix)));
     });
 }
 

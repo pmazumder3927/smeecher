@@ -353,23 +353,36 @@ def _parse_item_types_param(item_types: str) -> set[str] | None:
     return normalized or None
 
 
-def _parse_item_prefixes_param(item_prefixes: str) -> set[str] | None:
+def _parse_item_prefixes_param(item_prefixes: str) -> set[str]:
     """
     Parse item_prefixes query param into normalized set (case-insensitive).
-    Empty input => None (no filtering).
+
+    Semantics:
+      - Base items (no prefix) are always included.
+      - Prefixed "set" items (e.g., Bilgewater_*) are only included when their prefix
+        is present in this set.
+      - Empty input => empty set (i.e., exclude all prefixed set items by default).
     """
     raw = [t.strip() for t in (item_prefixes or "").split(",") if t.strip()]
-    if not raw:
-        return None
     normalized = {t.rstrip("_").lower() for t in raw if t.rstrip("_")}
-    return normalized or None
+    return normalized
 
 
 def parse_token(token: str) -> dict:
     """Parse token into components."""
     token_type = get_token_type(token)
     if token_type == "unit":
-        return {"type": "unit", "unit": token[2:]}
+        rest = token[2:]
+        # Star-level units are encoded as U:UnitName:2 (2★), U:UnitName:3 (3★), etc.
+        if ":" in rest:
+            unit, maybe_stars = rest.rsplit(":", 1)
+            try:
+                stars = int(maybe_stars)
+            except ValueError:
+                stars = None
+            if stars is not None:
+                return {"type": "unit", "unit": unit, "stars": stars}
+        return {"type": "unit", "unit": rest, "stars": None}
     elif token_type == "item":
         return {"type": "item", "item": token[2:]}
     elif token_type == "equipped":
@@ -426,7 +439,10 @@ def generate_candidates(center_info: dict, current_tokens: list[str]) -> list[tu
     candidates = []
     current_set = set(current_tokens)
 
-    all_units = ENGINE.get_all_tokens_by_type("U:")
+    # Only include base unit tokens as candidates. Star-level unit tokens (U:Unit:2)
+    # are available via search, but excluding them here prevents noisy/duplicative
+    # suggestions and an explosion of root nodes.
+    all_units = [t for t in ENGINE.get_all_tokens_by_type("U:") if ":" not in t[2:]]
     all_items = ENGINE.get_all_tokens_by_type("I:")
     all_equipped = ENGINE.get_all_tokens_by_type("E:")
     all_traits = [t for t in ENGINE.get_all_tokens_by_type("T:") if ":" not in t[2:]]  # Base traits only
@@ -557,21 +573,23 @@ def get_graph(
 
     if not token_list:
         # Special case: return all root nodes (units, items, base traits)
-        all_units = ENGINE.get_all_tokens_by_type("U:")
+        all_units = [t for t in ENGINE.get_all_tokens_by_type("U:") if ":" not in t[2:]]
         all_items = ENGINE.get_all_tokens_by_type("I:")
         all_traits = [t for t in ENGINE.get_all_tokens_by_type("T:") if ":" not in t[2:]]
 
-        if allowed_item_types is not None or allowed_item_prefixes is not None:
-            def _item_allowed_root(item_name: str) -> bool:
-                item_type = get_item_type(item_name)
-                if allowed_item_types is not None and item_type not in allowed_item_types:
-                    return False
-                prefix = get_item_prefix(item_name)
-                if allowed_item_prefixes is not None and (prefix or "").lower() not in allowed_item_prefixes:
-                    return False
-                return True
+        # Always apply set-prefix filtering:
+        # - Base items (no prefix) are always included
+        # - Prefixed set items are excluded unless selected via item_prefixes
+        def _item_allowed_root(item_name: str) -> bool:
+            item_type = get_item_type(item_name)
+            if allowed_item_types is not None and item_type not in allowed_item_types:
+                return False
+            prefix = get_item_prefix(item_name)
+            if prefix and prefix.lower() not in allowed_item_prefixes:
+                return False
+            return True
 
-            all_items = [t for t in all_items if _item_allowed_root(t[2:])]
+        all_items = [t for t in all_items if _item_allowed_root(t[2:])]
 
         nodes = []
         for t in all_units:
@@ -602,31 +620,32 @@ def get_graph(
     # Generate candidates
     candidates = generate_candidates(center_info, token_list)
 
-    # Optional: narrow which item candidates are shown
-    if allowed_item_types is not None or allowed_item_prefixes is not None:
-        center_items = set(center_info.get("items") or [])
+    # Narrow which item candidates are shown:
+    # - Base items (no prefix) are always included
+    # - Prefixed set items are excluded unless selected via item_prefixes
+    center_items = set(center_info.get("items") or [])
 
-        def _item_allowed(item_name: str) -> bool:
-            item_type = get_item_type(item_name)
-            if allowed_item_types is not None and item_type not in allowed_item_types:
-                return False
-            prefix = get_item_prefix(item_name)
-            if allowed_item_prefixes is not None and (prefix or "").lower() not in allowed_item_prefixes:
-                return False
-            return True
+    def _item_allowed(item_name: str) -> bool:
+        item_type = get_item_type(item_name)
+        if allowed_item_types is not None and item_type not in allowed_item_types:
+            return False
+        prefix = get_item_prefix(item_name)
+        if prefix and prefix.lower() not in allowed_item_prefixes:
+            return False
+        return True
 
-        filtered = []
-        for tok, edge_type in candidates:
-            parsed = parse_token(tok)
-            if parsed["type"] == "item":
-                if not _item_allowed(parsed["item"]):
-                    continue
-            elif parsed["type"] == "equipped":
-                # Preserve equipped edges for explicitly-selected center items
-                if parsed["item"] not in center_items and not _item_allowed(parsed["item"]):
-                    continue
-            filtered.append((tok, edge_type))
-        candidates = filtered
+    filtered = []
+    for tok, edge_type in candidates:
+        parsed = parse_token(tok)
+        if parsed["type"] == "item":
+            if not _item_allowed(parsed["item"]):
+                continue
+        elif parsed["type"] == "equipped":
+            # Preserve equipped edges for explicitly-selected center items
+            if parsed["item"] not in center_items and not _item_allowed(parsed["item"]):
+                continue
+        filtered.append((tok, edge_type))
+    candidates = filtered
 
     # Extract just token strings for scoring
     candidate_tokens = [t for t, _ in candidates]
@@ -1028,7 +1047,7 @@ def get_item_filters():
     Return available item filter options for the UI.
 
     These filters are *not* match constraints; they are used to narrow which item
-    candidates are shown/recommended (e.g., only Bilgewater_* full items).
+    candidates are shown/recommended (e.g., include Bilgewater_* full items).
     """
     if ENGINE is None:
         raise HTTPException(status_code=503, detail="Engine not loaded")
@@ -1081,15 +1100,32 @@ def _get_voice_vocab():
     """Get cached vocabulary for voice parsing."""
     global _voice_vocab_cache
     if _voice_vocab_cache is None and ENGINE is not None:
-        units = [t[2:] for t in ENGINE.id_to_token if t.startswith("U:")]
-        traits = [t[2:] for t in ENGINE.id_to_token if t.startswith("T:") and ":" not in t[2:]]
+        import re
 
-        # Build unit name -> token lookup for case-insensitive matching
+        unit_tokens = [t for t in ENGINE.id_to_token if t.startswith("U:")]
+        base_unit_tokens = [t for t in unit_tokens if ":" not in t[2:]]
+        star_unit_tokens = [t for t in unit_tokens if ":" in t[2:]]
+        units = [ENGINE.get_label(t) for t in base_unit_tokens + star_unit_tokens]
+        base_trait_tokens = [t for t in ENGINE.id_to_token if t.startswith("T:") and ":" not in t[2:]]
+
+        def _strip_breakpoint(label: str) -> str:
+            # Engine trait labels include the inferred first breakpoint number (e.g. "Demacia 3").
+            return re.sub(r"(?:\s|:)\d+\s*$", "", label or "").strip()
+
+        # Build unit label -> token lookup for forgiving matching
         unit_lookup = {}
-        for t in ENGINE.id_to_token:
-            if t.startswith("U:"):
-                name = t[2:]
-                unit_lookup[name.lower()] = t
+        for t in base_unit_tokens + star_unit_tokens:
+            unit_id = t[2:]
+            label = ENGINE.get_label(t)
+            keys = [
+                label.lower().replace(" ", ""),
+                _normalize_search_text(label),
+                unit_id.lower().replace(" ", ""),
+                _normalize_search_text(unit_id),
+            ]
+            for key in keys:
+                if key and key not in unit_lookup:
+                    unit_lookup[key] = t
 
         # Build item label -> token lookup for fast matching
         item_lookup = {}
@@ -1097,44 +1133,86 @@ def _get_voice_vocab():
         for t in ENGINE.id_to_token:
             if t.startswith("I:"):
                 label = ENGINE.get_label(t)
-                key = label.lower().replace(" ", "")
-                if key not in item_lookup:
-                    item_lookup[key] = t
+                keys = [
+                    label.lower().replace(" ", ""),
+                    _normalize_search_text(label),
+                    t[2:].lower(),  # canonical item id (e.g. RunaansHurricane)
+                    _normalize_search_text(t[2:]),
+                ]
+                added_any = False
+                for key in keys:
+                    if key and key not in item_lookup:
+                        item_lookup[key] = t
+                        added_any = True
+                if added_any:
                     items.append(label)
 
         # Build trait name -> token lookup
         trait_lookup = {}
+        traits = []
+        for t in base_trait_tokens:
+            trait_id = t[2:]
+            label = ENGINE.get_label(t)
+            display = _strip_breakpoint(label) or trait_id
+            traits.append(display)
+
+            keys = [
+                display.lower().replace(" ", ""),
+                _normalize_search_text(display),
+                trait_id.lower().replace(" ", ""),
+                _normalize_search_text(trait_id),
+            ]
+            for key in keys:
+                if key and key not in trait_lookup:
+                    trait_lookup[key] = t
+
+        # Build trait label (with inferred breakpoint numbers) -> token lookup.
+        # Example: "Demacia 5" -> "T:Demacia:2"
+        trait_tier_lookup = {}
         for t in ENGINE.id_to_token:
-            if t.startswith("T:") and ":" not in t[2:]:
-                name = t[2:]
-                trait_lookup[name.lower()] = t
+            if not t.startswith("T:"):
+                continue
+            label = ENGINE.get_label(t)
+            keys = [
+                label.lower().replace(" ", ""),
+                _normalize_search_text(label),
+            ]
+            for key in keys:
+                if key and key not in trait_tier_lookup:
+                    trait_tier_lookup[key] = t
 
         _voice_vocab_cache = {
-            "units": sorted(units),
+            "units": sorted(set(units)),
             "items": sorted(set(items)),
-            "traits": sorted(traits),
+            "traits": sorted(set(traits)),
             "unit_lookup": unit_lookup,
             "item_lookup": item_lookup,
             "trait_lookup": trait_lookup,
+            "trait_tier_lookup": trait_tier_lookup,
         }
     return _voice_vocab_cache
 
 
 def _fuzzy_lookup(name: str, lookup: dict) -> str | None:
     """Try to find a match with fuzzy matching for plurals and common variations."""
-    key = name.lower().replace(" ", "")
+    raw = name.lower()
+    keys = [
+        raw.replace(" ", ""),
+        _normalize_search_text(raw),
+    ]
 
-    # Try exact match first
-    if key in lookup:
-        return lookup[key]
+    for key in keys:
+        # Try exact match first
+        if key in lookup:
+            return lookup[key]
 
-    # Try removing trailing 's' (plurals)
-    if key.endswith('s') and key[:-1] in lookup:
-        return lookup[key[:-1]]
+        # Try removing trailing 's' (plurals)
+        if key.endswith('s') and key[:-1] in lookup:
+            return lookup[key[:-1]]
 
-    # Try removing trailing 'es' (plurals like "cashes" -> "cash")
-    if key.endswith('es') and key[:-2] in lookup:
-        return lookup[key[:-2]]
+        # Try removing trailing 'es' (plurals like "cashes" -> "cash")
+        if key.endswith('es') and key[:-2] in lookup:
+            return lookup[key[:-2]]
 
     return None
 
@@ -1228,9 +1306,10 @@ UI INTENT (set these fields when the user asks for it):
 
 RULES:
 1. Extract EVERY entity - do not miss any
-2. Numbers before/after traits = tier (e.g., "5 demacia" = Demacia tier 5)
-3. Match phonetically similar words to the closest enum value
-4. Always call add_search_filters with everything detected"""
+2. Numbers before/after traits refer to the in-game breakpoint number (e.g., "5 demacia" = Demacia 5)
+3. Numbers after unit names refer to star level (e.g., "Ambessa 2" = Ambessa 2★)
+4. Match phonetically similar words to the closest enum value
+5. Always call add_search_filters with everything detected"""
 
     tool_definition = {
         "type": "function",
@@ -1412,6 +1491,7 @@ async def get_voice_vocab():
         "unit_lookup": vocab['unit_lookup'],
         "item_lookup": vocab['item_lookup'],
         "trait_lookup": vocab['trait_lookup'],
+        "trait_tier_lookup": vocab.get("trait_tier_lookup") or {},
     }
 
 
@@ -1552,7 +1632,7 @@ def get_unit_build(
             if allowed_item_types is not None and cand_type not in allowed_item_types:
                 continue
             cand_prefix = get_item_prefix(item_name)
-            if allowed_item_prefixes is not None and (cand_prefix or "").lower() not in allowed_item_prefixes:
+            if cand_prefix and cand_prefix.lower() not in allowed_item_prefixes:
                 continue
 
             token_id = ENGINE.token_to_id.get(eq_token)
@@ -1776,7 +1856,7 @@ def get_unit_items(
         if allowed_item_types is not None and item_type not in allowed_item_types:
             continue
         item_prefix = get_item_prefix(item_name)
-        if allowed_item_prefixes is not None and (item_prefix or "").lower() not in allowed_item_prefixes:
+        if item_prefix and item_prefix.lower() not in allowed_item_prefixes:
             continue
 
         token_id = ENGINE.token_to_id.get(eq_token)

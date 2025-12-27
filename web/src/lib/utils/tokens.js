@@ -20,8 +20,19 @@ export function parseToken(token) {
     const type = getTokenType(token);
 
     switch (type) {
-        case 'unit':
-            return { type: 'unit', unit: token.slice(2) };
+        case 'unit': {
+            const rest = token.slice(2);
+            const idx = rest.lastIndexOf(':');
+            if (idx !== -1) {
+                const unit = rest.slice(0, idx);
+                const starsRaw = rest.slice(idx + 1);
+                const stars = parseInt(starsRaw, 10);
+                if (unit && Number.isFinite(stars)) {
+                    return { type: 'unit', unit, stars };
+                }
+            }
+            return { type: 'unit', unit: rest, stars: null };
+        }
 
         case 'item':
             return { type: 'item', item: token.slice(2) };
@@ -52,6 +63,9 @@ export function getTokenLabel(token, getDisplayName) {
 
     switch (parsed.type) {
         case 'unit':
+            if (parsed.stars) {
+                return `${getDisplayName('unit', parsed.unit)} ${parsed.stars}★`;
+            }
             return getDisplayName('unit', parsed.unit);
 
         case 'item':

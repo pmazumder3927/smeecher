@@ -101,6 +101,7 @@ class GraphEngine:
                 pm.id as pm_id,
                 pm.placement,
                 u.name as unit_name,
+                u.tier as unit_tier,
                 u.items
             FROM player_matches pm
             JOIN matches m ON m.match_id = pm.match_id
@@ -154,6 +155,7 @@ class GraphEngine:
                 continue
 
             unit_name = self._clean_unit_name(unit_name_raw)
+            unit_tier = row["unit_tier"]
             items_json = row["items"]
             items = orjson.loads(items_json) if items_json else []
 
@@ -167,6 +169,19 @@ class GraphEngine:
             ids, psum = token_data[token_id]
             ids.append(pm_id)
             token_data[token_id] = (ids, psum + placement)
+
+            # Unit star-level token (2★, 3★, ...) for filtering.
+            # Base unit token represents any star level.
+            if isinstance(unit_tier, int) and unit_tier >= 2:
+                star_token = f"U:{unit_name}:{unit_tier}"
+                token_id = self._get_or_create_token_id(star_token)
+                self.labels[token_id] = f"{unit_name} {unit_tier}★"
+
+                if token_id not in token_data:
+                    token_data[token_id] = ([], 0)
+                ids, psum = token_data[token_id]
+                ids.append(pm_id)
+                token_data[token_id] = (ids, psum + placement)
 
             # Equipped tokens and track board items
             for item_id in items:
@@ -200,6 +215,7 @@ class GraphEngine:
         # Riot's API reports tiers as an index (1,2,3...) while the in-game UI
         # talks in unit counts (e.g. "Demacia 3"). We infer that mapping from data.
         trait_min_units: dict[tuple[str, int], int] = {}
+        trait_tiers_seen: dict[str, set[int]] = {}
         for row in c:
             pm_id = row["id"]
             placement = row["placement"]
@@ -212,6 +228,7 @@ class GraphEngine:
             for trait in traits:
                 trait_name = self._clean_trait_name(trait["name"])
                 tier = int(trait.get("tier", 1) or 1)
+                trait_tiers_seen.setdefault(trait_name, set()).add(tier)
                 num_units = trait.get("num_units")
                 if isinstance(num_units, int) and num_units > 0:
                     key = (trait_name, tier)
@@ -250,7 +267,13 @@ class GraphEngine:
             token_id = self.token_to_id.get(token)
             if token_id is None:
                 continue
-            self.labels[token_id] = f"{trait_name} {min_units}"
+            # Only drop the breakpoint number when the trait has exactly one
+            # breakpoint (e.g. "Chosen Wolves 2" should just be "Chosen Wolves").
+            tiers = trait_tiers_seen.get(trait_name) or set()
+            if len(tiers) <= 1:
+                self.labels[token_id] = trait_name
+            else:
+                self.labels[token_id] = f"{trait_name} {min_units}"
 
         conn.close()
 
@@ -382,6 +405,125 @@ class GraphEngine:
         if token_id is None:
             return token_str
         return self.labels.get(token_id, token_str)
+
+    def apply_item_display_names(self, item_display_names: dict[str, str]) -> int:
+        """
+        Update labels for item (I:*) and equipped (E:*) tokens using a mapping of
+        canonical item id -> in-game display name.
+
+        This is intended to run at engine build time so the runtime server only
+        needs access to `engine.bin`.
+        """
+        if not item_display_names:
+            return 0
+
+        updated = 0
+        for token_id, token_str in enumerate(self.id_to_token):
+            if token_str.startswith("I:"):
+                item_id = token_str[2:]
+                display = item_display_names.get(item_id.lower())
+                if display:
+                    self.labels[token_id] = display
+                    updated += 1
+                continue
+
+            if token_str.startswith("E:"):
+                rest = token_str[2:]
+                if "|" not in rest:
+                    continue
+                unit, item_id = rest.split("|", 1)
+                display = item_display_names.get(item_id.lower())
+                if display:
+                    self.labels[token_id] = f"{unit} + {display}"
+                    updated += 1
+                continue
+
+        return updated
+
+    def apply_trait_display_names(self, trait_display_names: dict[str, str]) -> int:
+        """
+        Update labels for trait (T:*) tokens using a mapping of canonical trait id
+        -> in-game display name.
+
+        This is intended to run at engine build time so the runtime server only
+        needs access to `engine.bin`.
+        """
+        if not trait_display_names:
+            return 0
+
+        import re
+
+        updated = 0
+        for token_id, token_str in enumerate(self.id_to_token):
+            if not token_str.startswith("T:"):
+                continue
+
+            trait_id = token_str[2:].split(":", 1)[0]
+            display = trait_display_names.get(trait_id.lower())
+            if not display:
+                continue
+
+            label = self.labels.get(token_id) or token_str
+            # Preserve inferred breakpoint number if present (e.g. "Demacia 5").
+            m = re.search(r"(?:\s|:)(\d+)\s*$", str(label))
+            if m:
+                number = m.group(1)
+                self.labels[token_id] = f"{display} {number}"
+            else:
+                self.labels[token_id] = display
+            updated += 1
+
+        return updated
+
+    def apply_trait_breakpoints(self, trait_breakpoints: dict[str, list[int]]) -> int:
+        """
+        Update labels for trait (T:*) tokens to use in-game breakpoint numbers.
+
+        `trait_breakpoints` maps canonical trait id -> ordered list of min unit
+        breakpoints (e.g. "demacia" -> [3, 5, 7]).
+
+        Behavior:
+          - If a trait has exactly one breakpoint, omit the number entirely.
+          - Otherwise, include the breakpoint number for *all* tiers, including the first.
+
+        This is intended to run at engine build time so the runtime server only
+        needs access to `engine.bin`.
+        """
+        if not trait_breakpoints:
+            return 0
+
+        updated = 0
+        for token_id, token_str in enumerate(self.id_to_token):
+            if not token_str.startswith("T:"):
+                continue
+
+            parts = token_str[2:].split(":")
+            if not parts or not parts[0]:
+                continue
+
+            trait_id = parts[0]
+            tier_idx = 1
+            if len(parts) >= 2:
+                try:
+                    tier_idx = int(parts[1])
+                except ValueError:
+                    tier_idx = 1
+
+            breakpoints = trait_breakpoints.get(trait_id.lower())
+            if not breakpoints:
+                continue
+
+            if len(breakpoints) <= 1:
+                self.labels[token_id] = trait_id
+                updated += 1
+                continue
+
+            bp_i = tier_idx - 1
+            if 0 <= bp_i < len(breakpoints):
+                self.labels[token_id] = f"{trait_id} {breakpoints[bp_i]}"
+                updated += 1
+
+        return updated
 
     # ─────────────────────────────────────────────────────────────────
     # Serialization - Binary format for fast loading
@@ -530,6 +672,8 @@ class GraphEngine:
 def build_engine(db_path: str = None, save_path: str = None):
     """CLI entry point for building the engine."""
     import os
+    import re
+
     data_dir = Path(os.environ.get("DATA_DIR", "../data"))
 
     if db_path is None:
@@ -537,9 +681,158 @@ def build_engine(db_path: str = None, save_path: str = None):
     if save_path is None:
         save_path = str(data_dir / "engine.bin")
 
+    def _strip_html(text: str) -> str:
+        return re.sub(r"<[^>]*>", "", text or "").strip()
+
+    def _load_item_display_names_from_cdragon() -> dict[str, str]:
+        """
+        Load TFT item display names from Community Dragon.
+
+        Returns a mapping of cleaned item ids (e.g. "RunaansHurricane") to
+        current in-game display names (e.g. "Kraken's Fury").
+        """
+        cdragon_path = os.environ.get("CDRAGON_TFTITEMS_PATH")
+        cdragon_url = os.environ.get(
+            "CDRAGON_TFTITEMS_URL",
+            "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/tftitems.json",
+        )
+
+        try:
+            if cdragon_path and Path(cdragon_path).exists():
+                raw = Path(cdragon_path).read_bytes()
+                items = orjson.loads(raw)
+            else:
+                import httpx
+
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.get(cdragon_url)
+                    resp.raise_for_status()
+                    items = resp.json()
+
+            mapping: dict[str, str] = {}
+            for item in items or []:
+                name_id = str(item.get("nameId") or "")
+                if not name_id:
+                    continue
+                display = _strip_html(str(item.get("name") or ""))
+                if not display:
+                    continue
+
+                # Keep the raw id too (helps when engine tokens still include TFT*_Item_ prefixes).
+                mapping[name_id.lower()] = display
+
+                cleaned = re.sub(r"^TFT\d*_Item_", "", name_id, flags=re.IGNORECASE)
+                cleaned = re.sub(r"^TFT_Item_", "", cleaned, flags=re.IGNORECASE)
+                if not cleaned:
+                    continue
+                mapping[cleaned.lower()] = display
+
+            return mapping
+        except Exception as e:
+            print(f"Warning: failed to load CDragon item names ({e}); using canonical ids.")
+            return {}
+
+    def _load_trait_metadata_from_cdragon() -> tuple[dict[str, str], dict[str, list[int]]]:
+        """
+        Load TFT trait metadata from Community Dragon.
+
+        Returns:
+          - display name mapping: cleaned trait id -> in-game display name
+          - breakpoint mapping: cleaned trait id -> ordered list of min unit breakpoints
+        """
+        cdragon_path = os.environ.get("CDRAGON_TFTTRAITS_PATH")
+        cdragon_url = os.environ.get(
+            "CDRAGON_TFTTRAITS_URL",
+            "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/tfttraits.json",
+        )
+
+        try:
+            if cdragon_path and Path(cdragon_path).exists():
+                raw = Path(cdragon_path).read_bytes()
+                traits = orjson.loads(raw)
+            else:
+                import httpx
+
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.get(cdragon_url)
+                    resp.raise_for_status()
+                    traits = resp.json()
+
+            display_mapping: dict[str, str] = {}
+            breakpoint_mapping: dict[str, list[int]] = {}
+            for trait in traits or []:
+                trait_id = str(trait.get("trait_id") or trait.get("traitId") or "")
+                if not trait_id:
+                    continue
+                set_id = str(trait.get("set") or "")
+                if set_id and set_id != "TFTSet16":
+                    continue
+                mins = []
+                trait_sets = (
+                    trait.get("conditional_trait_sets")
+                    or trait.get("conditionalTraitSets")
+                    or []
+                )
+                innate_sets = (
+                    trait.get("innate_trait_sets")
+                    or trait.get("innateTraitSets")
+                    or []
+                )
+
+                for eff in list(trait_sets) + list(innate_sets):
+                    try:
+                        mu = eff.get("min_units") if isinstance(eff, dict) else None
+                        if mu is None and isinstance(eff, dict):
+                            mu = eff.get("minUnits")
+                        if mu is None:
+                            continue
+                        mu_i = int(mu)
+                        if mu_i > 0:
+                            mins.append(mu_i)
+                    except Exception:
+                        continue
+                breakpoints = sorted(set(mins))
+
+                # Keep the raw id too (helps if tokens ever include TFT*_ prefixes).
+                if breakpoints:
+                    breakpoint_mapping[trait_id.lower()] = breakpoints
+
+                display = _strip_html(str(trait.get("display_name") or trait.get("displayName") or ""))
+                if display:
+                    display_mapping[trait_id.lower()] = display
+
+                cleaned = re.sub(r"^TFT\d*_", "", trait_id, flags=re.IGNORECASE)
+                cleaned = re.sub(r"^TFT_", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"^Set\d*_", "", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"^Set_", "", cleaned, flags=re.IGNORECASE)
+                if not cleaned:
+                    continue
+                if breakpoints:
+                    breakpoint_mapping[cleaned.lower()] = breakpoints
+                if display:
+                    display_mapping[cleaned.lower()] = display
+
+            return display_mapping, breakpoint_mapping
+        except Exception as e:
+            print(f"Warning: failed to load CDragon trait metadata ({e}); using canonical ids.")
+            return {}, {}
+
     print(f"Building optimized graph engine from {db_path}...")
     engine = GraphEngine()
     engine.build_from_db(db_path)
+
+    item_display_names = _load_item_display_names_from_cdragon()
+    if item_display_names:
+        updated = engine.apply_item_display_names(item_display_names)
+        print(f"Applied CDragon display names to {updated} item/equipped tokens")
+
+    trait_display_names, trait_breakpoints = _load_trait_metadata_from_cdragon()
+    if trait_breakpoints:
+        updated = engine.apply_trait_breakpoints(trait_breakpoints)
+        print(f"Applied CDragon breakpoints to {updated} trait tokens")
+    if trait_display_names:
+        updated = engine.apply_trait_display_names(trait_display_names)
+        print(f"Applied CDragon display names to {updated} trait tokens")
 
     stats = engine.stats()
     print(f"Total matches: {stats['total_matches']}")
