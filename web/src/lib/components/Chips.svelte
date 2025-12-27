@@ -506,12 +506,16 @@
                     </button>
                 </div>
             {/each}
-            <div class="chip clear-all">
+            <button
+                type="button"
+                class="chip clear-all"
+                on:click={clearTokens}
+                aria-label="Clear all filters"
+                title="Clear all filters"
+            >
                 <span>Clear all ({$selectedTokens.length})</span>
-                <button on:click={clearTokens} aria-label="Clear all filters">
-                    ×
-                </button>
-            </div>
+                <span class="clear-all-x" aria-hidden="true">×</span>
+            </button>
         {/if}
     </div>
 </div>
@@ -601,6 +605,8 @@
         border-style: dashed;
         border-color: rgba(255, 68, 68, 0.35);
         background: rgba(255, 68, 68, 0.07);
+        cursor: pointer;
+        font-family: inherit;
     }
 
     .chip.clear-all::before {
@@ -646,7 +652,24 @@
         background: var(--bg-tertiary);
     }
 
-    .chip.clear-all > button:hover {
+    .chip.clear-all:focus-visible {
+        outline: 2px solid rgba(255, 68, 68, 0.65);
+        outline-offset: 2px;
+    }
+
+    .clear-all-x {
+        width: 16px;
+        height: 16px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 3px;
+        font-size: 16px;
+        line-height: 1;
+    }
+
+    .chip.clear-all:hover .clear-all-x,
+    .chip.clear-all:focus-visible .clear-all-x {
         color: rgba(255, 255, 255, 0.95);
         background: rgba(255, 68, 68, 0.18);
     }

@@ -16,6 +16,7 @@
   let analyticsTimeout;
   let currentSegment = "";
   let recognizedPreview = [];
+  let inputEl = null;
 
   let searchIndex = [];
   let searchReady = false;
@@ -604,6 +605,28 @@
     }
   }
 
+  function isEditableElement(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    const tag = el.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  }
+
+  function handleGlobalKeydown(event) {
+    if (!inputEl) return;
+    if (event.defaultPrevented) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (!event.key || event.key.length !== 1) return;
+    if (event.key === " ") return;
+    if (isEditableElement(event.target)) return;
+    if (document.activeElement === inputEl) return;
+
+    event.preventDefault();
+    inputEl.focus();
+    query = `${query}${event.key}`;
+    handleInput();
+  }
+
   function getTypeClass(type) {
     return type === "unit"
       ? "unit"
@@ -658,6 +681,7 @@
 </script>
 
 <svelte:document on:click={handleClickOutside} />
+<svelte:window on:keydown={handleGlobalKeydown} />
 
 <div class="search-wrapper">
   <div
@@ -667,6 +691,7 @@
   >
     <input
       type="text"
+      bind:this={inputEl}
       bind:value={query}
       on:input={handleInput}
       on:focus={handleFocus}

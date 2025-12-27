@@ -4,6 +4,7 @@
   import {
     addToken,
     equipItemOnUnit,
+    excludeItemOnUnit,
     clusterExplorerOpen,
     clusterExplorerRunRequest,
     itemExplorerOpen,
@@ -91,34 +92,84 @@
   }
 
   function handleToolCall(args) {
-    const tokens = validateTokens(args);
-    const equipped = deriveEquippedPairs(args, currentTranscript, tokens);
+    const includeArgs = {
+      units: Array.isArray(args?.units) ? args.units : [],
+      items: Array.isArray(args?.items) ? args.items : [],
+      traits: Array.isArray(args?.traits) ? args.traits : [],
+    };
+
+    const excludeArgs = {
+      units: Array.isArray(args?.exclude_units)
+        ? args.exclude_units
+        : Array.isArray(args?.excludeUnits)
+          ? args.excludeUnits
+          : [],
+      items: Array.isArray(args?.exclude_items)
+        ? args.exclude_items
+        : Array.isArray(args?.excludeItems)
+          ? args.excludeItems
+          : [],
+      traits: Array.isArray(args?.exclude_traits)
+        ? args.exclude_traits
+        : Array.isArray(args?.excludeTraits)
+          ? args.excludeTraits
+          : [],
+    };
+
+    const includeTokens = validateTokens(includeArgs);
+    const excludeTokens = validateTokens(excludeArgs, { negated: true });
+
+    const equippedIn = Array.isArray(args?.equipped) ? args.equipped : [];
+    const equippedOut = Array.isArray(args?.exclude_equipped)
+      ? args.exclude_equipped
+      : Array.isArray(args?.excludeEquipped)
+        ? args.excludeEquipped
+        : [];
+
+    const equipped = deriveEquippedPairs(equippedIn, currentTranscript, includeTokens);
+    const excludedEquipped = deriveEquippedPairs(equippedOut, "", excludeTokens);
 
     // If the user specified a star-level unit in an equipped pair (e.g. "Tryndamere 2★ with Guinsoo's"),
     // also add that star-level unit token as an explicit filter.
-    const tokenSet = new Set(tokens.map((t) => t.token));
+    const tokenSet = new Set(includeTokens.map((t) => t.token));
     for (const e of equipped) {
       if (!e?.unitToken?.startsWith?.("U:")) continue;
       const parsed = parseToken(e.unitToken);
       if (parsed?.type !== "unit" || !parsed.stars) continue;
       if (tokenSet.has(e.unitToken)) continue;
       tokenSet.add(e.unitToken);
-      tokens.push({
+      includeTokens.push({
         token: e.unitToken,
         label: `${getDisplayName("unit", parsed.unit)} ${parsed.stars}★`,
         type: "unit",
       });
     }
-    const equippedItemNames = new Set(equipped.map((e) => e.item));
-    const tokensToAdd = tokens.filter(
+
+    const equippedItemNames = new Set([
+      ...equipped.map((e) => e.item),
+      ...excludedEquipped.map((e) => e.item),
+    ]);
+
+    const includeTokensToAdd = includeTokens.filter(
       (t) => !(t.type === "item" && equippedItemNames.has(t.token.slice(2)))
     );
+    const excludeTokensToAdd = excludeTokens.filter(
+      (t) => !(t.type === "item" && equippedItemNames.has(t.token.slice(2)))
+    );
+
     const equippedTokens = equipped.map((e) => `E:${e.unit}|${e.item}`);
+    const excludedEquippedTokens = excludedEquipped.map((e) => `-E:${e.unit}|${e.item}`);
 
-    const uiActions = deriveUiActions(args, currentTranscript, tokens, equipped);
+    const uiActions = deriveUiActions(args, currentTranscript, includeTokensToAdd, equipped);
 
-    if (tokensToAdd.length > 0) {
-      for (const t of tokensToAdd) {
+    if (includeTokensToAdd.length > 0) {
+      for (const t of includeTokensToAdd) {
+        addToken(t.token, "voice");
+      }
+    }
+
+    if (excludeTokensToAdd.length > 0) {
+      for (const t of excludeTokensToAdd) {
         addToken(t.token, "voice");
       }
     }
@@ -129,22 +180,43 @@
       }
     }
 
+    if (excludedEquipped.length > 0) {
+      for (const e of excludedEquipped) {
+        excludeItemOnUnit(e.unit, e.item, "voice");
+      }
+    }
+
     // Apply UI actions after tokens so "focus unit" can select newly-added units.
     applyUiActions(uiActions);
 
     // Include UI actions in the preview so the user can see what happened.
     parsedTokens = [
-      ...tokensToAdd,
+      ...includeTokensToAdd,
+      ...excludeTokensToAdd,
       ...previewEquipped(equipped),
+      ...previewEquipped(excludedEquipped, { negated: true }),
       ...previewUiActions(uiActions),
     ];
 
-    if (tokensToAdd.length > 0 || equipped.length > 0 || uiActions?.didSomething) {
+    if (
+      includeTokensToAdd.length > 0 ||
+      excludeTokensToAdd.length > 0 ||
+      equipped.length > 0 ||
+      excludedEquipped.length > 0 ||
+      uiActions?.didSomething
+    ) {
+      const allTokens = [
+        ...includeTokensToAdd.map((t) => t.token),
+        ...excludeTokensToAdd.map((t) => t.token),
+        ...equippedTokens,
+        ...excludedEquippedTokens,
+      ];
       posthog.capture("voice_input", {
         transcript: currentTranscript,
-        tokens_added: tokensToAdd.length + equippedTokens.length,
-        tokens: [...tokensToAdd.map((t) => t.token), ...equippedTokens],
+        tokens_added: allTokens.length,
+        tokens: allTokens,
         equipped: equipped,
+        excluded_equipped: excludedEquipped,
         ui_actions: uiActions,
       });
     }
@@ -365,10 +437,9 @@
     return preview;
   }
 
-  function deriveEquippedPairs(args, transcript, validatedTokens) {
+  function deriveEquippedPairs(rawEquipped, transcript, validatedTokens) {
     if (!vocab) return [];
 
-    const rawEquipped = Array.isArray(args?.equipped) ? args.equipped : [];
     const pairs = [];
 
     for (const entry of rawEquipped) {
@@ -412,18 +483,26 @@
     return items.map((i) => ({ unit, item: i.token.slice(2) }));
   }
 
-  function previewEquipped(pairs) {
+  function previewEquipped(pairs, options = {}) {
     if (!Array.isArray(pairs) || pairs.length === 0) return [];
-    return pairs.map((p) => ({
-      token: `E:${p.unit}|${p.item}`,
-      label: `${getDisplayName("unit", p.unit)} → ${getDisplayName("item", p.item)}`,
-      type: "equipped",
-    }));
+    const negated = !!options?.negated;
+    return pairs.map((p) => {
+      const label = `${getDisplayName("unit", p.unit)} → ${getDisplayName(
+        "item",
+        p.item
+      )}`;
+      return {
+        token: `${negated ? "-" : ""}E:${p.unit}|${p.item}`,
+        label: negated ? `Not ${label}` : label,
+        type: "equipped",
+      };
+    });
   }
 
-  function validateTokens(args) {
+  function validateTokens(args, options = {}) {
     if (!vocab) return [];
 
+    const negated = !!options?.negated;
     const tokens = [];
     const seen = new Set();
 
@@ -432,7 +511,11 @@
       const token = fuzzyLookup(unit, vocab.unit_lookup);
       if (token && !seen.has(token)) {
         seen.add(token);
-        tokens.push({ token, label: unit, type: "unit" });
+        tokens.push({
+          token: `${negated ? "-" : ""}${token}`,
+          label: negated ? `Not ${unit}` : unit,
+          type: "unit",
+        });
       }
     }
 
@@ -441,7 +524,11 @@
       const token = fuzzyLookup(item, vocab.item_lookup);
       if (token && !seen.has(token)) {
         seen.add(token);
-        tokens.push({ token, label: item, type: "item" });
+        tokens.push({
+          token: `${negated ? "-" : ""}${token}`,
+          label: negated ? `Not ${item}` : item,
+          type: "item",
+        });
       }
     }
 
@@ -472,7 +559,11 @@
 
       if (!seen.has(token)) {
         seen.add(token);
-        tokens.push({ token, label, type: "trait" });
+        tokens.push({
+          token: `${negated ? "-" : ""}${token}`,
+          label: negated ? `Not ${label}` : label,
+          type: "trait",
+        });
       }
     }
 
@@ -600,14 +691,15 @@
 	        {#if isListening && !currentTranscript}
 	          <div class="voice-hints">
 	            <p class="hint-title">Try saying:</p>
-	            <div class="hint-examples">
-	              <span class="hint-example">"Ashe best artifacts"</span>
-	              <span class="hint-example">"Best Yasuo comp"</span>
-	              <span class="hint-example">"Yasuo with Infinity Edge best second item"</span>
-	              <span class="hint-example">"5 Demacia Shyvana"</span>
-	            </div>
-	          </div>
-	        {/if}
+		            <div class="hint-examples">
+		              <span class="hint-example">"Ashe best artifacts"</span>
+		              <span class="hint-example">"Best Yasuo comp"</span>
+		              <span class="hint-example">"Yasuo with Infinity Edge best second item"</span>
+		              <span class="hint-example">"Tryndamere 2 without Ashe 3"</span>
+		              <span class="hint-example">"5 Demacia Shyvana"</span>
+		            </div>
+		          </div>
+		        {/if}
 
         {#if currentTranscript}
           <div class="transcript">

@@ -53,7 +53,15 @@
       target: "filters",
       task: "Remove the last filter you added (×).",
       hint: "This will take you back to the previous graph",
-      done: "Filters combine as AND. Add/remove one thing at a time to see what changes.",
+      done: "Included filters combine as AND. Excluded filters remove games that match. Add/remove one thing at a time to see what changes.",
+    },
+    {
+      id: "exclude",
+      title: "Exclude a filter",
+      target: "search",
+      task: "Add an excluded filter.",
+      hint: "Type “-” before a term (e.g. “-Demacia 5”), or Alt/Option-click a suggestion to exclude it.",
+      done: "Nice — excluded filters remove games that match that token.",
     },
     {
       id: "sort",
@@ -199,6 +207,23 @@
             Array.isArray(last?.tokens) &&
             last.tokens.some((t) => typeof t === "string" && t.startsWith("E:")));
         return fresh && addedEquipped;
+      }
+
+      case "exclude": {
+        const fresh =
+          (last?.timestamp ?? 0) > (baselineState?.lastActionTs ?? 0);
+        const okSource = last?.source === "search" || last?.source === "voice";
+        const addedNegated =
+          (last?.type === "token_added" &&
+            typeof last?.token === "string" &&
+            (last.token.startsWith("-") || last.token.startsWith("!"))) ||
+          (last?.type === "tokens_added" &&
+            Array.isArray(last?.tokens) &&
+            last.tokens.some(
+              (t) =>
+                typeof t === "string" && (t.startsWith("-") || t.startsWith("!"))
+            ));
+        return fresh && okSource && addedNegated;
       }
 
       case "sort":

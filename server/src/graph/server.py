@@ -1335,10 +1335,15 @@ UI INTENT (set these fields when the user asks for it):
 - If the user says "build(s)", set item_explorer_tab="builds"; if they say "item(s)" or mention an item category, set item_explorer_tab="items".
 - If the user says a unit is "with"/"holding"/"equipped with" an item, put that in equipped=[{unit, item}].
 
+EXCLUSION / NEGATION:
+- If the user says "without", "no", "exclude", "not", "minus", or uses similar negation language, put those entities in the exclude_* fields.
+- Example: "Tryndamere 2 without Ashe 3" => units=["Tryndamere 2"], exclude_units=["Ashe 3"]
+- If the user says a unit WITHOUT a specific item (e.g. "Tryndamere without Guinsoo's"), prefer exclude_equipped=[{unit,item}] over exclude_items.
+
 RULES:
 1. Extract EVERY entity - do not miss any
 2. Numbers before/after traits refer to the in-game breakpoint number (e.g., "5 demacia" = Demacia 5)
-3. Numbers after unit names refer to star level (e.g., "Ambessa 2" = Ambessa 2★)
+3. Numbers near unit names refer to star level (e.g., "Ambessa 2" or "2 star Ambessa" = Ambessa 2★)
 4. Match phonetically similar words to the closest enum value
 5. Always call add_search_filters with everything detected"""
 
@@ -1409,7 +1414,41 @@ RULES:
                         "required": ["unit", "item"]
                     },
                     "description": "Equipped items on a specific unit (use when user says unit WITH/HOLDING an item)"
-                }
+                },
+                "exclude_units": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": vocab['units']},
+                    "description": "Excluded champion/unit names (use when user says WITHOUT/NO/EXCLUDE a unit)"
+                },
+                "exclude_items": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": vocab['items']},
+                    "description": "Excluded item names (use when user says WITHOUT/NO/EXCLUDE an item)"
+                },
+                "exclude_traits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "enum": vocab['traits']},
+                            "tier": {"type": "integer", "description": "Trait tier level (2-9)"}
+                        },
+                        "required": ["name"]
+                    },
+                    "description": "Excluded trait filters with optional tier"
+                },
+                "exclude_equipped": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "unit": {"type": "string", "enum": vocab['units']},
+                            "item": {"type": "string", "enum": vocab['items']}
+                        },
+                        "required": ["unit", "item"]
+                    },
+                    "description": "Excluded equipped items on a specific unit (use when user says unit WITHOUT an item)"
+                },
             }
         }
     }
