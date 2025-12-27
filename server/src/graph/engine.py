@@ -329,6 +329,36 @@ class GraphEngine:
             result &= bm
         return result
 
+    def filter_bitmap(self, include_tokens: list[str], exclude_tokens: list[str] | None = None) -> BitMap:
+        """
+        Compute the bitmap for include/exclude token constraints.
+
+        Semantics:
+          - include_tokens are intersected (AND)
+          - exclude_tokens are unioned then subtracted (NOT)
+
+        Unknown exclude tokens are ignored. Unknown include tokens yield an empty set.
+        """
+        base = self.intersect(include_tokens)
+        if not base:
+            return base
+        if not exclude_tokens:
+            return base
+
+        exclude_bm = BitMap()
+        for tok in exclude_tokens:
+            token_id = self.token_to_id.get(tok)
+            if token_id is None:
+                continue
+            stats = self.tokens.get(token_id)
+            if stats is None:
+                continue
+            exclude_bm |= stats.bitmap
+
+        if exclude_bm:
+            base -= exclude_bm
+        return base
+
     def avg_placement_for_bitmap(self, bitmap: BitMap) -> float:
         """
         Compute average placement for a set of player IDs.

@@ -487,15 +487,26 @@
             });
 
         // Icons - scale based on impact
+        const getNodeIconKey = (d) => {
+            if (d?.id && typeof d.id === 'string' && (d.id.startsWith('U:') || d.id.startsWith('I:') || d.id.startsWith('T:'))) {
+                return d.id.slice(2);
+            }
+            if (d?.negated && typeof d.label === 'string') {
+                return d.label.replace(/^not\s+/i, '');
+            }
+            return d?.label;
+        };
+
         node.each(function(d) {
             const iconRadius = getScaledRadius(d);
+            const iconKey = getNodeIconKey(d);
 
-            if (hasIconFailed(d.type, d.label)) {
+            if (hasIconFailed(d.type, iconKey)) {
                 d3.select(this).append('circle')
                     .attr('class', 'node-fallback')
                     .attr('r', iconRadius - 4);
             } else {
-                const iconUrl = getIconUrl(d.type, d.label);
+                const iconUrl = getIconUrl(d.type, iconKey);
                 if (iconUrl) {
                     const img = d3.select(this).append('image')
                         .attr('class', 'node-icon')
@@ -508,7 +519,7 @@
                         .attr('preserveAspectRatio', 'xMidYMid slice');
 
                     img.on('error', function() {
-                        markIconFailed(d.type, d.label);
+                        markIconFailed(d.type, iconKey);
                         d3.select(this).remove();
                         d3.select(this.parentNode).append('circle')
                             .attr('class', 'node-fallback')

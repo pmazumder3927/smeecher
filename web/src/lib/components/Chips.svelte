@@ -1,17 +1,19 @@
 <script>
     import { onMount, tick } from 'svelte';
-    import { selectedTokens, removeToken, clearTokens, equipItemOnUnit, removeUnitFilters, setUnitStarFilter } from '../stores/state.js';
+    import { selectedTokens, removeToken, clearTokens, equipItemOnUnit, excludeItemOnUnit, removeUnitFilters, setUnitStarFilter } from '../stores/state.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { getTokenType, getTokenLabel, parseToken } from '../utils/tokens.js';
     import { getSearchIndex } from '../utils/searchIndexCache.js';
 
+    let equipOpenKey = null;
     let equipOpenUnit = null;
+    let equipOpenNegated = false;
     let equipQuery = '';
     let equipResults = [];
     let equipSelectedIndex = -1;
     let equipInputEl = null;
 
-    let starOpenUnit = null;
+    let starOpenKey = null;
     let starFirstOptionEl = null;
 
     let itemIndex = [];
@@ -61,18 +63,24 @@
         return matches.slice(0, limit);
     }
 
-    function isEquipped(unit, itemName) {
-        const prefix = `E:${unit}|`;
-        return $selectedTokens.includes(`${prefix}${itemName}`);
+    function isEquipped(unit, itemName, negated = false) {
+        const prefix = `${negated ? '-' : ''}E:${unit}|`;
+        const altPrefix = `${negated ? '!' : ''}E:${unit}|`;
+        return (
+            $selectedTokens.includes(`${prefix}${itemName}`) ||
+            (negated && $selectedTokens.includes(`${altPrefix}${itemName}`))
+        );
     }
 
     function getEquippedCount(unit, itemName) {
         return equippedCountIndex.get(`${unit}|${itemName}`) ?? 0;
     }
 
-    function openEquip(unit) {
-        starOpenUnit = null;
-        equipOpenUnit = unit;
+    function openEquip(group) {
+        starOpenKey = null;
+        equipOpenKey = group.key;
+        equipOpenUnit = group.unit;
+        equipOpenNegated = group.negated;
         equipQuery = '';
         equipSelectedIndex = 0;
         equipResults = searchItems(equipQuery);
@@ -80,35 +88,37 @@
     }
 
     function closeEquip() {
+        equipOpenKey = null;
         equipOpenUnit = null;
+        equipOpenNegated = false;
         equipQuery = '';
         equipResults = [];
         equipSelectedIndex = -1;
     }
 
-    function openStarMenu(unit) {
-        starOpenUnit = unit;
+    function openStarMenu(group) {
+        starOpenKey = group.key;
         tick().then(() => starFirstOptionEl?.focus?.());
     }
 
-    function toggleStarMenu(unit) {
-        if (starOpenUnit === unit) {
-            starOpenUnit = null;
+    function toggleStarMenu(group) {
+        if (starOpenKey === group.key) {
+            starOpenKey = null;
         } else {
-            openStarMenu(unit);
+            openStarMenu(group);
         }
     }
 
     function closeStarMenu() {
-        starOpenUnit = null;
+        starOpenKey = null;
     }
 
-    function selectStar(unit, stars) {
-        setUnitStarFilter(unit, stars);
+    function selectStar(unit, stars, negated = false) {
+        setUnitStarFilter(unit, stars, 'ui', { negated });
         closeStarMenu();
     }
 
-    function handleStarKeydown(event, unit) {
+    function handleStarKeydown(event, group) {
         if (event.key === 'Escape') {
             event.preventDefault();
             closeStarMenu();
@@ -116,10 +126,10 @@
         }
         if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
-            toggleStarMenu(unit);
+            toggleStarMenu(group);
         } else if (event.key === 'ArrowDown') {
             event.preventDefault();
-            openStarMenu(unit);
+            openStarMenu(group);
         }
     }
 
@@ -130,8 +140,8 @@
         }
     }
 
-    function handleEquipKeydown(event, unit) {
-        if (!equipOpenUnit) return;
+    function handleEquipKeydown(event, unit, negated) {
+        if (!equipOpenKey) return;
 
         if (event.key === 'ArrowDown') {
             event.preventDefault();
@@ -144,8 +154,9 @@
             if (equipSelectedIndex < 0 || equipSelectedIndex >= equipResults.length) return;
             const entry = equipResults[equipSelectedIndex];
             const itemName = entry.token.slice(2);
-            if (!isEquipped(unit, itemName)) {
-                equipItemOnUnit(unit, itemName, 'equip_ui');
+            if (!isEquipped(unit, itemName, negated)) {
+                if (negated) excludeItemOnUnit(unit, itemName, 'equip_ui');
+                else equipItemOnUnit(unit, itemName, 'equip_ui');
             }
             equipQuery = '';
             handleEquipInput();
@@ -163,7 +174,7 @@
             }
         }
 
-        if (starOpenUnit) {
+        if (starOpenKey) {
             if (!event.target.closest('.star-popover') && !event.target.closest('.star-trigger')) {
                 closeStarMenu();
             }
@@ -211,8 +222,10 @@
     });
 
     function getChipLabel(token) {
-        const label = tokenLabelIndex.get(token);
-        if (label) return label;
+        const parsed = parseToken(token);
+        const baseToken = parsed?.negated ? token.slice(1) : token;
+        const label = tokenLabelIndex.get(baseToken);
+        if (label) return parsed?.negated ? `Not ${label}` : label;
         return getTokenLabel(token, getDisplayName);
     }
 
@@ -231,8 +244,9 @@
             const parsed = parseToken(token);
             if (parsed.type === 'unit') {
                 const unit = parsed.unit;
-                if (!byUnit.has(unit)) byUnit.set(unit, { unit, unitToken: `U:${unit}`, stars: null, equipped: [] });
-                const group = byUnit.get(unit);
+                const key = `${parsed.negated ? '-' : ''}${unit}`;
+                if (!byUnit.has(key)) byUnit.set(key, { key, unit, negated: !!parsed.negated, unitToken: `${parsed.negated ? '-' : ''}U:${unit}`, stars: null, equipped: [] });
+                const group = byUnit.get(key);
                 if (parsed.stars) {
                     if (!group.stars || parsed.stars > group.stars) {
                         group.stars = parsed.stars;
@@ -241,8 +255,9 @@
             } else if (parsed.type === 'equipped') {
                 const unit = parsed.unit;
                 const item = parsed.item;
-                if (!byUnit.has(unit)) byUnit.set(unit, { unit, unitToken: `U:${unit}`, stars: null, equipped: [] });
-                byUnit.get(unit).equipped.push({ token, item });
+                const key = `${parsed.negated ? '-' : ''}${unit}`;
+                if (!byUnit.has(key)) byUnit.set(key, { key, unit, negated: !!parsed.negated, unitToken: `${parsed.negated ? '-' : ''}U:${unit}`, stars: null, equipped: [] });
+                byUnit.get(key).equipped.push({ token, item });
             }
         }
 
@@ -252,9 +267,14 @@
             );
         }
 
-        return Array.from(byUnit.values()).sort((a, b) =>
-            getDisplayName('unit', a.unit).localeCompare(getDisplayName('unit', b.unit))
-        );
+        return Array.from(byUnit.values()).sort((a, b) => {
+            const la = getDisplayName('unit', a.unit);
+            const lb = getDisplayName('unit', b.unit);
+            const cmp = la.localeCompare(lb);
+            if (cmp !== 0) return cmp;
+            if (a.negated !== b.negated) return a.negated ? 1 : -1;
+            return 0;
+        });
     }
 
     function getStarOptions(unit, selectedStars) {
@@ -268,8 +288,8 @@
 
     $: unitGroups = buildUnitGroups($selectedTokens);
     $: otherTokens = $selectedTokens.filter((t) => {
-        const type = getTokenType(t);
-        return type !== 'unit' && type !== 'equipped';
+        const parsed = parseToken(t);
+        return parsed.type !== 'unit' && parsed.type !== 'equipped';
     });
 </script>
 
@@ -283,38 +303,38 @@
                 No filters applied. Search and select units, items, or traits to start.
                 <span class="empty-hint">Tip: add a unit, then click + to equip items.</span>
             </div>
-        {:else}
-            {#each unitGroups as group (group.unit)}
-                <div class="unit-group">
-                    <div class="chip unit champion-chip">
-                        <div class="champion-header">
-                            <span class="champion-name">{getChipLabel(group.unitToken)}</span>
-                            <div class="champion-stars">
-                                <button
-                                    type="button"
-                                    class="star-trigger"
-                                    class:open={starOpenUnit === group.unit}
-                                    aria-label="Star level filter"
-                                    aria-haspopup="listbox"
-                                    aria-expanded={starOpenUnit === group.unit}
-                                    on:click={() => toggleStarMenu(group.unit)}
-                                    on:keydown={(e) => handleStarKeydown(e, group.unit)}
-                                >
-                                    <span class="star-value">
-                                        {#if group.stars}
-                                            {group.stars}★
-                                        {:else}
+	        {:else}
+	            {#each unitGroups as group (group.key)}
+	                <div class="unit-group">
+	                    <div class="chip unit champion-chip" class:excluded={group.negated}>
+	                        <div class="champion-header">
+	                            <span class="champion-name">{getChipLabel(group.unitToken)}</span>
+	                            <div class="champion-stars">
+	                                <button
+	                                    type="button"
+	                                    class="star-trigger"
+	                                    class:open={starOpenKey === group.key}
+	                                    aria-label="Star level filter"
+	                                    aria-haspopup="listbox"
+	                                    aria-expanded={starOpenKey === group.key}
+	                                    on:click={() => toggleStarMenu(group)}
+	                                    on:keydown={(e) => handleStarKeydown(e, group)}
+	                                >
+	                                    <span class="star-value">
+	                                        {#if group.stars}
+	                                            {group.stars}★
+	                                        {:else}
                                             Any
                                         {/if}
                                     </span>
-                                    <span class="star-chevron" aria-hidden="true">▾</span>
-                                </button>
+	                                    <span class="star-chevron" aria-hidden="true">▾</span>
+	                                </button>
 
-                                {#if starOpenUnit === group.unit}
-                                    <div
-                                        class="star-popover"
-                                        role="listbox"
-                                        tabindex="-1"
+	                                {#if starOpenKey === group.key}
+	                                    <div
+	                                        class="star-popover"
+	                                        role="listbox"
+	                                        tabindex="-1"
                                         aria-label="Star level filter"
                                         on:keydown={(e) => {
                                             if (e.key === 'Escape') {
@@ -327,29 +347,29 @@
                                             bind:this={starFirstOptionEl}
                                             type="button"
                                             role="option"
-                                            class="star-option"
-                                            class:selected={!group.stars}
-                                            aria-selected={!group.stars}
-                                            on:click={() => selectStar(group.unit, null)}
-                                        >
-                                            <span class="star-option-label">Any</span>
-                                            {#if !group.stars}
-                                                <span class="star-option-check" aria-hidden="true">✓</span>
+	                                            class="star-option"
+	                                            class:selected={!group.stars}
+	                                            aria-selected={!group.stars}
+	                                            on:click={() => selectStar(group.unit, null, group.negated)}
+	                                        >
+	                                            <span class="star-option-label">Any</span>
+	                                            {#if !group.stars}
+	                                                <span class="star-option-check" aria-hidden="true">✓</span>
                                             {/if}
                                         </button>
 
                                         {#each getStarOptions(group.unit, group.stars) as s (s)}
                                             <button
                                                 type="button"
-                                                role="option"
-                                                class="star-option"
-                                                class:selected={group.stars === s}
-                                                aria-selected={group.stars === s}
-                                                on:click={() => selectStar(group.unit, s)}
-                                            >
-                                                <span class="star-option-label">{s}★</span>
-                                                {#if group.stars === s}
-                                                    <span class="star-option-check" aria-hidden="true">✓</span>
+	                                                role="option"
+	                                                class="star-option"
+	                                                class:selected={group.stars === s}
+	                                                aria-selected={group.stars === s}
+	                                                on:click={() => selectStar(group.unit, s, group.negated)}
+	                                            >
+	                                                <span class="star-option-label">{s}★</span>
+	                                                {#if group.stars === s}
+	                                                    <span class="star-option-check" aria-hidden="true">✓</span>
                                                 {/if}
                                             </button>
                                         {/each}
@@ -382,72 +402,85 @@
                                 </button>
                             {/each}
 
-                            <button
-                                data-walkthrough="equip"
-                                class="champion-item-add equip-trigger"
-                                on:click={() => openEquip(group.unit)}
-                                aria-label="Equip items on this unit filter"
-                                title={group.equipped.length > 0 ? 'Add item' : 'Equip items'}
-                            >
-                                <span class="champion-item-add-plus">+</span>
-                            </button>
-                        </div>
+	                            <button
+	                                data-walkthrough="equip"
+	                                class="champion-item-add equip-trigger"
+	                                on:click={() => openEquip(group)}
+	                                aria-label={group.negated ? 'Exclude items on this unit filter' : 'Equip items on this unit filter'}
+	                                title={group.equipped.length > 0
+	                                    ? group.negated
+	                                        ? 'Exclude another item'
+	                                        : 'Add item'
+	                                    : group.negated
+	                                        ? 'Exclude items'
+	                                        : 'Equip items'}
+	                            >
+	                                <span class="champion-item-add-plus">+</span>
+	                            </button>
+	                        </div>
 
-                        <button
-                            class="remove-group-btn"
-                            on:click={() => removeUnitFilters(group.unit)}
-                            aria-label="Remove unit and equipped items"
-                            title="Remove unit and equipped items"
-                        >
-                            ×
-                        </button>
-                    </div>
+	                        <button
+	                            class="remove-group-btn"
+	                            on:click={() => {
+	                                removeUnitFilters(group.unit, 'ui', { negated: group.negated });
+	                                if (equipOpenKey === group.key) closeEquip();
+	                                if (starOpenKey === group.key) closeStarMenu();
+	                            }}
+	                            aria-label={group.negated ? 'Remove excluded unit filters' : 'Remove unit and equipped items'}
+	                            title={group.negated ? 'Remove excluded unit filters' : 'Remove unit and equipped items'}
+	                        >
+	                            ×
+	                        </button>
+	                    </div>
 
-                    {#if equipOpenUnit === group.unit}
-                        <div class="equip-popover">
-                            <div class="equip-title">
-                                Equip <span class="equip-unit">{getDisplayName('unit', group.unit)}</span>
-                            </div>
+	                    {#if equipOpenKey === group.key}
+	                        <div class="equip-popover">
+	                            <div class="equip-title">
+	                                {group.negated ? 'Exclude' : 'Equip'} <span class="equip-unit">{getDisplayName('unit', group.unit)}</span>
+	                            </div>
 
-                            {#if itemsError}
-                                <div class="equip-error">Failed to load items: {itemsError}</div>
+	                            {#if itemsError}
+	                                <div class="equip-error">Failed to load items: {itemsError}</div>
                             {:else if !itemsReady}
                                 <div class="equip-loading">Loading items…</div>
                             {:else}
                                 <input
-                                    class="equip-input"
-                                    bind:value={equipQuery}
-                                    bind:this={equipInputEl}
-                                    on:input={handleEquipInput}
-                                    on:keydown={(e) => handleEquipKeydown(e, group.unit)}
-                                    placeholder="Search items…"
-                                    autocomplete="off"
-                                />
+	                                    class="equip-input"
+	                                    bind:value={equipQuery}
+	                                    bind:this={equipInputEl}
+	                                    on:input={handleEquipInput}
+	                                    on:keydown={(e) => handleEquipKeydown(e, group.unit, group.negated)}
+	                                    placeholder="Search items…"
+	                                    autocomplete="off"
+	                                />
 
-                                <div class="equip-results">
-                                    {#each equipResults as item, i (item.token)}
-                                        {@const itemName = item.apiName}
-                                        {@const already = isEquipped(group.unit, itemName)}
-                                        {@const eqCount = getEquippedCount(group.unit, itemName)}
-                                        <button
-                                            class="equip-result"
-                                            class:selected={i === equipSelectedIndex}
-                                            disabled={already}
-                                            on:click={() => {
-                                                if (!already) equipItemOnUnit(group.unit, itemName, 'equip_ui');
-                                                equipQuery = '';
-                                                handleEquipInput();
-                                                tick().then(() => equipInputEl?.focus?.());
-                                            }}
-                                            title={already ? 'Already equipped' : 'Equip item'}
-                                        >
-                                            <span class="equip-name">{getDisplayName('item', item.label)}</span>
-                                            {#if already}
-                                                <span class="equip-status">Added</span>
-                                            {:else if eqCount > 0}
-                                                <span class="equip-count">{eqCount.toLocaleString()} games</span>
-                                            {:else}
-                                                <span class="equip-count">No data</span>
+	                                <div class="equip-results">
+	                                    {#each equipResults as item, i (item.token)}
+	                                        {@const itemName = item.apiName}
+	                                        {@const already = isEquipped(group.unit, itemName, group.negated)}
+	                                        {@const eqCount = getEquippedCount(group.unit, itemName)}
+	                                        <button
+	                                            class="equip-result"
+	                                            class:selected={i === equipSelectedIndex}
+	                                            disabled={already}
+	                                            on:click={() => {
+	                                                if (!already) {
+	                                                    if (group.negated) excludeItemOnUnit(group.unit, itemName, 'equip_ui');
+	                                                    else equipItemOnUnit(group.unit, itemName, 'equip_ui');
+	                                                }
+	                                                equipQuery = '';
+	                                                handleEquipInput();
+	                                                tick().then(() => equipInputEl?.focus?.());
+	                                            }}
+	                                            title={already ? (group.negated ? 'Already excluded' : 'Already equipped') : (group.negated ? 'Exclude item' : 'Equip item')}
+	                                        >
+	                                            <span class="equip-name">{getDisplayName('item', item.label)}</span>
+	                                            {#if already}
+	                                                <span class="equip-status">{group.negated ? 'Excluded' : 'Added'}</span>
+	                                            {:else if eqCount > 0}
+	                                                <span class="equip-count">{eqCount.toLocaleString()} games</span>
+	                                            {:else}
+	                                                <span class="equip-count">No data</span>
                                             {/if}
                                         </button>
                                     {/each}
@@ -456,17 +489,17 @@
                                     {/if}
                                 </div>
 
-                                <div class="equip-hint">
-                                    <kbd>Enter</kbd> equips • <kbd>Esc</kbd> closes
-                                </div>
-                            {/if}
-                        </div>
-                    {/if}
-                </div>
+	                                <div class="equip-hint">
+	                                    <kbd>Enter</kbd> {group.negated ? 'excludes' : 'equips'} • <kbd>Esc</kbd> closes
+	                                </div>
+	                            {/if}
+	                        </div>
+	                    {/if}
+	                </div>
             {/each}
 
             {#each otherTokens as token (token)}
-                <div class="chip {getChipType(token)}">
+                <div class="chip {getChipType(token)}" class:excluded={parseToken(token)?.negated}>
                     <span>{getChipLabel(token)}</span>
                     <button on:click={() => removeToken(token)} aria-label="Remove filter">
                         ×
@@ -578,6 +611,17 @@
         border-color: rgba(255, 68, 68, 0.6);
         background: rgba(255, 68, 68, 0.11);
         color: rgba(255, 68, 68, 0.98);
+    }
+
+    .chip.excluded {
+        border-style: dashed;
+        border-color: rgba(255, 68, 68, 0.4);
+        background: rgba(255, 68, 68, 0.07);
+    }
+
+    .chip.excluded:hover {
+        border-color: rgba(255, 68, 68, 0.6);
+        background: rgba(255, 68, 68, 0.11);
     }
 
     .chip > button {

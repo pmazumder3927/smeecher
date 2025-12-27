@@ -34,7 +34,8 @@ class ClusterParams:
 
 @dataclass(frozen=True, slots=True)
 class _CacheKey:
-    tokens: tuple[str, ...]
+    include_tokens: tuple[str, ...]
+    exclude_tokens: tuple[str, ...]
     params: ClusterParams
 
 
@@ -242,8 +243,24 @@ def compute_clusters(engine: GraphEngine, tokens: list[str], params: ClusterPara
 
     Returns JSON-serializable dict suitable for the frontend.
     """
-    canonical_tokens = tuple(sorted(t.strip() for t in tokens if t.strip()))
-    key = _CacheKey(tokens=canonical_tokens, params=params)
+    raw_tokens = [t.strip() for t in tokens if t and t.strip()]
+    include_tokens: list[str] = []
+    exclude_tokens: list[str] = []
+    for t in raw_tokens:
+        if t.startswith("-") or t.startswith("!"):
+            raw = t.lstrip("-!")
+            if raw:
+                exclude_tokens.append(raw)
+        else:
+            include_tokens.append(t)
+
+    canonical_include = tuple(sorted(include_tokens))
+    canonical_exclude = tuple(sorted(exclude_tokens))
+    key = _CacheKey(
+        include_tokens=canonical_include,
+        exclude_tokens=canonical_exclude,
+        params=params,
+    )
 
     cached = _cache_get(key)
     if cached is not None:
@@ -251,7 +268,7 @@ def compute_clusters(engine: GraphEngine, tokens: list[str], params: ClusterPara
 
     t0 = time.perf_counter()
 
-    base = engine.intersect(list(canonical_tokens))
+    base = engine.filter_bitmap(list(canonical_include), list(canonical_exclude))
     n_base = len(base)
     base_ids = np.array(base.to_array(), dtype=np.int64)
     base_avg = float(engine.avg_placement_for_bitmap(base)) if n_base > 0 else 4.5
@@ -260,7 +277,7 @@ def compute_clusters(engine: GraphEngine, tokens: list[str], params: ClusterPara
 
     result: dict = {
         "cached": False,
-        "tokens": list(canonical_tokens),
+        "tokens": list(canonical_include) + [f"-{t}" for t in canonical_exclude],
         "base": {
             "n": int(n_base),
             "avg_placement": round(base_avg, 4),

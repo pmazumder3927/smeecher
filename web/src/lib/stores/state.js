@@ -72,6 +72,17 @@ function recordAction(action) {
     });
 }
 
+function _stripNegation(token) {
+    if (typeof token !== 'string') return '';
+    return token.startsWith('-') || token.startsWith('!') ? token.slice(1) : token;
+}
+
+function _oppositeToken(token) {
+    const base = _stripNegation(token);
+    if (!base) return null;
+    return token.startsWith('-') || token.startsWith('!') ? base : `-${base}`;
+}
+
 // For UI events that don't directly change tokens (e.g. "clusters_run")
 export function recordUiAction(type, source = 'ui', payload = {}) {
     recordAction({
@@ -85,25 +96,63 @@ export function recordUiAction(type, source = 'ui', payload = {}) {
 // Helper functions
 export function addToken(token, source = 'unknown') {
     selectedTokens.update(tokens => {
-        if (!tokens.includes(token)) {
+        const opposite = _oppositeToken(token);
+        let next = tokens;
+        if (opposite && next.includes(opposite)) {
+            next = next.filter(t => t !== opposite);
+        }
+        if (!next.includes(token)) {
             posthog.capture('token_added', { token, source });
             recordAction({ type: 'token_added', source, token });
-            return [...tokens, token];
+            return [...next, token];
         }
-        return tokens;
+        return next;
     });
 }
 
 export function equipItemOnUnit(unit, item, source = 'equip_ui') {
     const unitToken = `U:${unit}`;
     const equippedToken = `E:${unit}|${item}`;
+    const oppositeUnitToken = `-U:${unit}`;
+    const altOppositeUnitToken = `!U:${unit}`;
+    const oppositeEquippedToken = `-E:${unit}|${item}`;
+    const altOppositeEquippedToken = `!E:${unit}|${item}`;
 
     selectedTokens.update(tokens => {
-        const existing = new Set(tokens);
-        const next = [...tokens];
+        // Avoid contradictory include+exclude for the exact same token(s)
+        const next = tokens.filter(
+            (t) =>
+                t !== oppositeUnitToken &&
+                t !== altOppositeUnitToken &&
+                t !== oppositeEquippedToken &&
+                t !== altOppositeEquippedToken
+        );
+        const existing = new Set(next);
         if (!existing.has(unitToken)) {
             next.push(unitToken);
         }
+        if (!existing.has(equippedToken)) {
+            next.push(equippedToken);
+            posthog.capture('token_added', { token: equippedToken, source });
+            recordAction({ type: 'token_added', source, token: equippedToken });
+        }
+        return next;
+    });
+}
+
+export function excludeItemOnUnit(unit, item, source = 'equip_ui') {
+    const equippedToken = `-E:${unit}|${item}`;
+    const oppositeEquippedToken = `E:${unit}|${item}`;
+    const broadUnitExcludeToken = `-U:${unit}`;
+    const altBroadUnitExcludeToken = `!U:${unit}`;
+
+    selectedTokens.update(tokens => {
+        // Avoid contradictory include+exclude for the exact same equipped token
+        // Also drop broad unit-exclusion if the user is specifying a narrower exclusion.
+        const next = tokens.filter(
+            (t) => t !== oppositeEquippedToken && t !== broadUnitExcludeToken && t !== altBroadUnitExcludeToken
+        );
+        const existing = new Set(next);
         if (!existing.has(equippedToken)) {
             next.push(equippedToken);
             posthog.capture('token_added', { token: equippedToken, source });
@@ -119,6 +168,12 @@ export function addTokens(tokensToAdd, source = 'unknown') {
         const next = [...tokens];
         const added = [];
         for (const t of tokensToAdd) {
+            const opposite = _oppositeToken(t);
+            if (opposite && existing.has(opposite)) {
+                existing.delete(opposite);
+                const idx = next.indexOf(opposite);
+                if (idx !== -1) next.splice(idx, 1);
+            }
             if (!existing.has(t)) {
                 existing.add(t);
                 next.push(t);
@@ -149,49 +204,107 @@ export function removeToken(token) {
     selectedTokens.update(tokens => tokens.filter(t => t !== token));
 }
 
-export function removeUnitFilters(unit, source = 'ui') {
-    const unitToken = `U:${unit}`;
+export function removeUnitFilters(unit, source = 'ui', options = {}) {
+    const negated = !!options?.negated;
+    const unitToken = negated ? `-U:${unit}` : `U:${unit}`;
+    const altUnitToken = negated ? `!U:${unit}` : null;
     const unitStarPrefix = `${unitToken}:`;
-    const equippedPrefix = `E:${unit}|`;
+    const altUnitStarPrefix = altUnitToken ? `${altUnitToken}:` : null;
+    const equippedPrefix = negated ? `-E:${unit}|` : `E:${unit}|`;
+    const altEquippedPrefix = negated ? `!E:${unit}|` : null;
 
     selectedTokens.update(tokens => {
-        const removed = tokens.filter(t => t === unitToken || t.startsWith(unitStarPrefix) || t.startsWith(equippedPrefix));
+        const removed = tokens.filter(t =>
+            t === unitToken ||
+            (altUnitToken && t === altUnitToken) ||
+            t.startsWith(unitStarPrefix) ||
+            (altUnitStarPrefix && t.startsWith(altUnitStarPrefix)) ||
+            t.startsWith(equippedPrefix) ||
+            (altEquippedPrefix && t.startsWith(altEquippedPrefix))
+        );
         if (removed.length > 0) {
-            posthog.capture('unit_filters_removed', { unit, count: removed.length, source });
+            posthog.capture('unit_filters_removed', { unit, negated, count: removed.length, source });
             recordAction({ type: 'tokens_removed', source, tokens: removed });
         }
-        return tokens.filter(t => !(t === unitToken || t.startsWith(unitStarPrefix) || t.startsWith(equippedPrefix)));
+        return tokens.filter(t =>
+            !(
+                t === unitToken ||
+                (altUnitToken && t === altUnitToken) ||
+                t.startsWith(unitStarPrefix) ||
+                (altUnitStarPrefix && t.startsWith(altUnitStarPrefix)) ||
+                t.startsWith(equippedPrefix) ||
+                (altEquippedPrefix && t.startsWith(altEquippedPrefix))
+            )
+        );
     });
 }
 
-export function setUnitStarFilter(unit, stars, source = 'ui') {
-    const baseToken = `U:${unit}`;
+export function setUnitStarFilter(unit, stars, source = 'ui', options = {}) {
+    const negated = !!options?.negated;
+    const baseToken = negated ? `-U:${unit}` : `U:${unit}`;
+    const altBaseToken = negated ? `!U:${unit}` : null;
     const starPrefix = `${baseToken}:`;
+    const altStarPrefix = altBaseToken ? `${altBaseToken}:` : null;
 
     const starNum = stars == null ? null : parseInt(stars, 10);
     const desiredStarToken = Number.isFinite(starNum) ? `${baseToken}:${starNum}` : null;
 
     selectedTokens.update((tokens) => {
-        const removed = tokens.filter((t) => t.startsWith(starPrefix));
-        let next = tokens.filter((t) => !t.startsWith(starPrefix));
+        const removed = [];
+
+        const wantStar = Number.isFinite(starNum);
+        const wantAny = !wantStar;
+
+        let next = tokens.filter((t) => {
+            const isStarToken = t.startsWith(starPrefix) || (altStarPrefix && t.startsWith(altStarPrefix));
+            if (isStarToken) {
+                removed.push(t);
+                return false;
+            }
+
+            // For negated unit filters, a base token (-U:Unit) would dominate any
+            // star-level exclusion. When selecting a specific star, drop the base.
+            if (negated && wantStar && (t === baseToken || (altBaseToken && t === altBaseToken))) {
+                removed.push(t);
+                return false;
+            }
+
+            return true;
+        });
 
         const added = [];
 
-        // Always keep the base unit token so the composite chip stays consistent.
-        if (!next.includes(baseToken)) {
-            next = [...next, baseToken];
-            added.push(baseToken);
-        }
-
-        if (desiredStarToken && !next.includes(desiredStarToken)) {
-            next = [...next, desiredStarToken];
-            added.push(desiredStarToken);
+        if (!negated) {
+            // Inclusion: keep base token so "Any" means any star.
+            if (!next.includes(baseToken)) {
+                next = [...next, baseToken];
+                added.push(baseToken);
+            }
+            if (desiredStarToken && !next.includes(desiredStarToken)) {
+                next = [...next, desiredStarToken];
+                added.push(desiredStarToken);
+            }
+        } else {
+            // Exclusion: either exclude a specific star (no base token),
+            // or exclude the unit at any star (base token).
+            if (wantStar) {
+                if (desiredStarToken && !next.includes(desiredStarToken)) {
+                    next = [...next, desiredStarToken];
+                    added.push(desiredStarToken);
+                }
+            } else if (wantAny) {
+                if (!next.includes(baseToken) && !(altBaseToken && next.includes(altBaseToken))) {
+                    next = [...next, baseToken];
+                    added.push(baseToken);
+                }
+            }
         }
 
         if (removed.length > 0 || added.length > 0) {
             posthog.capture('unit_star_filter_set', {
                 unit,
                 stars: Number.isFinite(starNum) ? starNum : null,
+                negated,
                 added_count: added.length,
                 removed_count: removed.length,
                 source

@@ -257,6 +257,7 @@ async def upload_data(
 
 def get_token_type(token: str) -> str:
     """Return 'unit', 'item', 'equipped', or 'trait'."""
+    token = token.lstrip("-!")
     if token.startswith("U:"):
         return "unit"
     elif token.startswith("I:"):
@@ -370,6 +371,9 @@ def _parse_item_prefixes_param(item_prefixes: str) -> set[str]:
 
 def parse_token(token: str) -> dict:
     """Parse token into components."""
+    raw = token.lstrip("-!")
+    negated = raw != token
+    token = raw
     token_type = get_token_type(token)
     if token_type == "unit":
         rest = token[2:]
@@ -381,20 +385,20 @@ def parse_token(token: str) -> dict:
             except ValueError:
                 stars = None
             if stars is not None:
-                return {"type": "unit", "unit": unit, "stars": stars}
-        return {"type": "unit", "unit": rest, "stars": None}
+                return {"type": "unit", "unit": unit, "stars": stars, "negated": negated}
+        return {"type": "unit", "unit": rest, "stars": None, "negated": negated}
     elif token_type == "item":
-        return {"type": "item", "item": token[2:]}
+        return {"type": "item", "item": token[2:], "negated": negated}
     elif token_type == "equipped":
         parts = token[2:].split("|")
-        return {"type": "equipped", "unit": parts[0], "item": parts[1]}
+        return {"type": "equipped", "unit": parts[0], "item": parts[1], "negated": negated}
     elif token_type == "trait":
         # Handle tiered traits like T:Brawler:2
         parts = token[2:].split(":")
         if len(parts) == 2:
-            return {"type": "trait", "trait": parts[0], "tier": int(parts[1])}
-        return {"type": "trait", "trait": parts[0], "tier": None}
-    return {"type": "unknown"}
+            return {"type": "trait", "trait": parts[0], "tier": int(parts[1]), "negated": negated}
+        return {"type": "trait", "trait": parts[0], "tier": None, "negated": negated}
+    return {"type": "unknown", "negated": negated}
 
 
 def get_center_info(tokens: list[str]) -> dict:
@@ -409,6 +413,8 @@ def get_center_info(tokens: list[str]) -> dict:
 
     for t in tokens:
         parsed = parse_token(t)
+        if parsed.get("negated"):
+            continue
         if parsed["type"] == "unit":
             units.append(parsed["unit"])
         elif parsed["type"] == "item":
@@ -567,6 +573,15 @@ def get_graph(
         raise HTTPException(status_code=503, detail="Engine not loaded")
 
     token_list = [t.strip() for t in tokens.split(",") if t.strip()]
+    include_tokens: list[str] = []
+    exclude_tokens: list[str] = []
+    for t in token_list:
+        if t.startswith("-") or t.startswith("!"):
+            raw = t.lstrip("-!")
+            if raw:
+                exclude_tokens.append(raw)
+        else:
+            include_tokens.append(t)
     active_types = set(t.strip().lower() for t in types.split(",") if t.strip())
     allowed_item_types = _parse_item_types_param(item_types)
     allowed_item_prefixes = _parse_item_prefixes_param(item_prefixes)
@@ -609,16 +624,16 @@ def get_graph(
             "edges": []
         }
 
-    # Compute base set using roaring bitmap intersection
-    base = ENGINE.intersect(token_list)
+    # Compute base set using include/exclude filters.
+    base = ENGINE.filter_bitmap(include_tokens, exclude_tokens)
     n_base = len(base)
     avg_base = ENGINE.avg_placement_for_bitmap(base) if n_base > 0 else 4.5
 
     # Get center info
-    center_info = get_center_info(token_list)
+    center_info = get_center_info(include_tokens)
 
     # Generate candidates
-    candidates = generate_candidates(center_info, token_list)
+    candidates = generate_candidates(center_info, include_tokens + exclude_tokens)
 
     # Narrow which item candidates are shown:
     # - Base items (no prefix) are always included
@@ -694,20 +709,28 @@ def get_graph(
         if parsed["type"] == "unit":
             node_id = f"U:{parsed['unit']}"
             if node_id not in node_ids:
+                label = ENGINE.get_label(node_id)
+                if parsed.get("negated"):
+                    label = f"Not {label}"
                 nodes.append({
                     "id": node_id,
-                    "label": ENGINE.get_label(node_id),
+                    "label": label,
                     "type": "unit",
+                    "negated": bool(parsed.get("negated")),
                     "isCenter": True
                 })
                 node_ids.add(node_id)
         elif parsed["type"] == "item":
             node_id = f"I:{parsed['item']}"
             if node_id not in node_ids:
+                label = ENGINE.get_label(node_id)
+                if parsed.get("negated"):
+                    label = f"Not {label}"
                 nodes.append({
                     "id": node_id,
-                    "label": ENGINE.get_label(node_id),
+                    "label": label,
                     "type": "item",
+                    "negated": bool(parsed.get("negated")),
                     "isCenter": True
                 })
                 node_ids.add(node_id)
@@ -717,10 +740,14 @@ def get_graph(
             else:
                 node_id = f"T:{parsed['trait']}"
             if node_id not in node_ids:
+                label = ENGINE.get_label(node_id)
+                if parsed.get("negated"):
+                    label = f"Not {label}"
                 nodes.append({
                     "id": node_id,
-                    "label": ENGINE.get_label(node_id),
+                    "label": label,
                     "type": "trait",
+                    "negated": bool(parsed.get("negated")),
                     "isCenter": True
                 })
                 node_ids.add(node_id)
@@ -1543,8 +1570,17 @@ def get_unit_build(
     if ENGINE is None:
         raise HTTPException(status_code=503, detail="Engine not loaded")
 
-    # Parse additional filter tokens
+    # Parse additional filter tokens (supports exclude tokens prefixed by '-' or '!')
     filter_tokens = [t.strip() for t in tokens.split(",") if t.strip()]
+    include_filters: list[str] = []
+    exclude_filters: list[str] = []
+    for t in filter_tokens:
+        if t.startswith("-") or t.startswith("!"):
+            raw = t.lstrip("-!")
+            if raw:
+                exclude_filters.append(raw)
+        else:
+            include_filters.append(t)
     allowed_item_types = _parse_item_types_param(item_types)
     allowed_item_prefixes = _parse_item_prefixes_param(item_prefixes)
 
@@ -1554,9 +1590,9 @@ def get_unit_build(
     if unit_token not in ENGINE.token_to_id:
         raise HTTPException(status_code=404, detail=f"Unit '{unit}' not found")
 
-    # Get base stats
-    base_tokens = [unit_token] + filter_tokens
-    base_bitmap = ENGINE.intersect(base_tokens)
+    # Get base stats (unit + included filters, minus excluded filters)
+    base_tokens = [unit_token] + include_filters
+    base_bitmap = ENGINE.filter_bitmap(base_tokens, exclude_filters)
     n_base = len(base_bitmap)
     avg_base = ENGINE.avg_placement_for_bitmap(base_bitmap) if n_base > 0 else 4.5
 
@@ -1577,7 +1613,7 @@ def get_unit_build(
     # Items already locked-in for this unit via filters (E:{unit}|{item})
     locked_items: list[str] = []
     locked_item_set: set[str] = set()
-    for t in filter_tokens:
+    for t in include_filters:
         parsed = parse_token(t)
         if parsed["type"] == "equipped" and parsed["unit"] == unit:
             item_name = parsed["item"]
@@ -1798,8 +1834,17 @@ def get_unit_items(
     if ENGINE is None:
         raise HTTPException(status_code=503, detail="Engine not loaded")
 
-    # Parse additional filter tokens
+    # Parse additional filter tokens (supports exclude tokens prefixed by '-' or '!')
     filter_tokens = [t.strip() for t in tokens.split(",") if t.strip()]
+    include_filters: list[str] = []
+    exclude_filters: list[str] = []
+    for t in filter_tokens:
+        if t.startswith("-") or t.startswith("!"):
+            raw = t.lstrip("-!")
+            if raw:
+                exclude_filters.append(raw)
+        else:
+            include_filters.append(t)
     allowed_item_types = _parse_item_types_param(item_types)
     allowed_item_prefixes = _parse_item_prefixes_param(item_prefixes)
 
@@ -1810,9 +1855,9 @@ def get_unit_items(
     if unit_token not in ENGINE.token_to_id:
         raise HTTPException(status_code=404, detail=f"Unit '{unit}' not found")
 
-    # Build base set: unit + any additional filters
-    base_tokens = [unit_token] + filter_tokens
-    base_bitmap = ENGINE.intersect(base_tokens)
+    # Build base set: unit + included filters, minus excluded filters
+    base_tokens = [unit_token] + include_filters
+    base_bitmap = ENGINE.filter_bitmap(base_tokens, exclude_filters)
     n_base = len(base_bitmap)
 
     if n_base == 0:
@@ -1840,7 +1885,7 @@ def get_unit_items(
 
     # Track which items are already in filters (to exclude from recommendations)
     existing_items = set()
-    for t in filter_tokens:
+    for t in include_filters:
         parsed = parse_token(t)
         if parsed["type"] == "item":
             existing_items.add(parsed["item"])

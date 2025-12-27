@@ -36,6 +36,26 @@
     "with",
   ]);
 
+  function isNegationPrefix(text) {
+    const t = (text || "").trim();
+    return t.startsWith("-") || t.startsWith("!");
+  }
+
+  function stripNegationPrefix(text) {
+    return String(text || "").replace(/^[-!]+/, "");
+  }
+
+  function applyNegation(token, negated) {
+    return negated ? `-${token}` : token;
+  }
+
+  function stripTokenNegation(token) {
+    if (!token) return token;
+    return token.startsWith("-") || token.startsWith("!")
+      ? token.slice(1)
+      : token;
+  }
+
   function normalizeSearchText(text) {
     return (text || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   }
@@ -51,7 +71,8 @@
     if (!cleaned) return "";
     const parts = cleaned.split(/\s+/).filter(Boolean);
     const stemmed = parts.map((p) => {
-      if (p.length > 3 && p.endsWith("s") && !p.endsWith("ss")) return p.slice(0, -1);
+      if (p.length > 3 && p.endsWith("s") && !p.endsWith("ss"))
+        return p.slice(0, -1);
       return p;
     });
     return stemmed.join("");
@@ -63,16 +84,18 @@
   }
 
   function getTokenTypeFromToken(token) {
-    if (token.startsWith("U:")) return "unit";
-    if (token.startsWith("I:")) return "item";
-    if (token.startsWith("T:")) return "trait";
-    if (token.startsWith("E:")) return "equipped";
+    const t = stripTokenNegation(token);
+    if (t.startsWith("U:")) return "unit";
+    if (t.startsWith("I:")) return "item";
+    if (t.startsWith("T:")) return "trait";
+    if (t.startsWith("E:")) return "equipped";
     return "unknown";
   }
 
   function parseEquippedToken(token) {
-    if (!token?.startsWith?.("E:")) return null;
-    const parts = token.slice(2).split("|");
+    const t = stripTokenNegation(token);
+    if (!t?.startsWith?.("E:")) return null;
+    const parts = t.slice(2).split("|");
     if (parts.length !== 2) return null;
     const [unit, item] = parts;
     if (!unit || !item) return null;
@@ -123,18 +146,25 @@
     const { tokens } = parseTokensFromText(prefixText);
     return tokens
       .map((token) => {
-        const entry = tokenLookup.get(token);
-        if (token.startsWith("E:")) {
+        const negated = isNegationPrefix(token);
+        const baseToken = stripTokenNegation(token);
+        const entry = tokenLookup.get(baseToken);
+
+        if (baseToken.startsWith("E:")) {
           return {
             token,
             type: "equipped",
-            label: formatEquippedLabel(token),
+            label: negated
+              ? `Not ${formatEquippedLabel(baseToken)}`
+              : formatEquippedLabel(baseToken),
           };
         }
+        let label = entry?.label ?? baseToken.slice(2);
+        if (negated) label = `Not ${label}`;
         return {
           token,
-          type: entry?.type ?? getTokenTypeFromToken(token),
-          label: entry?.label ?? token.slice(2),
+          type: entry?.type ?? getTokenTypeFromToken(baseToken),
+          label,
         };
       })
       .filter((t) => t.type !== "unknown");
@@ -246,7 +276,21 @@
     const tokens = [];
     let i = 0;
     while (i < words.length) {
-      const wordKey = words[i].toLowerCase().replace(/[^a-z0-9]/g, "");
+      let negated = false;
+      if (words[i] === "-" || words[i] === "!") {
+        negated = true;
+        i += 1;
+        if (i >= words.length) break;
+      }
+
+      const firstWord = words[i] || "";
+      if (isNegationPrefix(firstWord)) {
+        negated = true;
+      }
+
+      const wordKey = stripNegationPrefix(firstWord)
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
       if (STOP_WORDS.has(wordKey)) {
         i += 1;
         continue;
@@ -259,7 +303,11 @@
         span >= 1;
         span -= 1
       ) {
-        const phrase = words.slice(i, i + span).join(" ");
+        const phraseWords = words.slice(i, i + span);
+        if (negated && phraseWords.length > 0) {
+          phraseWords[0] = stripNegationPrefix(phraseWords[0]);
+        }
+        const phrase = phraseWords.join(" ");
         const token = resolvePhraseToToken(phrase);
         if (token) {
           matchedToken = token;
@@ -270,7 +318,7 @@
 
       if (!matchedToken) break;
 
-      tokens.push(matchedToken);
+      tokens.push(applyNegation(matchedToken, negated));
       i += matchedSpan;
     }
 
@@ -287,7 +335,21 @@
     const tokens = [];
     let i = 0;
     while (i < words.length) {
-      const wordKey = words[i].toLowerCase().replace(/[^a-z0-9]/g, "");
+      let negated = false;
+      if (words[i] === "-" || words[i] === "!") {
+        negated = true;
+        i += 1;
+        if (i >= words.length) break;
+      }
+
+      const firstWord = words[i] || "";
+      if (isNegationPrefix(firstWord)) {
+        negated = true;
+      }
+
+      const wordKey = stripNegationPrefix(firstWord)
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
       if (STOP_WORDS.has(wordKey)) {
         i += 1;
         continue;
@@ -300,7 +362,11 @@
         span >= 1;
         span -= 1
       ) {
-        const phrase = words.slice(i, i + span).join(" ");
+        const phraseWords = words.slice(i, i + span);
+        if (negated && phraseWords.length > 0) {
+          phraseWords[0] = stripNegationPrefix(phraseWords[0]);
+        }
+        const phrase = phraseWords.join(" ");
         const token = resolvePhraseToTokenExact(phrase);
         if (token) {
           matchedToken = token;
@@ -311,7 +377,7 @@
 
       if (!matchedToken) break;
 
-      tokens.push(matchedToken);
+      tokens.push(applyNegation(matchedToken, negated));
       i += matchedSpan;
     }
 
@@ -429,7 +495,7 @@
         selectedIndex >= 0
       ) {
         event.preventDefault();
-        handleSelect(results[selectedIndex].token);
+        handleSelect(results[selectedIndex].token, event);
         return;
       }
 
@@ -448,7 +514,10 @@
           const selectedEntry = tokenLookup.get(selected);
           const leftoverNorm = normalizeSearchText(leftover);
 
-          selectedToken = selected;
+          selectedToken = applyNegation(
+            selected,
+            isNegationPrefix(lastLeftover)
+          );
           if (
             selectedEntry &&
             leftoverNorm &&
@@ -496,7 +565,11 @@
     }
   }
 
-  function handleSelect(token) {
+  function handleSelect(token, event = null) {
+    const excludeMode =
+      (event?.altKey ?? false) || isNegationPrefix(getActiveSegment(query));
+    const finalToken = applyNegation(token, excludeMode);
+
     // If the user typed multiple words (e.g. "diana aat") and clicks a suggestion,
     // resolve and add everything we can in one shot.
     if (searchReady) {
@@ -506,12 +579,15 @@
         .filter(Boolean);
       const prefix = words.length > 1 ? words.slice(0, -1).join(" ") : "";
       const prefixTokens = prefix ? parseTokensFromText(prefix).tokens : [];
-      addMany([...prefixTokens, token], "search");
+      addMany([...prefixTokens, finalToken], "search");
     } else {
-      addToken(token, "search");
+      addToken(finalToken, "search");
     }
 
-    posthog.capture("search_result_selected", { token, source: "search" });
+    posthog.capture("search_result_selected", {
+      token: finalToken,
+      source: "search",
+    });
     clearInput();
   }
 
@@ -595,7 +671,7 @@
       on:input={handleInput}
       on:focus={handleFocus}
       on:keydown={handleKeydown}
-      placeholder="Type “ashe tryndamere” etc."
+      placeholder="ashe -tryndamere3"
       autocomplete="off"
     />
     {#if hasFocus && searchReady}
@@ -622,6 +698,9 @@
                   </span>
                 {/each}
               </div>
+              {#if isNegationPrefix(currentSegment)}
+                <span class="exclude-badge">Exclude</span>
+              {/if}
               <span class="meta-action"
                 ><kbd>Space</kbd> auto-adds • <kbd>Enter</kbd> adds</span
               >
@@ -630,6 +709,9 @@
               <span class="meta-text"
                 >Type multiple names — <kbd>Space</kbd> auto-adds completed terms</span
               >
+              {#if isNegationPrefix(currentSegment)}
+                <span class="exclude-badge">Exclude</span>
+              {/if}
             {/if}
           </div>
         {/if}
@@ -640,7 +722,7 @@
               id="result-{i}"
               class="search-result"
               class:selected={i === selectedIndex}
-              on:click={() => handleSelect(result.token)}
+              on:click={(e) => handleSelect(result.token, e)}
               on:mouseenter={() => (selectedIndex = i)}
             >
               <span
@@ -779,6 +861,19 @@
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--text-tertiary);
+  }
+
+  .exclude-badge {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 68, 68, 0.35);
+    background: rgba(255, 68, 68, 0.12);
+    color: rgba(255, 120, 120, 0.95);
+    white-space: nowrap;
   }
 
   .meta-text {
