@@ -1,15 +1,16 @@
 <script>
     import { activeTypes, toggleType, showTooltip, hideTooltip } from '../stores/state.js';
+    import ItemFilterMenu from './ItemFilterMenu.svelte';
 
     $: unitActive = $activeTypes.has('unit');
     $: itemActive = $activeTypes.has('item');
     $: traitActive = $activeTypes.has('trait');
 
-    function handleMouseEnter(event, type) {
-        const rect = event.target.getBoundingClientRect();
+    function handleMouseEnter(event, text) {
+        const rect = event.currentTarget.getBoundingClientRect();
         showTooltip(rect.left + rect.width / 2, rect.bottom + 8, {
             type: 'text',
-            text: `Toggle ${type} nodes in graph`
+            text
         });
     }
 </script>
@@ -19,25 +20,30 @@
         class="filter-toggle unit"
         class:active={unitActive}
         on:click={() => toggleType('unit')}
-        on:mouseenter={(e) => handleMouseEnter(e, 'unit')}
+        on:mouseenter={(e) => handleMouseEnter(e, 'Toggle unit nodes in graph')}
         on:mouseleave={hideTooltip}
     >
         Units
     </button>
-    <button
-        class="filter-toggle item"
-        class:active={itemActive}
-        on:click={() => toggleType('item')}
-        on:mouseenter={(e) => handleMouseEnter(e, 'item')}
-        on:mouseleave={hideTooltip}
-    >
-        Items
-    </button>
+    <div class="item-toggle-group">
+        <button
+            class="filter-toggle item main"
+            class:active={itemActive}
+            on:click={() => toggleType('item')}
+            on:mouseenter={(e) => handleMouseEnter(e, 'Toggle item nodes in graph')}
+            on:mouseleave={hideTooltip}
+        >
+            Items
+        </button>
+        <div class="item-filter-trigger">
+            <ItemFilterMenu compact active={itemActive} />
+        </div>
+    </div>
     <button
         class="filter-toggle trait"
         class:active={traitActive}
         on:click={() => toggleType('trait')}
-        on:mouseenter={(e) => handleMouseEnter(e, 'trait')}
+        on:mouseenter={(e) => handleMouseEnter(e, 'Toggle trait nodes in graph')}
         on:mouseleave={hideTooltip}
     >
         Traits
@@ -50,7 +56,29 @@
         gap: 8px;
     }
 
+    .item-toggle-group {
+        display: inline-flex;
+        align-items: stretch;
+        gap: 0;
+    }
+
+    .filter-toggle.main {
+        border-top-right-radius: 0;
+        border-bottom-right-radius: 0;
+    }
+
+    .item-filter-trigger :global(.trigger) {
+        border-top-left-radius: 0;
+        border-bottom-left-radius: 0;
+        margin-left: -1px;
+    }
+
     .filter-toggle {
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
         padding: 6px 10px;
         border-radius: 5px;
         border: 1px solid var(--border);

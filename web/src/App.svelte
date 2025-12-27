@@ -10,7 +10,7 @@
     import Walkthrough from './lib/components/Walkthrough.svelte';
 
     import { loadCDragonData } from './lib/stores/assets.js';
-    import { selectedTokens, topK, graphData, activeTypes, sortMode } from './lib/stores/state.js';
+    import { selectedTokens, topK, graphData, activeTypes, sortMode, itemTypeFilters, itemPrefixFilters } from './lib/stores/state.js';
     import { fetchGraphData } from './lib/api.js';
 
     let ready = false;
@@ -21,9 +21,9 @@
     let fetchVersion = 0;
 
     // Fetch graph when tokens, topK, activeTypes, or sortMode change (debounced).
-    $: if (ready) scheduleFetchGraph($selectedTokens, $topK, $activeTypes, $sortMode);
+    $: if (ready) scheduleFetchGraph($selectedTokens, $topK, $activeTypes, $sortMode, $itemTypeFilters, $itemPrefixFilters);
 
-    function scheduleFetchGraph(tokens, k, types, mode) {
+    function scheduleFetchGraph(tokens, k, types, mode, itemTypes, itemPrefixes) {
         clearTimeout(fetchTimer);
 
         const version = ++fetchVersion;
@@ -31,15 +31,17 @@
         const typesSnapshot = new Set(types);
         const modeSnapshot = mode;
         const kSnapshot = k;
+        const itemTypesSnapshot = new Set(itemTypes);
+        const itemPrefixesSnapshot = new Set(itemPrefixes);
 
         fetchTimer = setTimeout(() => {
-            fetchGraph(tokensSnapshot, kSnapshot, typesSnapshot, modeSnapshot, version);
+            fetchGraph(tokensSnapshot, kSnapshot, typesSnapshot, modeSnapshot, itemTypesSnapshot, itemPrefixesSnapshot, version);
         }, 150);
     }
 
-    async function fetchGraph(tokens, k, types, mode, version = fetchVersion) {
+    async function fetchGraph(tokens, k, types, mode, itemTypes, itemPrefixes, version = fetchVersion) {
         try {
-            const data = await fetchGraphData(tokens, k, types, mode);
+            const data = await fetchGraphData(tokens, k, types, mode, { itemTypes, itemPrefixes });
             if (version !== fetchVersion) return; // Ignore stale responses
             graphData.set(data);
         } catch (error) {
@@ -52,7 +54,7 @@
         ready = true;
         const version = ++fetchVersion;
         clearTimeout(fetchTimer);
-        await fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode, version);
+        await fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode, $itemTypeFilters, $itemPrefixFilters, version);
 
         try {
             const seen = localStorage.getItem(WALKTHROUGH_KEY) === '1';

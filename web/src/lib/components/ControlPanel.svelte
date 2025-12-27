@@ -65,6 +65,13 @@
     min-width: 0;
   }
 
+  .toggles-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
   /* Make search bar take available space */
   .search-section :global(.search-wrapper) {
     flex: 1;

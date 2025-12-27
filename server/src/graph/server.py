@@ -126,6 +126,103 @@ def get_token_type(token: str) -> str:
     return "unknown"
 
 
+_COMPONENT_ITEMS: set[str] = {
+    "BFSword",
+    "ChainVest",
+    "GiantsBelt",
+    "NeedlesslyLargeRod",
+    "NegatronCloak",
+    "RecurveBow",
+    "SparringGloves",
+    "Spatula",
+    "TearOfTheGoddess",
+}
+
+
+def get_item_type(item_name: str) -> str:
+    """
+    Best-effort item categorization for filtering.
+
+    Returns one of: component, full, artifact, emblem, radiant
+    """
+    if item_name in _COMPONENT_ITEMS:
+        return "component"
+    if item_name.endswith("Radiant"):
+        return "radiant"
+    if item_name.startswith("Artifact_") or "Item_Ornn" in item_name:
+        return "artifact"
+    if item_name.endswith("EmblemItem") or item_name.startswith("TFT_Item_Emblem_"):
+        return "emblem"
+    return "full"
+
+
+def get_item_prefix(item_name: str) -> str | None:
+    """
+    Best-effort "set prefix" for filtering *full* items that use a Name_Pattern.
+
+    Examples:
+      - Bilgewater_CaptainsBrew -> Bilgewater
+    """
+    item_type = get_item_type(item_name)
+    if item_type != "full":
+        return None
+
+    if "_" in item_name:
+        prefix = item_name.split("_", 1)[0]
+        if prefix.upper().startswith("TFT") or prefix.lower().startswith("set"):
+            return None
+        return prefix or None
+
+    return None
+
+
+_ITEM_TYPE_ALIASES: dict[str, str] = {
+    "component": "component",
+    "components": "component",
+    "comp": "component",
+    "full": "full",
+    "fullitem": "full",
+    "full_item": "full",
+    "full-item": "full",
+    "completed": "full",
+    "complete": "full",
+    "artifact": "artifact",
+    "artifacts": "artifact",
+    "emblem": "emblem",
+    "emblems": "emblem",
+    "radiant": "radiant",
+    "radiantitem": "radiant",
+    "radiant_item": "radiant",
+    "radiant-item": "radiant",
+}
+
+
+def _parse_item_types_param(item_types: str) -> set[str] | None:
+    """
+    Parse item_types query param into normalized set.
+    Empty/unknown-only input => None (no filtering).
+    """
+    raw = [t.strip() for t in (item_types or "").split(",") if t.strip()]
+    if not raw:
+        return None
+    normalized = {_ITEM_TYPE_ALIASES.get(t.lower(), t.lower()) for t in raw}
+    allowed = {"component", "full", "artifact", "emblem", "radiant"}
+    normalized = {t for t in normalized if t in allowed}
+    return normalized or None
+
+
+def _parse_item_prefixes_param(item_prefixes: str) -> set[str] | None:
+    """
+    Parse item_prefixes query param into normalized set (case-insensitive).
+    Empty input => None (no filtering).
+    """
+    raw = [t.strip() for t in (item_prefixes or "").split(",") if t.strip()]
+    if not raw:
+        return None
+    normalized = {t.rstrip("_").lower() for t in raw if t.rstrip("_")}
+    return normalized or None
+
+
 def parse_token(token: str) -> dict:
     """Parse token into components."""
     token_type = get_token_type(token)
@@ -292,7 +389,15 @@ def get_graph(
     min_sample: int = Query(default=10, description="Minimum sample size"),
     top_k: int = Query(default=15, description="Max edges to return (0 = unlimited)"),
     types: str = Query(default="unit,item,trait", description="Comma-separated types to include"),
-    sort_mode: str = Query(default="impact", description="Sort mode: impact (abs delta), helpful (most negative delta), harmful (most positive delta)")
+    sort_mode: str = Query(default="impact", description="Sort mode: impact (abs delta), helpful (most negative delta), harmful (most positive delta)"),
+    item_types: str = Query(
+        default="",
+        description="Item types to include (comma-separated): component, full, artifact, emblem, radiant",
+    ),
+    item_prefixes: str = Query(
+        default="",
+        description="Item prefixes to include (comma-separated, case-insensitive), e.g. Bilgewater",
+    ),
 ):
     """
     Get graph data for the given filter tokens.
@@ -302,12 +407,26 @@ def get_graph(
     """
     token_list = [t.strip() for t in tokens.split(",") if t.strip()]
     active_types = set(t.strip().lower() for t in types.split(",") if t.strip())
+    allowed_item_types = _parse_item_types_param(item_types)
+    allowed_item_prefixes = _parse_item_prefixes_param(item_prefixes)
 
     if not token_list:
         # Special case: return all root nodes (units, items, base traits)
         all_units = ENGINE.get_all_tokens_by_type("U:")
         all_items = ENGINE.get_all_tokens_by_type("I:")
         all_traits = [t for t in ENGINE.get_all_tokens_by_type("T:") if ":" not in t[2:]]
+
+        if allowed_item_types is not None or allowed_item_prefixes is not None:
+            def _item_allowed_root(item_name: str) -> bool:
+                item_type = get_item_type(item_name)
+                if allowed_item_types is not None and item_type not in allowed_item_types:
+                    return False
+                prefix = get_item_prefix(item_name)
+                if allowed_item_prefixes is not None and (prefix or "").lower() not in allowed_item_prefixes:
+                    return False
+                return True
+
+            all_items = [t for t in all_items if _item_allowed_root(t[2:])]
 
         nodes = []
         for t in all_units:
@@ -337,6 +456,32 @@ def get_graph(
 
     # Generate candidates
     candidates = generate_candidates(center_info, token_list)
+
+    # Optional: narrow which item candidates are shown
+    if allowed_item_types is not None or allowed_item_prefixes is not None:
+        center_items = set(center_info.get("items") or [])
+
+        def _item_allowed(item_name: str) -> bool:
+            item_type = get_item_type(item_name)
+            if allowed_item_types is not None and item_type not in allowed_item_types:
+                return False
+            prefix = get_item_prefix(item_name)
+            if allowed_item_prefixes is not None and (prefix or "").lower() not in allowed_item_prefixes:
+                return False
+            return True
+
+        filtered = []
+        for tok, edge_type in candidates:
+            parsed = parse_token(tok)
+            if parsed["type"] == "item":
+                if not _item_allowed(parsed["item"]):
+                    continue
+            elif parsed["type"] == "equipped":
+                # Preserve equipped edges for explicitly-selected center items
+                if parsed["item"] not in center_items and not _item_allowed(parsed["item"]):
+                    continue
+            filtered.append((tok, edge_type))
+        candidates = filtered
 
     # Extract just token strings for scoring
     candidate_tokens = [t for t, _ in candidates]
@@ -723,6 +868,61 @@ def get_search_index():
     ]
 
 
+# Cache for item filter options (prefixes/types)
+_item_filters_cache = None
+
+
+@app.get("/item-filters")
+def get_item_filters():
+    """
+    Return available item filter options for the UI.
+
+    These filters are *not* match constraints; they are used to narrow which item
+    candidates are shown/recommended (e.g., only Bilgewater_* full items).
+    """
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    global _item_filters_cache
+    if _item_filters_cache is not None:
+        return _item_filters_cache
+
+    # Build from item presence tokens (I:*) so it matches graph item nodes.
+    item_names = [t[2:] for t in ENGINE.id_to_token if t.startswith("I:")]
+
+    type_counts: dict[str, int] = {k: 0 for k in ("component", "full", "artifact", "emblem", "radiant")}
+    prefix_to_items: dict[str, set[str]] = {}
+
+    for name in item_names:
+        item_type = get_item_type(name)
+        if item_type in type_counts:
+            type_counts[item_type] += 1
+
+        prefix = get_item_prefix(name)
+        if prefix:
+            prefix_to_items.setdefault(prefix, set()).add(name)
+
+    # Only show prefixes that actually represent a "set" (2+ distinct items).
+    prefixes = [
+        {"key": p, "items": sorted(items), "n_items": len(items)}
+        for p, items in prefix_to_items.items()
+        if len(items) >= 2
+    ]
+    prefixes.sort(key=lambda x: (-x["n_items"], x["key"].lower()))
+
+    _item_filters_cache = {
+        "item_types": [
+            {"key": "full", "label": "Full items", "n_items": type_counts["full"]},
+            {"key": "radiant", "label": "Radiant", "n_items": type_counts["radiant"]},
+            {"key": "artifact", "label": "Artifacts", "n_items": type_counts["artifact"]},
+            {"key": "emblem", "label": "Emblems", "n_items": type_counts["emblem"]},
+            {"key": "component", "label": "Components", "n_items": type_counts["component"]},
+        ],
+        "item_prefixes": prefixes,
+    }
+    return _item_filters_cache
+
+
 # Cache for voice parsing vocabulary context
 _voice_vocab_cache = None
 
@@ -1012,7 +1212,15 @@ def get_unit_build(
     unit: str = Query(..., description="Unit name (e.g., MissFortune)"),
     tokens: str = Query(default="", description="Additional filter tokens (comma-separated)"),
     min_sample: int = Query(default=10, description="Minimum sample size for inclusion"),
-    slots: int = Query(default=3, ge=1, le=3, description="Number of item slots to fill")
+    slots: int = Query(default=3, ge=1, le=3, description="Number of item slots to fill"),
+    item_types: str = Query(
+        default="",
+        description="Item types to include (comma-separated): component, full, artifact, emblem, radiant",
+    ),
+    item_prefixes: str = Query(
+        default="",
+        description="Item prefixes to include (comma-separated, case-insensitive), e.g. Bilgewater",
+    ),
 ):
     """
     Get multiple optimal item builds for a unit.
@@ -1026,6 +1234,8 @@ def get_unit_build(
 
     # Parse additional filter tokens
     filter_tokens = [t.strip() for t in tokens.split(",") if t.strip()]
+    allowed_item_types = _parse_item_types_param(item_types)
+    allowed_item_prefixes = _parse_item_prefixes_param(item_prefixes)
 
     # Build the unit token
     unit_token = f"U:{unit}"
@@ -1087,6 +1297,8 @@ def get_unit_build(
             "delta": 0.0,
             "avg_placement": round(avg_base, 3),
             "n": n_base,
+            "item_type": get_item_type(item_name),
+            "item_prefix": get_item_prefix(item_name),
         }
         for item_name in locked_items
     ]
@@ -1109,6 +1321,13 @@ def get_unit_build(
             if item_name in locked_item_set:
                 continue
 
+            cand_type = get_item_type(item_name)
+            if allowed_item_types is not None and cand_type not in allowed_item_types:
+                continue
+            cand_prefix = get_item_prefix(item_name)
+            if allowed_item_prefixes is not None and (cand_prefix or "").lower() not in allowed_item_prefixes:
+                continue
+
             token_id = ENGINE.token_to_id.get(eq_token)
             if token_id is None:
                 continue
@@ -1125,6 +1344,8 @@ def get_unit_build(
                 "item": item_name,
                 "token": eq_token,
                 "bitmap": token_stats.bitmap,
+                "item_type": cand_type,
+                "item_prefix": cand_prefix,
             })
 
         if not candidates:
@@ -1171,6 +1392,8 @@ def get_unit_build(
                             "delta": round(avg_with - state["avg"], 3),
                             "avg_placement": round(avg_with, 3),
                             "n": n_with,
+                            "item_type": cand["item_type"],
+                            "item_prefix": cand["item_prefix"],
                         }
 
                         next_states.append({
@@ -1242,7 +1465,15 @@ def get_unit_items(
     tokens: str = Query(default="", description="Additional filter tokens (comma-separated)"),
     min_sample: int = Query(default=30, description="Minimum sample size for inclusion"),
     top_k: int = Query(default=0, description="Max items to return (0 = unlimited)"),
-    sort_mode: str = Query(default="helpful", description="Sort mode: helpful (best avg), harmful (worst avg), impact (abs delta)")
+    sort_mode: str = Query(default="helpful", description="Sort mode: helpful (best avg), harmful (worst avg), impact (abs delta)"),
+    item_types: str = Query(
+        default="",
+        description="Item types to include (comma-separated): component, full, artifact, emblem, radiant",
+    ),
+    item_prefixes: str = Query(
+        default="",
+        description="Item prefixes to include (comma-separated, case-insensitive), e.g. Bilgewater",
+    ),
 ):
     """
     Get best items for a specific unit given current filters.
@@ -1258,6 +1489,8 @@ def get_unit_items(
 
     # Parse additional filter tokens
     filter_tokens = [t.strip() for t in tokens.split(",") if t.strip()]
+    allowed_item_types = _parse_item_types_param(item_types)
+    allowed_item_prefixes = _parse_item_prefixes_param(item_prefixes)
 
     # Build the unit token
     unit_token = f"U:{unit}"
@@ -1281,6 +1514,15 @@ def get_unit_items(
 
     avg_base = ENGINE.avg_placement_for_bitmap(base_bitmap)
 
+    def _shrink_avg(avg: float, n: int, prior_mean: float, prior_weight: float) -> float:
+        """Empirical-Bayes shrinkage to reduce small-sample noise (lower is better)."""
+        if n <= 0:
+            return prior_mean
+        return (avg * n + prior_mean * prior_weight) / (n + prior_weight)
+
+    # Shrinkage strength scales with min_sample so low-n items don't look extreme.
+    prior_weight = float(max(25, min(200, int(min_sample * 2))))
+
     # Find all equipped tokens for this unit: E:{unit}|*
     prefix = f"E:{unit}|"
     equipped_tokens = [t for t in ENGINE.id_to_token if t.startswith(prefix)]
@@ -1303,6 +1545,13 @@ def get_unit_items(
         if item_name in existing_items:
             continue
 
+        item_type = get_item_type(item_name)
+        if allowed_item_types is not None and item_type not in allowed_item_types:
+            continue
+        item_prefix = get_item_prefix(item_name)
+        if allowed_item_prefixes is not None and (item_prefix or "").lower() not in allowed_item_prefixes:
+            continue
+
         token_id = ENGINE.token_to_id.get(eq_token)
         if token_id is None or token_id not in ENGINE.tokens:
             continue
@@ -1317,15 +1566,21 @@ def get_unit_items(
             continue
 
         avg_with = ENGINE.avg_placement_for_bitmap(with_bitmap)
-        delta = avg_with - avg_base
+        delta_raw = avg_with - avg_base
+        avg_adj = _shrink_avg(avg_with, n_with, avg_base, prior_weight)
+        delta_adj = avg_adj - avg_base
 
         results.append({
             "item": item_name,
             "token": eq_token,
-            "delta": round(delta, 3),
-            "avg_placement": round(avg_with, 3),
+            "delta": round(delta_adj, 3),
+            "avg_placement": round(avg_adj, 3),
             "n": n_with,
-            "pct_of_base": round(n_with / n_base * 100, 1) if n_base > 0 else 0
+            "pct_of_base": round(n_with / n_base * 100, 1) if n_base > 0 else 0,
+            "raw_delta": round(delta_raw, 3),
+            "raw_avg_placement": round(avg_with, 3),
+            "item_type": item_type,
+            "item_prefix": item_prefix,
         })
 
     # Sort based on sort_mode

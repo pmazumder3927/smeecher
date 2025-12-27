@@ -3,7 +3,9 @@
     import {
         selectedTokens,
         addToken,
-        addTokens
+        addTokens,
+        itemTypeFilters,
+        itemPrefixFilters
     } from '../stores/state.js';
     import { parseToken } from '../utils/tokens.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
@@ -67,7 +69,10 @@
         lastSelectedUnit = selectedUnit;
     }
 
-    $: queryKey = `${selectedUnit ?? ''}|${sortMode}|${contextTokens.slice().sort().join(',')}`;
+    $: activeItemTypes = [...$itemTypeFilters];
+    $: activeItemPrefixes = [...$itemPrefixFilters];
+
+    $: queryKey = `${selectedUnit ?? ''}|${sortMode}|${activeItemTypes.slice().sort().join('|')}|${activeItemPrefixes.slice().sort().join('|')}|${contextTokens.slice().sort().join(',')}`;
     $: if (open && lastQueryKey && queryKey !== lastQueryKey) stale = true;
 
     $: items = data?.items ?? [];
@@ -101,8 +106,8 @@
         try {
             // Fetch both build recommendation and all items in parallel
             const [buildResult, itemsResult] = await Promise.all([
-                fetchUnitBuild(selectedUnit, contextTokens, { slots: 3 }),
-                fetchUnitItems(selectedUnit, contextTokens, { sortMode })
+                fetchUnitBuild(selectedUnit, contextTokens, { slots: 3, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes }),
+                fetchUnitItems(selectedUnit, contextTokens, { sortMode, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes })
             ]);
             if (version !== fetchVersion) return;
             buildData = buildResult;

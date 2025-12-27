@@ -14,16 +14,10 @@ export default defineConfig({
   // Proxy API requests to FastAPI during development
   server: {
     proxy: {
-      '/search': 'http://localhost:8000',
-      '/search-index': 'http://localhost:8000',
-      '/graph': 'http://localhost:8000',
-      '/clusters': 'http://localhost:8000',
-      '/stats': 'http://localhost:8000',
-      '/realtime-session': 'http://localhost:8000',
-      '/voice-vocab': 'http://localhost:8000',
-      '/voice-session-config': 'http://localhost:8000',
-      '/unit-items': 'http://localhost:8000',
-      '/unit-build': 'http://localhost:8000',
+      // Match API paths (exclude @vite, node_modules, src, and files with extensions)
+      '^/(?!@|node_modules|src)[^.]+$': {
+        target: 'http://localhost:8000',
+      }
     }
   }
 })

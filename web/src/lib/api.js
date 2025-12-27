@@ -24,18 +24,48 @@ export async function fetchSearchIndex() {
 }
 
 /**
+ * Fetch available item filter options (types + algorithmic prefixes)
+ */
+export async function fetchItemFilters() {
+    const response = await fetch(`${API_BASE}/item-filters?t=${Date.now()}`);
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+        throw new Error(data?.detail || 'Failed to fetch item filters');
+    }
+    if (!data || !Array.isArray(data.item_types) || !Array.isArray(data.item_prefixes)) {
+        throw new Error('Invalid item filters response');
+    }
+    return data;
+}
+
+/**
  * Fetch graph data for given tokens
  * @param {string[]} tokens - Filter tokens
  * @param {number} topK - Max edges to return per type
  * @param {Set<string>} activeTypes - Active node types (unit, item, trait)
  * @param {string} sortMode - Sort mode: impact, helpful, harmful
  */
-export async function fetchGraphData(tokens, topK = 15, activeTypes = null, sortMode = 'impact') {
+export async function fetchGraphData(tokens, topK = 15, activeTypes = null, sortMode = 'impact', options = {}) {
     const tokensParam = tokens.join(',');
     const typesParam = activeTypes ? [...activeTypes].join(',') : 'unit,item,trait';
-    const response = await fetch(
-        `${API_BASE}/graph?tokens=${encodeURIComponent(tokensParam)}&top_k=${topK}&types=${typesParam}&sort_mode=${sortMode}&t=${Date.now()}`
-    );
+    const { itemTypes = null, itemPrefixes = null } = options;
+    const search = new URLSearchParams({
+        tokens: tokensParam,
+        top_k: String(topK),
+        types: typesParam,
+        sort_mode: sortMode,
+        t: String(Date.now())
+    });
+
+    const types = itemTypes instanceof Set ? [...itemTypes] : Array.isArray(itemTypes) ? itemTypes : [];
+    if (types.length > 0) {
+        search.set('item_types', types.join(','));
+    }
+    const prefixes = itemPrefixes instanceof Set ? [...itemPrefixes] : Array.isArray(itemPrefixes) ? itemPrefixes : [];
+    if (prefixes.length > 0) {
+        search.set('item_prefixes', prefixes.join(','));
+    }
+    const response = await fetch(`${API_BASE}/graph?${search.toString()}`);
     return response.json();
 }
 
@@ -76,9 +106,11 @@ export async function getStats() {
  * @param {number} options.minSample - Minimum sample size
  * @param {number} options.topK - Max items to return (0 = unlimited)
  * @param {string} options.sortMode - Sort mode: helpful, harmful, impact
+ * @param {string[]|Set<string>} options.itemTypes - Item types to include (component, full, artifact, emblem, radiant)
+ * @param {string[]|Set<string>} options.itemPrefixes - Item prefixes to include (e.g., Bilgewater)
  */
 export async function fetchUnitItems(unit, tokens = [], options = {}) {
-    const { minSample = 30, topK = 0, sortMode = 'helpful' } = options;
+    const { minSample = 30, topK = 0, sortMode = 'helpful', itemTypes = null, itemPrefixes = null } = options;
     const tokensParam = tokens.join(',');
     const search = new URLSearchParams({
         unit,
@@ -88,6 +120,16 @@ export async function fetchUnitItems(unit, tokens = [], options = {}) {
         sort_mode: sortMode,
         t: String(Date.now())
     });
+
+    const types = itemTypes instanceof Set ? [...itemTypes] : Array.isArray(itemTypes) ? itemTypes : [];
+    if (types.length > 0) {
+        search.set('item_types', types.join(','));
+    }
+
+    const prefixes = itemPrefixes instanceof Set ? [...itemPrefixes] : Array.isArray(itemPrefixes) ? itemPrefixes : [];
+    if (prefixes.length > 0) {
+        search.set('item_prefixes', prefixes.join(','));
+    }
 
     const response = await fetch(`${API_BASE}/unit-items?${search.toString()}`);
 
@@ -113,9 +155,11 @@ export async function fetchUnitItems(unit, tokens = [], options = {}) {
  * @param {Object} options - Optional parameters
  * @param {number} options.minSample - Minimum sample size
  * @param {number} options.slots - Number of item slots to fill (1-3)
+ * @param {string[]|Set<string>} options.itemTypes - Item types to include (component, full, artifact, emblem, radiant)
+ * @param {string[]|Set<string>} options.itemPrefixes - Item prefixes to include (e.g., Bilgewater)
  */
 export async function fetchUnitBuild(unit, tokens = [], options = {}) {
-    const { minSample = 10, slots = 3 } = options;
+    const { minSample = 10, slots = 3, itemTypes = null, itemPrefixes = null } = options;
     const tokensParam = tokens.join(',');
     const search = new URLSearchParams({
         unit,
@@ -124,6 +168,16 @@ export async function fetchUnitBuild(unit, tokens = [], options = {}) {
         slots: String(slots),
         t: String(Date.now())
     });
+
+    const types = itemTypes instanceof Set ? [...itemTypes] : Array.isArray(itemTypes) ? itemTypes : [];
+    if (types.length > 0) {
+        search.set('item_types', types.join(','));
+    }
+
+    const prefixes = itemPrefixes instanceof Set ? [...itemPrefixes] : Array.isArray(itemPrefixes) ? itemPrefixes : [];
+    if (prefixes.length > 0) {
+        search.set('item_prefixes', prefixes.join(','));
+    }
 
     const response = await fetch(`${API_BASE}/unit-build?${search.toString()}`);
 

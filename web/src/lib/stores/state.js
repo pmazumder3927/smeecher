@@ -1,4 +1,4 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
 import posthog from '../client/posthog';
 
 // Selected filter tokens
@@ -36,6 +36,11 @@ export const topK = writable(15);
 
 // Sort mode for graph results: impact, helpful, harmful
 export const sortMode = writable('impact');
+
+// Item filters (candidate narrowing, not match constraints)
+const DEFAULT_ITEM_TYPE_KEYS = ['component', 'full', 'radiant', 'artifact', 'emblem'];
+export const itemTypeFilters = writable(new Set(DEFAULT_ITEM_TYPE_KEYS));
+export const itemPrefixFilters = writable(new Set());
 
 // Derived stats from graph data
 export const stats = derived(graphData, ($graphData) => {
@@ -161,6 +166,85 @@ export function toggleType(type) {
         }
         return newTypes;
     });
+}
+
+export function toggleItemTypeFilter(itemType) {
+    itemTypeFilters.update((types) => {
+        const next = new Set(types);
+        if (next.has(itemType)) {
+            // Never allow zero selected (would hide all items)
+            if (next.size === 1) return types;
+            // Item sets (prefix filters) only apply to full items
+            if (itemType === 'full' && get(itemPrefixFilters).size > 0) return types;
+            next.delete(itemType);
+        } else {
+            next.add(itemType);
+        }
+        return next;
+    });
+}
+
+export function toggleItemPrefixFilter(prefix) {
+    let added = false;
+    itemPrefixFilters.update((prefixes) => {
+        const next = new Set(prefixes);
+        if (next.has(prefix)) {
+            next.delete(prefix);
+        } else {
+            next.add(prefix);
+            added = true;
+        }
+        return next;
+    });
+
+    // Prefix filters only apply to full items; ensure full items remain enabled.
+    if (added) {
+        itemTypeFilters.update((types) => {
+            if (types.has('full')) return types;
+            const next = new Set(types);
+            next.add('full');
+            return next;
+        });
+    }
+}
+
+export function clearItemPrefixFilters() {
+    itemPrefixFilters.set(new Set());
+}
+
+export function setItemTypeFilters(types) {
+    const next = new Set(types);
+    if (next.size === 0) return;
+
+    // If full items are disabled, clear any set/prefix filters (they only apply to full items).
+    if (!next.has('full') && get(itemPrefixFilters).size > 0) {
+        itemPrefixFilters.set(new Set());
+    }
+
+    itemTypeFilters.set(next);
+}
+
+export function setItemPrefixFilters(prefixes) {
+    const next = new Set(prefixes);
+    itemPrefixFilters.set(next);
+
+    if (next.size > 0) {
+        itemTypeFilters.update((types) => {
+            if (types.has('full')) return types;
+            const t = new Set(types);
+            t.add('full');
+            return t;
+        });
+    }
+}
+
+export function resetItemTypeFilters() {
+    itemTypeFilters.set(new Set(DEFAULT_ITEM_TYPE_KEYS));
+}
+
+export function resetItemFilters() {
+    resetItemTypeFilters();
+    clearItemPrefixFilters();
 }
 
 export function showTooltip(x, y, content, fromTouch = false) {
