@@ -25,8 +25,8 @@
         typeof value === 'number' && Number.isFinite(value) ? getPlacementColor(value) : 'inherit';
     $: formatted =
         typeof value === 'number' && Number.isFinite(value) ? roundTo(value, decimals).toFixed(decimals) : '—';
-    $: deltaFormatted =
-        delta === null ? '' : `${delta > 0 ? '+' : ''}${delta.toFixed(decimals)}`;
+    $: deltaSign = delta === null ? '' : delta > 0 ? '+' : delta < 0 ? '−' : '';
+    $: deltaNum = delta === null ? '' : Math.abs(delta).toFixed(decimals);
 
     $: {
         if (decimals !== lastDecimals) {
@@ -84,42 +84,24 @@
 
 <span class="avg-placement" style={`color: ${placementColor}; --avp-delta-ms: ${deltaMs}ms;`}>
     {#if prefix}{prefix}{/if}
-    <span class="value-layout" class:delta-enabled={showDelta}>
-        {#if showDelta}
-            <span class="delta-spacer" aria-hidden="true"></span>
-        {/if}
-        <span class="value">{formatted}</span>
-        {#if showDelta}
-            <span class="delta-slot" aria-hidden={delta === null}>
-                {#if delta !== null}
-                    {#key deltaKey}
-                        <span class="delta" class:positive={delta < 0} class:negative={delta > 0}>
-                            {deltaFormatted}
-                        </span>
-                    {/key}
-                {/if}
-            </span>
-        {/if}
-    </span>
+    <span class="value">{formatted}</span>
     {#if suffix}{suffix}{/if}
+    {#if showDelta && delta !== null}
+        {#key deltaKey}
+            <span class="delta" class:positive={delta < 0} class:negative={delta > 0}>
+                <span class="delta-sign">{deltaSign}</span>{deltaNum}
+            </span>
+        {/key}
+    {/if}
 </span>
 
 <style>
     .avg-placement {
+        position: relative;
         display: inline-flex;
         align-items: baseline;
         font-variant-numeric: tabular-nums;
         font-feature-settings: "tnum" 1;
-    }
-
-    .value-layout {
-        display: inline-flex;
-        align-items: baseline;
-        line-height: 1;
-    }
-
-    .value-layout.delta-enabled {
-        gap: 0.6ch;
     }
 
     .value {
@@ -128,25 +110,30 @@
         font-feature-settings: "tnum" 1;
     }
 
-    .delta-spacer,
-    .delta-slot {
-        display: inline-block;
-        width: 5ch;
-    }
-
     .delta {
-        display: inline-block;
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        margin-top: 4px;
         opacity: 0;
-        font-size: 0.72em;
-        font-weight: 800;
+        font-size: 11px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: "tnum" 1;
         letter-spacing: -0.01em;
         line-height: 1;
         pointer-events: none;
         white-space: nowrap;
         color: var(--text-tertiary);
-        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
-        animation: avp-delta-inline var(--avp-delta-ms, 1600ms) cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        animation: avp-delta var(--avp-delta-ms, 1600ms) cubic-bezier(0.16, 1, 0.3, 1) forwards;
         will-change: transform, opacity;
+    }
+
+    .delta-sign {
+        display: inline-block;
+        width: 0.6em;
+        text-align: center;
     }
 
     .delta.positive {
@@ -157,22 +144,22 @@
         color: var(--error);
     }
 
-    @keyframes avp-delta-inline {
+    @keyframes avp-delta {
         0% {
             opacity: 0;
-            transform: translateY(2px);
+            transform: translateX(-50%) translateY(-2px);
         }
-        15% {
+        12% {
             opacity: 1;
-            transform: translateY(0);
+            transform: translateX(-50%) translateY(0);
         }
-        82% {
+        80% {
             opacity: 1;
-            transform: translateY(0);
+            transform: translateX(-50%) translateY(0);
         }
         100% {
             opacity: 0;
-            transform: translateY(-1px);
+            transform: translateX(-50%) translateY(2px);
         }
     }
 
@@ -180,7 +167,7 @@
         .delta {
             animation: none;
             opacity: 1;
-            transform: none;
+            transform: translateX(-50%);
         }
     }
 </style>

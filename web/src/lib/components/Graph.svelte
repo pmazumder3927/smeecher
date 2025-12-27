@@ -821,12 +821,16 @@
 <div class="graph-section">
     <div class="graph-container" data-walkthrough="graph">
         <div class="avp-hud" class:empty={$stats.games === 0} aria-label="Average placement">
-            <div class="avp-hud-meta">
-                <div class="avp-hud-label">Avg place</div>
-                <div class="avp-hud-sub">{$stats.games.toLocaleString()} games</div>
+            <div class="avp-hud-stat">
+                <span class="avp-hud-label">Avg</span>
+                <span class="avp-hud-num">
+                    <AvgPlacement value={$stats.avgPlacement} showDelta={$stats.games > 0} />
+                </span>
             </div>
-            <div class="avp-hud-value">
-                <AvgPlacement value={$stats.avgPlacement} showDelta={$stats.games > 0} />
+            <div class="avp-hud-divider"></div>
+            <div class="avp-hud-stat">
+                <span class="avp-hud-label">Games</span>
+                <span class="avp-hud-num">{$stats.games.toLocaleString()}</span>
             </div>
         </div>
         <svg bind:this={container} id="graph"></svg>
@@ -854,55 +858,59 @@
     .avp-hud {
         position: absolute;
         left: 50%;
-        top: 14px;
+        top: 16px;
         transform: translateX(-50%);
         z-index: 5;
         pointer-events: none;
         display: flex;
-        flex-direction: column;
         align-items: center;
-        gap: 4px;
-        padding: 10px 14px;
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(0, 0, 0, 0.55);
-        backdrop-filter: blur(10px);
-        box-shadow: 0 10px 28px var(--shadow);
+        gap: 0;
+        padding: 0;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--bg-secondary);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
         font-variant-numeric: tabular-nums;
         font-feature-settings: "tnum" 1;
-    }
-
-    .avp-hud-meta {
-        display: flex;
-        align-items: baseline;
-        gap: 10px;
+        overflow: visible;
     }
 
     .avp-hud.empty {
-        opacity: 0.65;
+        opacity: 0.5;
+    }
+
+    .avp-hud-stat {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        padding: 8px 12px;
+    }
+
+    .avp-hud-divider {
+        width: 1px;
+        align-self: stretch;
+        margin: 6px 0;
+        background: var(--border);
+        flex-shrink: 0;
     }
 
     .avp-hud-label {
         font-size: 10px;
-        font-weight: 900;
-        letter-spacing: 0.08em;
+        font-weight: 500;
+        letter-spacing: 0.03em;
         text-transform: uppercase;
         color: var(--text-tertiary);
         white-space: nowrap;
     }
 
-    .avp-hud-value {
-        font-size: 20px;
-        font-weight: 950;
-        letter-spacing: -0.02em;
+    .avp-hud-num {
+        font-size: 14px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: "tnum" 1;
+        letter-spacing: -0.01em;
         line-height: 1;
-    }
-
-    .avp-hud-sub {
-        font-size: 11px;
-        font-weight: 800;
-        color: var(--text-tertiary);
-        white-space: nowrap;
+        color: var(--text-primary);
     }
 
     svg {
