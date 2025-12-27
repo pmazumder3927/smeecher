@@ -3,8 +3,14 @@
 
     const dispatch = createEventDispatcher();
 
+    export let page = 'home';
+
     function openWalkthrough() {
         dispatch('openWalkthrough');
+    }
+
+    function navigate(path) {
+        dispatch('navigate', { path });
     }
 </script>
 
@@ -12,9 +18,21 @@
     <div class="logo">
         <div class="logo-text">smeecher</div>
     </div>
-    <button class="help" on:click={openWalkthrough} aria-label="Open walkthrough">
-        Walkthrough
-    </button>
+
+    <div class="actions">
+        {#if page === 'changelog'}
+            <button class="action-btn" on:click={() => navigate('/')} aria-label="Back to app">
+                Back
+            </button>
+        {:else}
+            <button class="action-btn" on:click={() => navigate('/changelog')} aria-label="Open changelog">
+                Changelog
+            </button>
+            <button class="action-btn" on:click={openWalkthrough} aria-label="Open walkthrough">
+                Walkthrough
+            </button>
+        {/if}
+    </div>
     <a href="https://www.pramit.gg" target="_blank" rel="noopener" class="by-line">
         by JoyFired
     </a>
@@ -65,11 +83,17 @@
         color: var(--text-secondary);
     }
 
-    .help {
+    .actions {
         position: absolute;
         right: 0;
         top: 50%;
         transform: translateY(-50%);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .action-btn {
         padding: 6px 10px;
         font-size: 11px;
         font-weight: 700;
@@ -84,7 +108,7 @@
         font-family: inherit;
     }
 
-    .help:hover {
+    .action-btn:hover {
         background: var(--bg-secondary);
         border-color: var(--border-hover);
         color: var(--text-primary);
@@ -106,7 +130,11 @@
             font-size: 11px;
         }
 
-        .help {
+        .actions {
+            gap: 6px;
+        }
+
+        .action-btn {
             padding: 6px 8px;
             font-size: 10px;
             border-radius: 7px;

@@ -1,0 +1,105 @@
+{
+  "generatedAt": "2025-12-27T09:32:00.000Z",
+  "notice": "This changelog is automatically AI-generated from the project’s history. It’s written for players (not developers), so it may occasionally miss nuance or be slightly wrong.",
+  "entries": [
+    {
+      "id": "2025-12-27-exclusions-stars-voice",
+      "title": "Smarter filtering: exclusions + star levels",
+      "dateRange": "Dec 26–27, 2025",
+      "note": "Summary entry (not a per-commit log).",
+      "highlights": [
+        "Exclude units/items/traits to remove games that match (e.g. “-Demacia 5”).",
+        "Filter by unit star level (2★ / 3★) when it matters for your question.",
+        "Voice input understands include vs exclude and can trigger common actions.",
+        "Walkthrough updated with exclusion-focused guidance."
+      ],
+      "sections": [
+        {
+          "title": "Added",
+          "items": [
+            "Exclude filters across the app (not just “include”): quickly answer “what if I avoid X?”. Tip: type “-” before a term, or Alt/Option-click a suggestion to exclude it.",
+            "Exclusions for equipped items too (exclude “Unit + Item” situations without throwing out the whole unit).",
+            "Unit star-level filters (and a selector) so you can compare 1★ vs 2★ vs 3★ contexts."
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            "Voice input: clearer feedback when it’s busy, plus safeguards against accidental rapid re-triggers.",
+            "Search: more forgiving matching (name normalization) so you can find things with fewer “exact spelling” misses."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            "Small interaction edge cases around exclusion flows and walkthrough steps."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "2025-12-26-items-clusters-filters",
+      "title": "Deeper answers: item builds + comp explorer",
+      "dateRange": "Dec 24–26, 2025",
+      "highlights": [
+        "Item Explorer: see best items (and full builds) for a unit in your exact filter context.",
+        "Cluster Explorer: discover high-performing “packages” of units/items/traits from your current spot.",
+        "Placement histograms and clearer summaries for “how good is this, and how often?”."
+      ],
+      "sections": [
+        {
+          "title": "Added",
+          "items": [
+            "Item Explorer with one-click “apply build” and “equip item on unit” flows.",
+            "Build search that can show partial builds when a full 3-item set isn’t strongly supported.",
+            "Cluster Explorer with top-4 rate, average placement, and a placement distribution histogram.",
+            "Global item filters: limit suggestions to components, completed items, artifacts, emblems, or radiant items.",
+            "Item “set/prefix” filters to focus suggestions on a specific theme when items have multiple variants."
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            "Stats readouts and sorting options to make it easier to answer: “most impactful”, “most helpful”, or “most harmful”.",
+            "Walkthrough and UI polish around items (including an item-focused tour).",
+            "Multi-add: add several filters quickly without restarting your flow each time."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            "Search and mic UI overflow issues on smaller screens.",
+            "Startup hiccups around loading names/icons so the UI stays usable even if assets are slow."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "2025-12-21-launch-graph",
+      "title": "Launch: interactive placement graph",
+      "dateRange": "Dec 20–21, 2025",
+      "highlights": [
+        "Search for units/items/traits, add them as filters, and watch the graph update around your context.",
+        "Tooltips show sample sizes and how much a node changes average placement from your current filters.",
+        "Touch/drag interactions and automatic framing to keep exploration smooth."
+      ],
+      "sections": [
+        {
+          "title": "Added",
+          "items": [
+            "Interactive graph exploration with unit, item, and trait nodes.",
+            "Sorting controls (Impact / Helpful / Harmful) and a Top-K limit to control graph density.",
+            "Clear-all and quick filter editing to iterate on “what if?” questions faster."
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            "Better readability with hover interactions, stronger visual hierarchy, and placement-based color cues.",
+            "Search quality-of-life improvements as the list of things you can search grew."
+          ]
+        }
+      ]
+    }
+  ]
+}

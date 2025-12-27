@@ -15,7 +15,7 @@ export default defineConfig({
   server: {
     proxy: {
       // Match API paths (exclude @vite, node_modules, src, and files with extensions)
-      '^/(?!@|node_modules|src)[^.]+$': {
+      '^/(?!@|node_modules|src|changelog)[^.]+$': {
         target: 'http://localhost:8000',
       }
     }

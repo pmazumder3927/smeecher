@@ -8,6 +8,7 @@
     import Legend from './lib/components/Legend.svelte';
     import Tooltip from './lib/components/Tooltip.svelte';
     import Walkthrough from './lib/components/Walkthrough.svelte';
+    import ChangelogPage from './lib/components/ChangelogPage.svelte';
 
     import { loadCDragonData } from './lib/stores/assets.js';
     import { selectedTokens, topK, graphData, activeTypes, sortMode, itemTypeFilters, itemPrefixFilters } from './lib/stores/state.js';
@@ -21,7 +22,67 @@
     let fetchVersion = 0;
 
     // Fetch graph when tokens, topK, activeTypes, or sortMode change (debounced).
-    $: if (ready) scheduleFetchGraph($selectedTokens, $topK, $activeTypes, $sortMode, $itemTypeFilters, $itemPrefixFilters);
+    let page = 'home';
+    let homeInitPromise = null;
+    let mounted = false;
+
+    $: if (ready && page === 'home') scheduleFetchGraph($selectedTokens, $topK, $activeTypes, $sortMode, $itemTypeFilters, $itemPrefixFilters);
+    $: if (mounted && page === 'home') initHomeIfNeeded();
+
+    function normalizePathname(pathname) {
+        const p = String(pathname || '/').replace(/\/+$/, '');
+        return p === '' ? '/' : p;
+    }
+
+    function pageForPath(pathname) {
+        const p = normalizePathname(pathname);
+        if (p === '/changelog') return 'changelog';
+        return 'home';
+    }
+
+    function syncPageFromLocation() {
+        if (typeof window === 'undefined') return;
+        page = pageForPath(window.location.pathname);
+    }
+
+    function navigateTo(path) {
+        if (typeof window === 'undefined') return;
+        const nextPath = normalizePathname(path);
+        const current = normalizePathname(window.location.pathname);
+        if (nextPath === current) return;
+        window.history.pushState({}, '', nextPath);
+        syncPageFromLocation();
+    }
+
+    function handleNavigate(event) {
+        const path = event?.detail?.path;
+        if (typeof path !== 'string') return;
+        navigateTo(path);
+    }
+
+    async function initHomeIfNeeded() {
+        if (ready) return;
+        if (homeInitPromise) return homeInitPromise;
+
+        homeInitPromise = (async () => {
+            await loadCDragonData();
+            ready = true;
+            const version = ++fetchVersion;
+            clearTimeout(fetchTimer);
+            await fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode, $itemTypeFilters, $itemPrefixFilters, version);
+
+            try {
+                const seen = localStorage.getItem(WALKTHROUGH_KEY) === '1';
+                if (!seen) walkthroughOpen = true;
+            } catch {
+                // ignore
+            }
+        })().finally(() => {
+            homeInitPromise = null;
+        });
+
+        return homeInitPromise;
+    }
 
     function scheduleFetchGraph(tokens, k, types, mode, itemTypes, itemPrefixes) {
         clearTimeout(fetchTimer);
@@ -50,18 +111,18 @@
     }
 
     onMount(async () => {
-        await loadCDragonData();
-        ready = true;
-        const version = ++fetchVersion;
-        clearTimeout(fetchTimer);
-        await fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode, $itemTypeFilters, $itemPrefixFilters, version);
+        syncPageFromLocation();
+        mounted = true;
+        const onPopState = () => syncPageFromLocation();
+        window.addEventListener('popstate', onPopState);
 
-        try {
-            const seen = localStorage.getItem(WALKTHROUGH_KEY) === '1';
-            if (!seen) walkthroughOpen = true;
-        } catch {
-            // ignore
+        if (page === 'home') {
+            await initHomeIfNeeded();
         }
+
+        return () => {
+            window.removeEventListener('popstate', onPopState);
+        };
     });
 
     function handleWalkthroughClose(event) {
@@ -76,16 +137,20 @@
 </script>
 
 <div class="container">
-    <Header on:openWalkthrough={() => walkthroughOpen = true} />
+    <Header {page} on:navigate={handleNavigate} on:openWalkthrough={() => walkthroughOpen = true} />
 
-    <ControlPanel />
+    {#if page === 'home'}
+        <ControlPanel />
 
-    <div class="main-row">
-        <ItemExplorer />
-        <Graph />
-        <ClusterExplorer />
-    </div>
-    <Legend />
+        <div class="main-row">
+            <ItemExplorer />
+            <Graph />
+            <ClusterExplorer />
+        </div>
+        <Legend />
+    {:else if page === 'changelog'}
+        <ChangelogPage />
+    {/if}
 </div>
 
 <Tooltip />

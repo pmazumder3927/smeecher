@@ -2028,6 +2028,12 @@ def read_root():
     return FileResponse(str(static_path / "index.html"))
 
 
+@app.get("/changelog")
+@app.get("/changelog/")
+def read_changelog():
+    return FileResponse(str(static_path / "index.html"))
+
+
 def main():
     import os
     port = int(os.environ.get("PORT", 8000))
