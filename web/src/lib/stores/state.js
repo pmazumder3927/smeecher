@@ -42,6 +42,15 @@ const DEFAULT_ITEM_TYPE_KEYS = ['component', 'full', 'radiant', 'artifact', 'emb
 export const itemTypeFilters = writable(new Set(DEFAULT_ITEM_TYPE_KEYS));
 export const itemPrefixFilters = writable(new Set());
 
+// Sidebar UI state
+export const itemExplorerOpen = writable(false);
+export const itemExplorerTab = writable('builds'); // builds | items
+export const itemExplorerSortMode = writable('helpful'); // helpful | harmful | impact
+export const itemExplorerUnit = writable(null);
+
+export const clusterExplorerOpen = writable(false);
+export const clusterExplorerRunRequest = writable(0);
+
 // Derived stats from graph data
 export const stats = derived(graphData, ($graphData) => {
     if (!$graphData?.base) {

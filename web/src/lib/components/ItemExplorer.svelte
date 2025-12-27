@@ -4,6 +4,10 @@
         selectedTokens,
         addToken,
         addTokens,
+        itemExplorerOpen,
+        itemExplorerTab,
+        itemExplorerSortMode,
+        itemExplorerUnit,
         itemTypeFilters,
         itemPrefixFilters
     } from '../stores/state.js';
@@ -15,19 +19,15 @@
     const COLLAPSED_WIDTH_PX = 46;
     const EXPANDED_WIDTH_PX = 340;
 
-    let open = false;
     let loading = false;
     let error = null;
     let data = null;
     let buildData = null;
-    let sortMode = 'helpful'; // helpful | harmful | impact
-    let activeTab = 'builds'; // builds | items
 
     let lastQueryKey = '';
     let stale = false;
     let fetchVersion = 0;
 
-    let activeUnit = null;
     let lastSelectedUnit = null;
 
     // Units available from the current filter selection
@@ -49,12 +49,12 @@
 
     // Keep activeUnit valid as filters change
     $: if (availableUnits.length === 0) {
-        activeUnit = null;
-    } else if (!activeUnit || !availableUnits.includes(activeUnit)) {
-        activeUnit = availableUnits[0];
+        if ($itemExplorerUnit !== null) itemExplorerUnit.set(null);
+    } else if (!$itemExplorerUnit || !availableUnits.includes($itemExplorerUnit)) {
+        itemExplorerUnit.set(availableUnits[0]);
     }
 
-    $: selectedUnit = activeUnit;
+    $: selectedUnit = $itemExplorerUnit;
 
     // Keep all selected filters except the explored unit token (so other unit filters still apply)
     $: contextTokens = selectedUnit
@@ -72,21 +72,22 @@
     $: activeItemTypes = [...$itemTypeFilters];
     $: activeItemPrefixes = [...$itemPrefixFilters];
 
-    $: queryKey = `${selectedUnit ?? ''}|${sortMode}|${activeItemTypes.slice().sort().join('|')}|${activeItemPrefixes.slice().sort().join('|')}|${contextTokens.slice().sort().join(',')}`;
-    $: if (open && lastQueryKey && queryKey !== lastQueryKey) stale = true;
+    $: queryKey = `${selectedUnit ?? ''}|${$itemExplorerSortMode}|${activeItemTypes.slice().sort().join('|')}|${activeItemPrefixes.slice().sort().join('|')}|${contextTokens.slice().sort().join(',')}`;
+    $: if ($itemExplorerOpen && lastQueryKey && queryKey !== lastQueryKey) stale = true;
 
     $: items = data?.items ?? [];
     $: builds = buildData?.builds ?? [];
-    $: sidebarWidth = open ? EXPANDED_WIDTH_PX : COLLAPSED_WIDTH_PX;
+    $: sidebarWidth = $itemExplorerOpen ? EXPANDED_WIDTH_PX : COLLAPSED_WIDTH_PX;
 
     // Auto-fetch when opening with a selected unit
-    $: if (open && selectedUnit && (!data || stale)) {
+    $: if ($itemExplorerOpen && selectedUnit && (!data || stale)) {
         run();
     }
 
     function toggleOpen() {
-        open = !open;
-        if (!open) {
+        const nextOpen = !$itemExplorerOpen;
+        itemExplorerOpen.set(nextOpen);
+        if (!nextOpen) {
             posthog.capture('item_explorer_closed');
             return;
         }
@@ -107,7 +108,7 @@
             // Fetch both build recommendation and all items in parallel
             const [buildResult, itemsResult] = await Promise.all([
                 fetchUnitBuild(selectedUnit, contextTokens, { slots: 3, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes }),
-                fetchUnitItems(selectedUnit, contextTokens, { sortMode, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes })
+                fetchUnitItems(selectedUnit, contextTokens, { sortMode: $itemExplorerSortMode, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes })
             ]);
             if (version !== fetchVersion) return;
             buildData = buildResult;
@@ -180,17 +181,17 @@
     }
 </script>
 
-<div class="item-explorer" data-walkthrough="itemExplorer" class:open style={`width: ${sidebarWidth}px;`}>
-    <button class="toggle" on:click={toggleOpen} aria-label="Toggle item explorer" aria-expanded={open}>
+<div class="item-explorer" data-walkthrough="itemExplorer" class:open={$itemExplorerOpen} style={`width: ${sidebarWidth}px;`}>
+    <button class="toggle" on:click={toggleOpen} aria-label="Toggle item explorer" aria-expanded={$itemExplorerOpen}>
         <span class="toggle-title">Items</span>
-        {#if open}
+        {#if $itemExplorerOpen}
             <span class="toggle-sub">close</span>
         {:else}
             <span class="toggle-sub">best builds</span>
         {/if}
     </button>
 
-    {#if open}
+    {#if $itemExplorerOpen}
         <div class="panel">
             {#if !selectedUnit}
                 <div class="empty-state">
@@ -237,7 +238,7 @@
                         <div class="unit-select-row">
                             <label class="select">
                                 <span>Champion</span>
-                                <select bind:value={activeUnit} disabled={loading}>
+                                <select bind:value={$itemExplorerUnit} disabled={loading}>
                                     {#each availableUnits as unit (unit)}
                                         <option value={unit}>{unitDisplayName(unit)}</option>
                                     {/each}
@@ -250,8 +251,8 @@
                 <div class="tabs">
                     <button
                         class="tab"
-                        class:active={activeTab === 'builds'}
-                        on:click={() => activeTab = 'builds'}
+                        class:active={$itemExplorerTab === 'builds'}
+                        on:click={() => itemExplorerTab.set('builds')}
                     >
                         Builds
                         {#if builds.length > 0}
@@ -260,8 +261,8 @@
                     </button>
                     <button
                         class="tab"
-                        class:active={activeTab === 'items'}
-                        on:click={() => activeTab = 'items'}
+                        class:active={$itemExplorerTab === 'items'}
+                        on:click={() => itemExplorerTab.set('items')}
                     >
                         Items
                         {#if items.length > 0}
@@ -295,11 +296,11 @@
                     </div>
                 {/if}
 
-                {#if activeTab === 'items'}
+                {#if $itemExplorerTab === 'items'}
                     <div class="sort-bar">
                         <label class="select">
                             <span>Sort</span>
-                            <select bind:value={sortMode} on:change={run}>
+                            <select bind:value={$itemExplorerSortMode} on:change={run}>
                                 <option value="helpful">Best first</option>
                                 <option value="harmful">Worst first</option>
                                 <option value="impact">Most impact</option>
@@ -309,13 +310,13 @@
                 {/if}
 
                 <div class="list-container">
-                    {#if loading && (activeTab === 'builds' ? builds.length === 0 : items.length === 0)}
+                    {#if loading && ($itemExplorerTab === 'builds' ? builds.length === 0 : items.length === 0)}
                         <div class="loading-skeleton">
                             {#each Array(6) as _, i}
                                 <div class="skeleton-row"></div>
                             {/each}
                         </div>
-                    {:else if activeTab === 'builds'}
+                    {:else if $itemExplorerTab === 'builds'}
                         {#if builds.length === 0 && !loading}
                             <div class="no-items">
                                 No builds found with sufficient data.

@@ -1063,10 +1063,18 @@ def _get_session_update_event():
     if not vocab:
         return None
 
-    instructions = """You are a TFT (Teamfight Tactics) voice command parser. Extract ALL game entities the user mentions.
+    instructions = """You are a TFT (Teamfight Tactics) voice command parser for the Smeecher UI. Extract ALL game entities the user mentions AND any UI intent.
 
 ITEM ABBREVIATIONS (expand before calling tool):
 hoj=Hand of Justice, jg=Jeweled Gauntlet, tg=Thief's Gloves, ie=Infinity Edge, bt=Bloodthirster, gs=Giant Slayer, lw=Last Whisper, db=Deathblade, ga=Guardian Angel, qss=Quicksilver, rfc=Rapid Firecannon, rb=Guinsoo's Rageblade, tr=Titan's Resolve, dcap=Rabadon's Deathcap, shiv=Statikk Shiv, shojin=Spear of Shojin, blue=Blue Buff, nashors=Nashor's Tooth, archangels=Archangel's Staff, morello=Morellonomicon, sunfire=Sunfire Cape, ionic=Ionic Spark, shroud=Shroud of Stillness, eon=Edge of Night, gargoyle=Gargoyle Stoneplate, bramble=Bramble Vest, dclaw=Dragon's Claw, warmogs=Warmog's Armor, zzrot=Zz'Rot Portal, hullbreaker=Hullcrusher, cg=Crownguard
+
+UI INTENT (set these fields when the user asks for it):
+- If the user asks for best items/builds (e.g., "best artifacts for ashe"), set open_item_explorer=true.
+- If the user asks for best comp(s)/composition(s)/archetype(s) (e.g., "best yasuo comp"), set open_cluster_explorer=true (and run_cluster_explorer=true).
+- If the user mentions item categories, set item_types to the matching keys: component, full, radiant, artifact, emblem.
+- If the user says "best"/"top", set item_explorer_sort_mode="helpful"; if "worst"/"bad", set "harmful"; if "impact"/"most impact", set "impact".
+- If the user says "build(s)", set item_explorer_tab="builds"; if they say "item(s)" or mention an item category, set item_explorer_tab="items".
+- If the user says a unit is "with"/"holding"/"equipped with" an item, put that in equipped=[{unit, item}].
 
 RULES:
 1. Extract EVERY entity - do not miss any
@@ -1102,6 +1110,45 @@ RULES:
                         "required": ["name"]
                     },
                     "description": "Trait filters with optional tier"
+                },
+                "open_item_explorer": {
+                    "type": "boolean",
+                    "description": "Open the Items panel (Item Explorer) and focus it for best items/builds queries"
+                },
+                "open_cluster_explorer": {
+                    "type": "boolean",
+                    "description": "Open the Explorer panel (Cluster Explorer) for comp/archetype exploration"
+                },
+                "run_cluster_explorer": {
+                    "type": "boolean",
+                    "description": "Run clustering now (refresh results for current filters)"
+                },
+                "item_explorer_tab": {
+                    "type": "string",
+                    "enum": ["builds", "items"],
+                    "description": "Which tab to focus in the Items panel"
+                },
+                "item_explorer_sort_mode": {
+                    "type": "string",
+                    "enum": ["helpful", "harmful", "impact"],
+                    "description": "Sort mode for the Items list (best/worst/impact)"
+                },
+                "item_types": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["component", "full", "radiant", "artifact", "emblem"]},
+                    "description": "Item type filters to apply (candidate narrowing)"
+                },
+                "equipped": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "unit": {"type": "string", "enum": vocab['units']},
+                            "item": {"type": "string", "enum": vocab['items']}
+                        },
+                        "required": ["unit", "item"]
+                    },
+                    "description": "Equipped items on a specific unit (use when user says unit WITH/HOLDING an item)"
                 }
             }
         }

@@ -10,7 +10,9 @@
         clearTokens,
         recordUiAction,
         setHighlightedTokens,
-        clearHighlightedTokens
+        clearHighlightedTokens,
+        clusterExplorerOpen,
+        clusterExplorerRunRequest
     } from '../stores/state.js';
     import { getTokenType, getTokenLabel } from '../utils/tokens.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
@@ -22,7 +24,6 @@
     const MAX_WIDTH_PX = 720;
     const SPLIT_THRESHOLD_PX = 640;
 
-    let open = false;
     let loading = false;
     let error = null;
     let data = null;
@@ -47,9 +48,10 @@
 
     let lastTokensKey = '';
     let stale = false;
+    let lastRunRequest = 0;
 
     $: tokensKey = $selectedTokens.slice().sort().join(',');
-    $: if (open && lastTokensKey && tokensKey !== lastTokensKey) stale = true;
+    $: if ($clusterExplorerOpen && lastTokensKey && tokensKey !== lastTokensKey) stale = true;
 
     // Derive API params from global activeTypes store
     $: apiParams = {
@@ -62,7 +64,7 @@
     // Track activeTypes changes for stale detection
     let lastActiveTypesKey = '';
     $: activeTypesKey = [...$activeTypes].sort().join(',');
-    $: if (open && data && lastActiveTypesKey && activeTypesKey !== lastActiveTypesKey) stale = true;
+    $: if ($clusterExplorerOpen && data && lastActiveTypesKey && activeTypesKey !== lastActiveTypesKey) stale = true;
 
     $: clusters = data?.clusters ?? [];
     $: warning = data?.meta?.warning ?? null;
@@ -101,8 +103,8 @@
         return all;
     })();
 
-    $: sidebarWidth = open ? widthPx : COLLAPSED_WIDTH_PX;
-    $: isNarrow = open && (measuredWidth || sidebarWidth) < SPLIT_THRESHOLD_PX;
+    $: sidebarWidth = $clusterExplorerOpen ? widthPx : COLLAPSED_WIDTH_PX;
+    $: isNarrow = $clusterExplorerOpen && (measuredWidth || sidebarWidth) < SPLIT_THRESHOLD_PX;
 
     function clamp(n, min, max) {
         return Math.max(min, Math.min(max, n));
@@ -127,8 +129,9 @@
     });
 
     function toggleOpen() {
-        open = !open;
-        if (!open) {
+        const nextOpen = !$clusterExplorerOpen;
+        clusterExplorerOpen.set(nextOpen);
+        if (!nextOpen) {
             posthog.capture('explorer_closed');
             selectedClusterId = null;
             view = 'list';
@@ -139,6 +142,15 @@
         posthog.capture('explorer_opened');
         view = 'list';
         if (!data) run();
+    }
+
+    $: if (
+        $clusterExplorerOpen &&
+        $clusterExplorerRunRequest !== lastRunRequest &&
+        !loading
+    ) {
+        lastRunRequest = $clusterExplorerRunRequest;
+        run();
     }
 
     async function run() {
@@ -319,21 +331,21 @@
 <div
     class="cluster-explorer"
     data-walkthrough="clusterExplorer"
-    class:open
+    class:open={$clusterExplorerOpen}
     class:resizing
     bind:this={rootEl}
     style={`width: ${sidebarWidth}px;`}
 >
-    <button class="toggle" on:click={toggleOpen} aria-label="Toggle explorer" aria-expanded={open}>
+    <button class="toggle" on:click={toggleOpen} aria-label="Toggle explorer" aria-expanded={$clusterExplorerOpen}>
         <span class="toggle-title">Explorer</span>
-        {#if open}
+        {#if $clusterExplorerOpen}
             <span class="toggle-sub">close</span>
         {:else}
             <span class="toggle-sub">explore comps</span>
         {/if}
     </button>
 
-    {#if open}
+    {#if $clusterExplorerOpen}
         <div
             class="resizer"
             role="separator"
