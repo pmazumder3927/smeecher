@@ -17,7 +17,7 @@ data/*.pkl
 data/*.bin
 
 # Web build output
-static/assets/
+static/
 
 # IDE
 .claude/
