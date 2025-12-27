@@ -107,7 +107,7 @@ export async function fetchUnitItems(unit, tokens = [], options = {}) {
 }
 
 /**
- * Fetch optimal item build for a unit (iteratively finds best items)
+ * Fetch recommended item builds for a unit (searches item sets)
  * @param {string} unit - Unit name (e.g., "MissFortune")
  * @param {string[]} tokens - Additional filter tokens
  * @param {Object} options - Optional parameters

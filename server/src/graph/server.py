@@ -1017,9 +1017,9 @@ def get_unit_build(
     """
     Get multiple optimal item builds for a unit.
 
-    This endpoint explores different starting items and finds the best
-    complete build path from each, returning multiple build options
-    ranked by final average placement.
+    This endpoint searches item combinations (beam search + small-sample shrinkage)
+    to surface strong builds and better capture item interactions than greedy
+    one-at-a-time selection.
     """
     if ENGINE is None:
         raise HTTPException(status_code=503, detail="Engine not loaded")
@@ -1032,15 +1032,6 @@ def get_unit_build(
 
     if unit_token not in ENGINE.token_to_id:
         raise HTTPException(status_code=404, detail=f"Unit '{unit}' not found")
-
-    # Track which items are already in filters
-    existing_items_base = set()
-    for t in filter_tokens:
-        parsed = parse_token(t)
-        if parsed["type"] == "item":
-            existing_items_base.add(parsed["item"])
-        elif parsed["type"] == "equipped" and parsed["unit"] == unit:
-            existing_items_base.add(parsed["item"])
 
     # Get base stats
     base_tokens = [unit_token] + filter_tokens
@@ -1056,139 +1047,183 @@ def get_unit_build(
             "builds": []
         }
 
+    def _shrink_avg(avg: float, n: int, prior_mean: float, prior_weight: float) -> float:
+        """Empirical-Bayes shrinkage to reduce small-sample noise (lower is better)."""
+        if n <= 0:
+            return prior_mean
+        return (avg * n + prior_mean * prior_weight) / (n + prior_weight)
+
+    # Items already locked-in for this unit via filters (E:{unit}|{item})
+    locked_items: list[str] = []
+    locked_item_set: set[str] = set()
+    for t in filter_tokens:
+        parsed = parse_token(t)
+        if parsed["type"] == "equipped" and parsed["unit"] == unit:
+            item_name = parsed["item"]
+            if item_name in locked_item_set:
+                continue
+            locked_item_set.add(item_name)
+            locked_items.append(item_name)
+
+    # Beam-search parameters (kept internal to avoid API churn)
+    beam_width = 40
+    max_builds = 25
+    prior_weight = float(max(25, min(200, int(n_base * 0.05))))
+
     # Find all equipped tokens for this unit
     prefix = f"E:{unit}|"
     all_equipped = [t for t in ENGINE.id_to_token if t.startswith(prefix)]
 
-    def find_best_item(current_bitmap, used_items):
-        """Find the best item given current state."""
-        n_current = len(current_bitmap)
-        avg_current = ENGINE.avg_placement_for_bitmap(current_bitmap) if n_current > 0 else 4.5
+    # If the user already filtered by equipped items on this unit, treat them as locked
+    # and only recommend the remaining slots.
+    locked_items = locked_items[:slots]
+    locked_item_set = set(locked_items)
+    remaining_slots = max(0, slots - len(locked_items))
 
-        best = None
+    base_item_dicts = [
+        {
+            "item": item_name,
+            "token": f"E:{unit}|{item_name}",
+            "delta": 0.0,
+            "avg_placement": round(avg_base, 3),
+            "n": n_base,
+        }
+        for item_name in locked_items
+    ]
+
+    if remaining_slots == 0:
+        all_builds = [
+            {
+                "items": [{**item, "slot": i + 1} for i, item in enumerate(base_item_dicts)],
+                "final_avg": round(avg_base, 3),
+                "final_n": n_base,
+                "total_delta": 0.0,
+                "num_items": len(base_item_dicts),
+            }
+        ]
+    else:
+        # Candidate items: equipped items for this unit with enough sample size under the current filters.
+        candidates = []
         for eq_token in all_equipped:
             item_name = eq_token.split("|")[1]
-            if item_name in used_items:
+            if item_name in locked_item_set:
                 continue
 
             token_id = ENGINE.token_to_id.get(eq_token)
-            if token_id is None or token_id not in ENGINE.tokens:
+            if token_id is None:
+                continue
+            token_stats = ENGINE.tokens.get(token_id)
+            if token_stats is None:
                 continue
 
-            token_stats = ENGINE.tokens[token_id]
-            with_bitmap = current_bitmap & token_stats.bitmap
+            with_bitmap = base_bitmap & token_stats.bitmap
             n_with = len(with_bitmap)
-
             if n_with < min_sample:
                 continue
 
-            avg_with = ENGINE.avg_placement_for_bitmap(with_bitmap)
-            delta = avg_with - avg_current
-
-            if best is None or delta < best["delta"]:
-                best = {
-                    "item": item_name,
-                    "token": eq_token,
-                    "delta": round(delta, 3),
-                    "avg_placement": round(avg_with, 3),
-                    "n": n_with,
-                    "bitmap": with_bitmap
-                }
-
-        return best
-
-    def build_from_start(start_item, start_bitmap, start_stats):
-        """Build a complete item set starting from a specific item."""
-        build_items = [start_stats]
-        current_bitmap = start_bitmap
-        used = existing_items_base | {start_item}
-
-        for slot_idx in range(1, slots):
-            next_item = find_best_item(current_bitmap, used)
-            if next_item is None:
-                break
-            build_items.append({
-                "item": next_item["item"],
-                "token": next_item["token"],
-                "delta": next_item["delta"],
-                "avg_placement": next_item["avg_placement"],
-                "n": next_item["n"],
-                "slot": slot_idx + 1
+            candidates.append({
+                "item": item_name,
+                "token": eq_token,
+                "bitmap": token_stats.bitmap,
             })
-            used.add(next_item["item"])
-            current_bitmap = next_item["bitmap"]
 
-        # Calculate final stats
-        final_avg = build_items[-1]["avg_placement"] if build_items else avg_base
-        final_n = build_items[-1]["n"] if build_items else n_base
+        if not candidates:
+            all_builds = []
+            if base_item_dicts:
+                all_builds.append({
+                    "items": [{**item, "slot": i + 1} for i, item in enumerate(base_item_dicts)],
+                    "final_avg": round(avg_base, 3),
+                    "final_n": n_base,
+                    "total_delta": 0.0,
+                    "num_items": len(base_item_dicts),
+                })
+        else:
+            # Beam search over item combinations to better capture item interactions than greedy selection.
+            beam = [
+                {
+                    "items": list(base_item_dicts),
+                    "bitmap": base_bitmap,
+                    "n": n_base,
+                    "avg": avg_base,
+                    "score": _shrink_avg(avg_base, n_base, avg_base, prior_weight),
+                    "used": set(locked_item_set),
+                }
+            ]
 
-        return {
-            "items": [{**item, "slot": i + 1} for i, item in enumerate(build_items)],
-            "final_avg": final_avg,
-            "final_n": final_n,
-            "total_delta": round(final_avg - avg_base, 3),
-            "num_items": len(build_items)
-        }
+            for _ in range(remaining_slots):
+                next_states = []
+                for state in beam:
+                    for cand in candidates:
+                        if cand["item"] in state["used"]:
+                            continue
 
-    # Find all starting items (slot 1 candidates)
-    starting_candidates = []
+                        with_bitmap = state["bitmap"] & cand["bitmap"]
+                        n_with = len(with_bitmap)
+                        if n_with < min_sample:
+                            continue
 
-    for eq_token in all_equipped:
-        item_name = eq_token.split("|")[1]
-        if item_name in existing_items_base:
-            continue
+                        avg_with = ENGINE.avg_placement_for_bitmap(with_bitmap)
+                        score_with = _shrink_avg(avg_with, n_with, avg_base, prior_weight)
 
-        token_id = ENGINE.token_to_id.get(eq_token)
-        if token_id is None or token_id not in ENGINE.tokens:
-            continue
+                        item_stats = {
+                            "item": cand["item"],
+                            "token": cand["token"],
+                            "delta": round(avg_with - state["avg"], 3),
+                            "avg_placement": round(avg_with, 3),
+                            "n": n_with,
+                        }
 
-        token_stats = ENGINE.tokens[token_id]
-        with_bitmap = base_bitmap & token_stats.bitmap
-        n_with = len(with_bitmap)
+                        next_states.append({
+                            "items": state["items"] + [item_stats],
+                            "bitmap": with_bitmap,
+                            "n": n_with,
+                            "avg": avg_with,
+                            "score": score_with,
+                            "used": state["used"] | {cand["item"]},
+                        })
 
-        if n_with < min_sample:
-            continue
+                if not next_states:
+                    break
 
-        avg_with = ENGINE.avg_placement_for_bitmap(with_bitmap)
-        delta = avg_with - avg_base
+                # Prefer lower (better) shrunk score; then lower raw avg; then higher sample size.
+                next_states.sort(key=lambda s: (s["score"], s["avg"], -s["n"]))
 
-        starting_candidates.append({
-            "item": item_name,
-            "token": eq_token,
-            "delta": round(delta, 3),
-            "avg_placement": round(avg_with, 3),
-            "n": n_with,
-            "bitmap": with_bitmap,
-            "slot": 1
-        })
+                # De-dupe by item set and keep a reasonable beam.
+                new_beam = []
+                seen_keys = set()
+                for s in next_states:
+                    key = tuple(sorted(it["item"] for it in s["items"]))
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    new_beam.append(s)
+                    if len(new_beam) >= beam_width:
+                        break
+                beam = new_beam
 
-    # Sort by delta (best first)
-    starting_candidates.sort(key=lambda x: x["delta"])
+            # Convert beam states to builds.
+            all_builds = []
+            for state in beam:
+                items_out = [{**item, "slot": i + 1} for i, item in enumerate(state["items"][:slots])]
+                if not items_out:
+                    continue
 
-    # Build complete builds from each starting point
-    all_builds = []
-    seen_build_keys = set()
+                final_avg = float(state["avg"])
+                final_n = int(state["n"])
+                all_builds.append({
+                    "items": items_out,
+                    "final_avg": round(final_avg, 3),
+                    "final_n": final_n,
+                    "total_delta": round(final_avg - avg_base, 3),
+                    "num_items": len(items_out),
+                    "_score": float(state["score"]),
+                })
 
-    for start in starting_candidates:
-        build = build_from_start(start["item"], start["bitmap"], {
-            "item": start["item"],
-            "token": start["token"],
-            "delta": start["delta"],
-            "avg_placement": start["avg_placement"],
-            "n": start["n"],
-            "slot": 1
-        })
-
-        # Deduplicate by item set (order doesn't matter for dedup)
-        build_key = tuple(sorted(item["item"] for item in build["items"]))
-        if build_key in seen_build_keys:
-            continue
-        seen_build_keys.add(build_key)
-
-        all_builds.append(build)
-
-    # Sort by: complete builds first (more items = better), then by final avg placement
-    all_builds.sort(key=lambda x: (-x["num_items"], x["final_avg"]))
+            # Sort and trim.
+            all_builds.sort(key=lambda b: (-b["num_items"], b["final_avg"], -b["final_n"], b["_score"]))
+            all_builds = all_builds[:max_builds]
+            for b in all_builds:
+                b.pop("_score", None)
 
     return {
         "unit": unit,
