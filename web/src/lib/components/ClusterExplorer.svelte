@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { fetchClusters } from '../api.js';
+    import { fetchClusters, fetchClusterPlaybook } from '../api.js';
     import {
         selectedTokens,
         activeTypes,
@@ -31,6 +31,11 @@
     let selectedClusterId = null;
     let sortBy = 'avg'; // avg | size | top4
     let tokenLabelIndex = new Map();
+
+    let playbookLoading = false;
+    let playbookError = null;
+    let playbook = null;
+    let playbookFetchVersion = 0;
 
     let rootEl;
     let measuredWidth = 0;
@@ -81,6 +86,9 @@
 
     $: selectedCluster = sortedClusters.find(c => c.cluster_id === selectedClusterId) ?? null;
     $: if (view === 'details' && !selectedCluster) view = 'list';
+
+    $: drivers = playbook?.drivers ?? [];
+    $: killers = playbook?.killers ?? [];
 
     // Unified token list sorted by lift
     $: unifiedTokens = (() => {
@@ -195,12 +203,40 @@
     function selectCluster(c) {
         selectedClusterId = c.cluster_id;
         setHighlightedTokens(c.signature_tokens ?? []);
+        playbook = null;
+        playbookError = null;
         posthog.capture('cluster_selected', {
             cluster_id: c.cluster_id,
             cluster_size: c.size,
             avg_placement: c.avg_placement
         });
         if (isNarrow) view = 'details';
+
+        // Playbook requires fresh clustering results for the current filters.
+        if (!stale) {
+            loadPlaybook(c.cluster_id);
+        }
+    }
+
+    async function loadPlaybook(clusterId) {
+        const version = ++playbookFetchVersion;
+        playbookLoading = true;
+        playbookError = null;
+
+        try {
+            const res = await fetchClusterPlaybook($selectedTokens, clusterId, apiParams);
+            if (version !== playbookFetchVersion) return;
+            playbook = res;
+            posthog.capture('cluster_playbook_loaded', {
+                cluster_id: clusterId,
+                candidates_scored: res?.meta?.candidates_scored ?? 0,
+            });
+        } catch (e) {
+            if (version !== playbookFetchVersion) return;
+            playbookError = e?.message ?? String(e);
+        } finally {
+            if (version === playbookFetchVersion) playbookLoading = false;
+        }
     }
 
     function tokenText(token) {
@@ -234,6 +270,12 @@
         addToken(token, 'cluster');
     }
 
+    function excludeOne(token) {
+        if (!token) return;
+        const base = token.startsWith('-') || token.startsWith('!') ? token.slice(1) : token;
+        addToken(`-${base}`, 'cluster_playbook');
+    }
+
     function goBack() {
         selectedClusterId = null;
         clearHighlightedTokens();
@@ -252,6 +294,44 @@
         if (x === null || x === undefined) return '—';
         if (x >= 9.95) return '×10+';
         return `×${x.toFixed(2)}`;
+    }
+
+    function fmtSignedPct(x, digits = 1) {
+        if (x === null || x === undefined) return '—';
+        const v = (x ?? 0) * 100;
+        const sign = v > 0 ? '+' : '';
+        return `${sign}${v.toFixed(digits)}%`;
+    }
+
+    function fmtSigned(x, digits = 2) {
+        if (x === null || x === undefined) return '—';
+        const v = x ?? 0;
+        const sign = v > 0 ? '+' : '';
+        return `${sign}${v.toFixed(digits)}`;
+    }
+
+    function deltaClass(metric, value) {
+        if (value === null || value === undefined) return 'neutral';
+        const v = Number(value);
+        if (!Number.isFinite(v)) return 'neutral';
+
+        const eps = 0.005;
+        if (metric === 'avg') {
+            if (v < -0.05) return 'pos';
+            if (v > 0.05) return 'neg';
+            return 'neutral';
+        }
+
+        if (metric === 'eighth') {
+            if (v > eps) return 'neg';
+            if (v < -eps) return 'pos';
+            return 'neutral';
+        }
+
+        // win/top4: higher is better
+        if (v > eps) return 'pos';
+        if (v < -eps) return 'neg';
+        return 'neutral';
     }
 
     function signaturePreview(cluster, maxIcons = 8) {
@@ -564,23 +644,194 @@
                             </div>
                         </div>
 
-                        {#if selectedCluster.signature_tokens?.length}
-                            <div class="sig">
-                                <div class="sig-title">Signature</div>
-                                <div class="sig-chips">
-                                    {#each selectedCluster.signature_tokens as t}
-                                        <button class="sig-chip {tokenTypeClass(t)}" on:click={() => addOne(t)}>
-                                            {tokenText(t)}
-                                        </button>
-                                    {/each}
-                                </div>
-                            </div>
-                        {/if}
+	                        {#if selectedCluster.signature_tokens?.length}
+	                            <div class="sig">
+	                                <div class="sig-title">Signature</div>
+	                                <div class="sig-chips">
+	                                    {#each selectedCluster.signature_tokens as t}
+	                                        <button class="sig-chip {tokenTypeClass(t)}" on:click={() => addOne(t)}>
+	                                            {tokenText(t)}
+	                                        </button>
+	                                    {/each}
+	                                </div>
+	                            </div>
+	                        {/if}
 
-                        {#if unifiedTokens.length > 0}
-                            <div class="unified-tokens">
-                                <div class="tokens-header">
-                                    <span class="tokens-title">Top Tokens</span>
+	                        <div class="playbook">
+	                            <div class="playbook-header">
+	                                <div class="playbook-title">
+	                                    Playbook
+	                                    {#if playbook?.base?.n}
+	                                        <span class="playbook-sub">{playbook.base.n.toLocaleString()} games</span>
+	                                    {/if}
+	                                </div>
+	                                <button
+	                                    class="playbook-run"
+	                                    disabled={playbookLoading || stale}
+	                                    on:click={() => loadPlaybook(selectedCluster.cluster_id)}
+	                                >
+	                                    {#if playbookLoading}
+	                                        Computing…
+	                                    {:else if stale}
+	                                        Stale
+	                                    {:else if playbook}
+	                                        Refresh
+	                                    {:else}
+	                                        Compute
+	                                    {/if}
+	                                </button>
+	                            </div>
+
+	                            {#if stale}
+	                                <div class="callout warning">
+	                                    Filters changed — run clustering again to refresh this playbook.
+	                                </div>
+	                            {:else if playbookError}
+	                                <div class="callout error">Failed to load playbook: {playbookError}</div>
+	                            {:else if playbook?.meta?.warning}
+	                                <div class="callout warning">{playbook.meta.warning}</div>
+	                            {:else if playbookLoading && !playbook}
+	                                <div class="playbook-skeleton">
+	                                    <div class="skeleton-row"></div>
+	                                    <div class="skeleton-row"></div>
+	                                    <div class="skeleton-row"></div>
+	                                </div>
+	                            {:else if playbook}
+	                                <div class="playbook-base">
+	                                    <div class="base-chip">Win {fmtPct(playbook.base.win_rate)}</div>
+	                                    <div class="base-chip">Top4 {fmtPct(playbook.base.top4_rate)}</div>
+	                                    <div class="base-chip">8th {fmtPct(playbook.base.eighth_rate)}</div>
+	                                    <div class="base-chip" style="color: {getPlacementColor(playbook.base.avg_placement)}">
+	                                        Avg {playbook.base.avg_placement.toFixed(2)}
+	                                    </div>
+	                                </div>
+
+	                                <div class="pb-section">
+	                                    <div class="pb-title">Biggest win drivers</div>
+	                                    {#if drivers.length === 0}
+	                                        <div class="pb-empty">
+	                                            Not enough data to rank drivers (try broadening filters).
+	                                        </div>
+	                                    {:else}
+	                                        <div class="pb-list">
+	                                            {#each drivers as row, idx}
+	                                                <div class="pb-row">
+	                                                    <button class="pb-main" on:click={() => addOne(row.token)}>
+	                                                        <div class="pb-rank">#{idx + 1}</div>
+	                                                        <div class="pb-icon">
+	                                                            {#if row.token?.startsWith('E:')}
+	                                                                {@const item = row.token.slice(2).split('|')[1]}
+	                                                                {#if getIconUrl('item', item) && !hasIconFailed('item', item)}
+	                                                                    <img
+	                                                                        src={getIconUrl('item', item)}
+	                                                                        alt=""
+	                                                                        loading="lazy"
+	                                                                        on:error={() => markIconFailed('item', item)}
+	                                                                    />
+	                                                                {:else}
+	                                                                    <div class="pb-fallback item"></div>
+	                                                                {/if}
+	                                                            {:else if tokenIcon(row.token) && !hasIconFailed(getTokenType(row.token), row.token.slice(2))}
+	                                                                <img
+	                                                                    src={tokenIcon(row.token)}
+	                                                                    alt=""
+	                                                                    loading="lazy"
+	                                                                    on:error={() => markIconFailed(getTokenType(row.token), row.token.slice(2))}
+	                                                                />
+	                                                            {:else}
+	                                                                <div class="pb-fallback {tokenTypeClass(row.token)}"></div>
+	                                                            {/if}
+	                                                        </div>
+	                                                        <div class="pb-info">
+	                                                            <div class="pb-name" title={tokenText(row.token)}>{tokenText(row.token)}</div>
+	                                                            <div class="pb-sub">
+	                                                                {Math.round((row.pct_in_cluster ?? 0) * 100)}% use • {row.n_with?.toLocaleString?.() ?? row.n_with} games
+	                                                            </div>
+	                                                        </div>
+	                                                        <div class="pb-metrics">
+	                                                            <div class="m {deltaClass('win', row.delta_win)}" title="Δ win rate (with token vs without)">W {fmtSignedPct(row.delta_win)}</div>
+	                                                            <div class="m {deltaClass('top4', row.delta_top4)}" title="Δ top4 rate (with token vs without)">T4 {fmtSignedPct(row.delta_top4)}</div>
+	                                                            <div class="m {deltaClass('avg', row.delta_avg)}" title="Δ avg placement (with token vs without)">Avg {fmtSigned(row.delta_avg)}</div>
+	                                                        </div>
+	                                                    </button>
+	                                                    <button
+	                                                        class="pb-action"
+	                                                        title="Exclude"
+	                                                        on:click|stopPropagation={() => excludeOne(row.token)}
+	                                                    >
+	                                                        −
+	                                                    </button>
+	                                                </div>
+	                                            {/each}
+	                                        </div>
+	                                    {/if}
+	                                </div>
+
+	                                <div class="pb-section">
+	                                    <div class="pb-title">Biggest win killers</div>
+	                                    {#if killers.length === 0}
+	                                        <div class="pb-empty">Not enough data to rank killers.</div>
+	                                    {:else}
+	                                        <div class="pb-list">
+	                                            {#each killers as row, idx}
+	                                                <div class="pb-row">
+	                                                    <button class="pb-main" on:click={() => addOne(row.token)}>
+	                                                        <div class="pb-rank">#{idx + 1}</div>
+	                                                        <div class="pb-icon">
+	                                                            {#if row.token?.startsWith('E:')}
+	                                                                {@const item = row.token.slice(2).split('|')[1]}
+	                                                                {#if getIconUrl('item', item) && !hasIconFailed('item', item)}
+	                                                                    <img
+	                                                                        src={getIconUrl('item', item)}
+	                                                                        alt=""
+	                                                                        loading="lazy"
+	                                                                        on:error={() => markIconFailed('item', item)}
+	                                                                    />
+	                                                                {:else}
+	                                                                    <div class="pb-fallback item"></div>
+	                                                                {/if}
+	                                                            {:else if tokenIcon(row.token) && !hasIconFailed(getTokenType(row.token), row.token.slice(2))}
+	                                                                <img
+	                                                                    src={tokenIcon(row.token)}
+	                                                                    alt=""
+	                                                                    loading="lazy"
+	                                                                    on:error={() => markIconFailed(getTokenType(row.token), row.token.slice(2))}
+	                                                                />
+	                                                            {:else}
+	                                                                <div class="pb-fallback {tokenTypeClass(row.token)}"></div>
+	                                                            {/if}
+	                                                        </div>
+	                                                        <div class="pb-info">
+	                                                            <div class="pb-name" title={tokenText(row.token)}>{tokenText(row.token)}</div>
+	                                                            <div class="pb-sub">
+	                                                                {Math.round((row.pct_in_cluster ?? 0) * 100)}% use • {row.n_with?.toLocaleString?.() ?? row.n_with} games
+	                                                            </div>
+	                                                        </div>
+	                                                        <div class="pb-metrics">
+	                                                            <div class="m {deltaClass('win', row.delta_win)}" title="Δ win rate (with token vs without)">W {fmtSignedPct(row.delta_win)}</div>
+	                                                            <div class="m {deltaClass('top4', row.delta_top4)}" title="Δ top4 rate (with token vs without)">T4 {fmtSignedPct(row.delta_top4)}</div>
+	                                                            <div class="m {deltaClass('eighth', row.delta_eighth)}" title="Δ 8th rate (with token vs without)">8 {fmtSignedPct(row.delta_eighth)}</div>
+	                                                        </div>
+	                                                    </button>
+	                                                    <button
+	                                                        class="pb-action"
+	                                                        title="Exclude"
+	                                                        on:click|stopPropagation={() => excludeOne(row.token)}
+	                                                    >
+	                                                        −
+	                                                    </button>
+	                                                </div>
+	                                            {/each}
+	                                        </div>
+	                                    {/if}
+	                                </div>
+	                            {/if}
+	                        </div>
+
+	                        {#if unifiedTokens.length > 0}
+	                            <div class="unified-tokens">
+	                                <div class="tokens-header">
+	                                    <span class="tokens-title">Top Tokens</span>
                                     <span class="tokens-count">{unifiedTokens.length} tokens</span>
                                 </div>
                                 <div class="tokens-list">
@@ -1547,6 +1798,279 @@
 
     .token-row:hover .plus-icon {
         opacity: 1;
+    }
+
+    .playbook {
+        margin-top: 14px;
+        border-top: 1px solid var(--border);
+        padding-top: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .playbook-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+    }
+
+    .playbook-title {
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: var(--text-primary);
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+    }
+
+    .playbook-sub {
+        font-size: 10px;
+        color: var(--text-tertiary);
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    .playbook-run {
+        background: var(--bg-tertiary);
+        color: var(--text-primary);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 11px;
+        font-weight: 900;
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-family: inherit;
+    }
+
+    .playbook-run:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+    }
+
+    .playbook-base {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+    }
+
+    .base-chip {
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--bg-tertiary);
+        font-size: 11px;
+        font-weight: 800;
+        color: var(--text-secondary);
+        white-space: nowrap;
+    }
+
+    .pb-section {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .pb-title {
+        font-size: 12px;
+        font-weight: 800;
+        color: var(--text-secondary);
+    }
+
+    .pb-empty {
+        font-size: 12px;
+        color: var(--text-tertiary);
+        padding: 4px 0;
+    }
+
+    .pb-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .pb-row {
+        display: flex;
+        gap: 8px;
+        align-items: stretch;
+    }
+
+    .pb-main {
+        flex: 1;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 12px;
+        padding: 10px 12px;
+        display: grid;
+        grid-template-columns: 28px 26px minmax(0, 1fr);
+        grid-template-rows: auto auto;
+        column-gap: 10px;
+        row-gap: 8px;
+        align-items: center;
+        cursor: pointer;
+        text-align: left;
+        color: var(--text-primary);
+        font-family: inherit;
+        min-width: 0;
+    }
+
+    .pb-main:hover {
+        background: rgba(255, 255, 255, 0.04);
+        border-color: rgba(45, 212, 191, 0.35);
+    }
+
+    .pb-rank {
+        font-size: 10px;
+        font-weight: 900;
+        color: var(--text-tertiary);
+        text-align: right;
+        flex: 0 0 auto;
+    }
+
+    .pb-icon {
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        overflow: hidden;
+    }
+
+    .pb-icon img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .pb-fallback {
+        width: 100%;
+        height: 100%;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.06);
+    }
+
+    .pb-fallback.unit {
+        background: rgba(45, 212, 191, 0.25);
+    }
+    .pb-fallback.trait {
+        background: rgba(251, 191, 36, 0.22);
+    }
+    .pb-fallback.item {
+        background: rgba(96, 165, 250, 0.22);
+    }
+
+    .pb-info {
+        grid-column: 3;
+        grid-row: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .pb-name {
+        font-size: 12px;
+        font-weight: 900;
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+    }
+
+    .pb-sub {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .pb-metrics {
+        grid-column: 2 / 4;
+        grid-row: 2;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        justify-content: flex-start;
+        text-align: left;
+    }
+
+    .pb-metrics .m {
+        font-size: 11px;
+        font-weight: 900;
+        white-space: nowrap;
+        padding: 4px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text-secondary);
+    }
+
+    .pb-metrics .m.pos {
+        color: rgba(45, 212, 191, 0.95);
+        border-color: rgba(45, 212, 191, 0.35);
+        background: rgba(45, 212, 191, 0.08);
+    }
+    .pb-metrics .m.neg {
+        color: rgba(248, 113, 113, 0.95);
+        border-color: rgba(248, 113, 113, 0.35);
+        background: rgba(248, 113, 113, 0.08);
+    }
+    .pb-metrics .m.neutral {
+        color: var(--text-secondary);
+    }
+
+    .pb-action {
+        width: 38px;
+        border: 1px solid var(--border);
+        background: var(--bg-tertiary);
+        border-radius: 12px;
+        color: var(--text-tertiary);
+        font-weight: 900;
+        font-size: 18px;
+        cursor: pointer;
+        flex: 0 0 auto;
+        display: grid;
+        place-items: center;
+        padding: 0;
+    }
+
+    .pb-action:hover {
+        border-color: rgba(248, 113, 113, 0.35);
+        color: rgba(248, 113, 113, 0.95);
+        background: rgba(248, 113, 113, 0.06);
+    }
+
+    .playbook-skeleton {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 6px 0;
+    }
+
+    .playbook-skeleton .skeleton-row {
+        height: 44px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        animation: pulse 1.4s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+        0%, 100% { opacity: 0.65; }
+        50% { opacity: 1; }
     }
 
     @media (max-width: 768px) {

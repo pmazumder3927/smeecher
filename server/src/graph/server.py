@@ -23,7 +23,7 @@ import uvicorn
 import httpx
 
 from .engine import GraphEngine, build_engine
-from .clustering import ClusterParams, compute_clusters
+from .clustering import ClusterParams, compute_clusters, compute_cluster_playbook
 
 # OpenAI API key for voice transcription and parsing
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -983,6 +983,55 @@ def get_clusters(
         random_state=random_state,
     )
     return compute_clusters(ENGINE, token_list, params)
+
+
+@app.get("/cluster-playbook")
+def get_cluster_playbook(
+    tokens: str = Query(default="", description="Comma-separated tokens (filters)"),
+    cluster_id: int = Query(..., description="Cluster id from /clusters"),
+    n_clusters: int = Query(default=15, ge=2, le=50),
+    use_units: bool = Query(default=True),
+    use_traits: bool = Query(default=True),
+    use_items: bool = Query(default=False),
+    min_token_freq: int = Query(default=100, ge=1),
+    min_cluster_size: int = Query(default=50, ge=1),
+    top_k_tokens: int = Query(default=10, ge=1, le=30),
+    random_state: int = Query(default=42),
+    min_with: int = Query(default=30, ge=1),
+    min_without: int = Query(default=30, ge=1),
+    max_drivers: int = Query(default=12, ge=1, le=50),
+    max_killers: int = Query(default=12, ge=1, le=50),
+):
+    """
+    Compute a "playbook" for a selected comp archetype cluster.
+
+    Focuses on tokens that most strongly correlate with winning (1st place)
+    vs losing within the cluster (stars, trait breakpoints, BIS, etc).
+    """
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    token_list = [t.strip() for t in tokens.split(",") if t.strip()]
+    params = ClusterParams(
+        n_clusters=n_clusters,
+        use_units=use_units,
+        use_traits=use_traits,
+        use_items=use_items,
+        min_token_freq=min_token_freq,
+        min_cluster_size=min_cluster_size,
+        top_k_tokens=top_k_tokens,
+        random_state=random_state,
+    )
+    return compute_cluster_playbook(
+        ENGINE,
+        token_list,
+        params,
+        cluster_id,
+        min_with=min_with,
+        min_without=min_without,
+        max_drivers=max_drivers,
+        max_killers=max_killers,
+    )
 
 
 @app.get("/search")

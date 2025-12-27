@@ -91,6 +91,28 @@ export async function fetchClusters(tokens, params = {}) {
 }
 
 /**
+ * Fetch "playbook" (win drivers) for a selected cluster
+ */
+export async function fetchClusterPlaybook(tokens, clusterId, params = {}) {
+    const tokensParam = tokens.join(',');
+    const search = new URLSearchParams({
+        tokens: tokensParam,
+        cluster_id: String(clusterId),
+        t: String(Date.now()),
+        ...Object.fromEntries(
+            Object.entries(params).map(([k, v]) => [k, String(v)])
+        )
+    });
+
+    const response = await fetch(`${API_BASE}/cluster-playbook?${search.toString()}`);
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data?.detail || 'Failed to fetch cluster playbook');
+    }
+    return data;
+}
+
+/**
  * Get engine stats
  */
 export async function getStats() {
