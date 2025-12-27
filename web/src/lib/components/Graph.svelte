@@ -3,6 +3,7 @@
     import * as d3 from 'd3';
     import {
         graphData,
+        stats,
         activeTypes,
         addToken,
         highlightedTokens,
@@ -11,6 +12,7 @@
         forceHideTooltip,
         tooltip
     } from '../stores/state.js';
+    import AvgPlacement from './AvgPlacement.svelte';
     import { getIconUrl, getDisplayName, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { get } from 'svelte/store';
     import posthog from '../client/posthog';
@@ -818,6 +820,15 @@
 
 <div class="graph-section">
     <div class="graph-container" data-walkthrough="graph">
+        <div class="avp-hud" class:empty={$stats.games === 0} aria-label="Average placement">
+            <div class="avp-hud-meta">
+                <div class="avp-hud-label">Avg place</div>
+                <div class="avp-hud-sub">{$stats.games.toLocaleString()} games</div>
+            </div>
+            <div class="avp-hud-value">
+                <AvgPlacement value={$stats.avgPlacement} showDelta={$stats.games > 0} />
+            </div>
+        </div>
         <svg bind:this={container} id="graph"></svg>
     </div>
 </div>
@@ -838,6 +849,60 @@
         overflow: hidden;
         height: 100%;
         touch-action: none;
+    }
+
+    .avp-hud {
+        position: absolute;
+        left: 50%;
+        top: 14px;
+        transform: translateX(-50%);
+        z-index: 5;
+        pointer-events: none;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        padding: 10px 14px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 10px 28px var(--shadow);
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: "tnum" 1;
+    }
+
+    .avp-hud-meta {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+    }
+
+    .avp-hud.empty {
+        opacity: 0.65;
+    }
+
+    .avp-hud-label {
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-tertiary);
+        white-space: nowrap;
+    }
+
+    .avp-hud-value {
+        font-size: 20px;
+        font-weight: 950;
+        letter-spacing: -0.02em;
+        line-height: 1;
+    }
+
+    .avp-hud-sub {
+        font-size: 11px;
+        font-weight: 800;
+        color: var(--text-tertiary);
+        white-space: nowrap;
     }
 
     svg {

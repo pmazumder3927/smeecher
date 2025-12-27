@@ -11,7 +11,7 @@
     <div class="stat-inline">
         <span class="stat-label">Avg Place</span>
         <span class="stat-value">
-            <AvgPlacement value={$stats.avgPlacement} showDelta={$stats.games > 0} />
+            <AvgPlacement value={$stats.avgPlacement} />
         </span>
     </div>
 </div>
