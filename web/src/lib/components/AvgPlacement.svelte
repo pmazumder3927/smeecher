@@ -89,7 +89,7 @@
     {#if showDelta && delta !== null}
         {#key deltaKey}
             <span class="delta" class:positive={delta < 0} class:negative={delta > 0}>
-                <span class="delta-sign">{deltaSign}</span>{deltaNum}
+                <span class="delta-sign">{deltaSign}</span><span class="delta-num">{deltaNum}</span>
             </span>
         {/key}
     {/if}
@@ -113,8 +113,10 @@
     .delta {
         position: absolute;
         top: 100%;
-        left: 50%;
-        transform: translateX(-50%);
+        left: 0;
+        right: 0;
+        display: flex;
+        justify-content: center;
         margin-top: 4px;
         opacity: 0;
         font-size: 11px;
@@ -131,9 +133,12 @@
     }
 
     .delta-sign {
-        display: inline-block;
-        width: 0.6em;
-        text-align: center;
+        position: absolute;
+        right: 100%;
+    }
+
+    .delta-num {
+        position: relative;
     }
 
     .delta.positive {
@@ -147,19 +152,19 @@
     @keyframes avp-delta {
         0% {
             opacity: 0;
-            transform: translateX(-50%) translateY(-2px);
+            transform: translateY(-2px);
         }
         12% {
             opacity: 1;
-            transform: translateX(-50%) translateY(0);
+            transform: translateY(0);
         }
         80% {
             opacity: 1;
-            transform: translateX(-50%) translateY(0);
+            transform: translateY(0);
         }
         100% {
             opacity: 0;
-            transform: translateX(-50%) translateY(2px);
+            transform: translateY(2px);
         }
     }
 
@@ -167,7 +172,6 @@
         .delta {
             animation: none;
             opacity: 1;
-            transform: translateX(-50%);
         }
     }
 </style>
