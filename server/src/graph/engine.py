@@ -18,6 +18,8 @@ import numpy as np
 import orjson
 from pyroaring import BitMap
 
+from .items import get_item_type
+
 # Type aliases
 TokenId = int
 PlayerId = int  # player_match_id
@@ -48,8 +50,21 @@ class GraphEngine:
     """
 
     __slots__ = (
-        'placements', 'tokens', 'token_to_id', 'id_to_token',
-        'labels', 'total_matches', 'all_players'
+        'placements',
+        'tokens',
+        'token_to_id',
+        'id_to_token',
+        'labels',
+        'total_matches',
+        'all_players',
+        # Board-strength proxies (indexed by player_match_id)
+        'item_count',
+        'component_count',
+        'completed_item_count',
+        'unit_count',
+        'two_star_count',
+        'three_star_count',
+        'unit_gold_value',
     )
 
     def __init__(self):
@@ -60,6 +75,13 @@ class GraphEngine:
         self.labels: dict[TokenId, str] = {}
         self.total_matches: int = 0
         self.all_players: BitMap = BitMap()  # All player IDs for empty queries
+        self.item_count: np.ndarray | None = None
+        self.component_count: np.ndarray | None = None
+        self.completed_item_count: np.ndarray | None = None
+        self.unit_count: np.ndarray | None = None
+        self.two_star_count: np.ndarray | None = None
+        self.three_star_count: np.ndarray | None = None
+        self.unit_gold_value: np.ndarray | None = None
 
     def _get_or_create_token_id(self, token: str) -> TokenId:
         """Get existing token ID or create new one."""
@@ -94,6 +116,14 @@ class GraphEngine:
 
         # Allocate placement array (int8 is enough for 1-8)
         self.placements = np.zeros(max_id + 1, dtype=np.int8)
+        # Board-strength proxy arrays (kept as small ints; indexed by pm.id)
+        self.item_count = np.zeros(max_id + 1, dtype=np.int16)
+        self.component_count = np.zeros(max_id + 1, dtype=np.int16)
+        self.completed_item_count = np.zeros(max_id + 1, dtype=np.int16)
+        self.unit_count = np.zeros(max_id + 1, dtype=np.int16)
+        self.two_star_count = np.zeros(max_id + 1, dtype=np.int16)
+        self.three_star_count = np.zeros(max_id + 1, dtype=np.int16)
+        self.unit_gold_value = np.zeros(max_id + 1, dtype=np.int32)
 
         # Single JOIN query - streams everything in one pass
         c.execute("""
@@ -102,6 +132,7 @@ class GraphEngine:
                 pm.placement,
                 u.name as unit_name,
                 u.tier as unit_tier,
+                u.rarity as unit_rarity,
                 u.items
             FROM player_matches pm
             JOIN matches m ON m.match_id = pm.match_id
@@ -116,11 +147,27 @@ class GraphEngine:
         current_pm_id = None
         current_placement = None
         board_items: set[str] = set()
+        # Board-strength accumulators (reset per pm_id)
+        board_item_count = 0
+        board_component_count = 0
+        board_completed_count = 0
+        board_unit_count = 0
+        board_two_star = 0
+        board_three_star = 0
+        board_unit_gold = 0
 
         def flush_board():
             """Process accumulated board items for current player match."""
             if current_pm_id is None:
                 return
+            # Store board-strength proxies
+            self.item_count[current_pm_id] = board_item_count
+            self.component_count[current_pm_id] = board_component_count
+            self.completed_item_count[current_pm_id] = board_completed_count
+            self.unit_count[current_pm_id] = board_unit_count
+            self.two_star_count[current_pm_id] = board_two_star
+            self.three_star_count[current_pm_id] = board_three_star
+            self.unit_gold_value[current_pm_id] = board_unit_gold
 
             # Add item presence tokens
             for item_name in board_items:
@@ -144,6 +191,13 @@ class GraphEngine:
                 current_pm_id = pm_id
                 current_placement = placement
                 board_items = set()
+                board_item_count = 0
+                board_component_count = 0
+                board_completed_count = 0
+                board_unit_count = 0
+                board_two_star = 0
+                board_three_star = 0
+                board_unit_gold = 0
 
                 # Store placement
                 self.placements[pm_id] = placement
@@ -156,8 +210,21 @@ class GraphEngine:
 
             unit_name = self._clean_unit_name(unit_name_raw)
             unit_tier = row["unit_tier"]
+            unit_rarity = row["unit_rarity"]
             items_json = row["items"]
             items = orjson.loads(items_json) if items_json else []
+
+            board_unit_count += 1
+            # 2★ / 3★ count proxies
+            if isinstance(unit_tier, int) and unit_tier >= 2:
+                board_two_star += 1
+            if isinstance(unit_tier, int) and unit_tier >= 3:
+                board_three_star += 1
+            # Gold value proxy: cost * star multiplier (1->1, 2->3, 3->9, ...)
+            if isinstance(unit_rarity, int) and unit_rarity >= 0 and isinstance(unit_tier, int) and unit_tier >= 1:
+                cost = unit_rarity + 1
+                star_multiplier = 3 ** (unit_tier - 1)
+                board_unit_gold += int(cost * star_multiplier)
 
             # Unit presence token
             unit_token = f"U:{unit_name}"
@@ -188,6 +255,11 @@ class GraphEngine:
                 item_name = self._clean_item_name(item_id)
                 if item_name == "EmptyBag":  # Placeholder for Thief's Gloves random items
                     continue
+                board_item_count += 1
+                if get_item_type(item_name) == "component":
+                    board_component_count += 1
+                else:
+                    board_completed_count += 1
                 board_items.add(item_name)
 
                 # Equipped token
@@ -576,7 +648,7 @@ class GraphEngine:
         with open(path, "wb") as f:
             # Magic + version
             f.write(b"SMEE")
-            f.write(struct.pack("<I", 1))  # Version 1
+            f.write(struct.pack("<I", 2))  # Version 2
 
             # Counts
             f.write(struct.pack("<QQQ",
@@ -587,6 +659,22 @@ class GraphEngine:
 
             # Placements array (raw numpy bytes)
             f.write(self.placements.tobytes())
+
+            # Board-strength proxy arrays (Version 2+).
+            # Keep these as simple numeric covariates for downstream modeling.
+            n = len(self.placements)
+            def _arr_or_zeros(arr: np.ndarray | None, dtype: np.dtype) -> np.ndarray:
+                if arr is None or len(arr) != n:
+                    return np.zeros(n, dtype=dtype)
+                return arr.astype(dtype, copy=False)
+
+            f.write(_arr_or_zeros(self.item_count, np.int16).tobytes())
+            f.write(_arr_or_zeros(self.component_count, np.int16).tobytes())
+            f.write(_arr_or_zeros(self.completed_item_count, np.int16).tobytes())
+            f.write(_arr_or_zeros(self.unit_count, np.int16).tobytes())
+            f.write(_arr_or_zeros(self.two_star_count, np.int16).tobytes())
+            f.write(_arr_or_zeros(self.three_star_count, np.int16).tobytes())
+            f.write(_arr_or_zeros(self.unit_gold_value, np.int32).tobytes())
 
             # All players bitmap
             all_players_bytes = self.all_players.serialize()
@@ -633,7 +721,7 @@ class GraphEngine:
                 raise ValueError(f"Invalid engine file: bad magic {magic}")
 
             version = struct.unpack("<I", f.read(4))[0]
-            if version != 1:
+            if version not in (1, 2):
                 raise ValueError(f"Unsupported engine version: {version}")
 
             # Counts
@@ -645,6 +733,26 @@ class GraphEngine:
                 f.read(placements_len),
                 dtype=np.int8
             ).copy()  # Copy to make writable
+
+            # Board-strength proxy arrays
+            if version >= 2:
+                n = int(placements_len)
+                engine.item_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+                engine.component_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+                engine.completed_item_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+                engine.unit_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+                engine.two_star_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+                engine.three_star_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+                engine.unit_gold_value = np.frombuffer(f.read(n * 4), dtype=np.int32).copy()
+            else:
+                n = int(placements_len)
+                engine.item_count = np.zeros(n, dtype=np.int16)
+                engine.component_count = np.zeros(n, dtype=np.int16)
+                engine.completed_item_count = np.zeros(n, dtype=np.int16)
+                engine.unit_count = np.zeros(n, dtype=np.int16)
+                engine.two_star_count = np.zeros(n, dtype=np.int16)
+                engine.three_star_count = np.zeros(n, dtype=np.int16)
+                engine.unit_gold_value = np.zeros(n, dtype=np.int32)
 
             # All players bitmap
             all_players_len = struct.unpack("<I", f.read(4))[0]

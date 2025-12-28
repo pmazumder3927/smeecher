@@ -20,6 +20,7 @@ import orjson
 from pyroaring import BitMap
 
 from .engine import GraphEngine
+from .features import TokenFeatureParams, build_sparse_feature_matrix, select_feature_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,100 +142,19 @@ def _rates_from_hist(hist: list[int]) -> dict[str, float]:
 
 
 def _select_features(engine: GraphEngine, params: ClusterParams) -> list[str]:
-    features: list[str] = []
-    if params.use_units:
-        # Only include base unit tokens (U:Unit). Star-level unit tokens (U:Unit:2)
-        # are filter-only and would otherwise bloat/fragment cluster signatures.
-        features.extend(
-            t for t in engine.id_to_token if t.startswith("U:") and t.count(":") == 1
-        )
-    if params.use_traits:
-        features.extend(
-            t
-            for t in engine.id_to_token
-            if t.startswith("T:") and t.count(":") == 1
-        )
-    if params.use_items:
-        features.extend(t for t in engine.id_to_token if t.startswith("I:"))
-
-    # Filter by global frequency (keeps feature space stable across queries)
-    filtered: list[str] = []
-    for t in features:
-        token_id = engine.token_to_id.get(t)
-        if token_id is None:
-            continue
-        stats = engine.tokens.get(token_id)
-        if stats is None:
-            continue
-        if stats.count >= params.min_token_freq:
-            filtered.append(t)
-
-    return filtered
-
-
-def _build_sparse_feature_matrix(
-    engine: GraphEngine,
-    base: BitMap,
-    base_ids: np.ndarray,
-    features: list[str],
-) -> tuple["csr_matrix", list[str], np.ndarray, list[np.ndarray]]:
-    """
-    Build a CSR sparse matrix X where rows are player_match_ids in `base_ids`
-    and columns are feature tokens. X[i, j] = 1 if pm_id includes token.
-
-    Returns:
-        X: csr_matrix[int8] shape (n_rows, n_features_kept)
-        kept_features: list[str]
-        base_counts: np.ndarray[int32] (#base rows with each feature)
-        feature_rows: list[np.ndarray[int32]] (row indices for each feature)
-    """
-    from scipy.sparse import csr_matrix
-
-    n_rows = int(base_ids.size)
-    if n_rows == 0 or not features:
-        return csr_matrix((n_rows, 0), dtype=np.int8), [], np.zeros((0,), dtype=np.int32), []
-
-    row_blocks: list[np.ndarray] = []
-    col_blocks: list[np.ndarray] = []
-
-    kept_features: list[str] = []
-    base_counts: list[int] = []
-    feature_rows: list[np.ndarray] = []
-
-    col_idx = 0
-    for token in features:
-        token_id = engine.token_to_id.get(token)
-        if token_id is None:
-            continue
-        token_stats = engine.tokens.get(token_id)
-        if token_stats is None:
-            continue
-
-        ids_list = (base & token_stats.bitmap).to_array()
-        if not ids_list:
-            continue
-
-        ids = np.array(ids_list, dtype=np.int64)
-        rows = np.searchsorted(base_ids, ids).astype(np.int32, copy=False)
-
-        kept_features.append(token)
-        base_counts.append(int(rows.size))
-        feature_rows.append(rows)
-
-        row_blocks.append(rows)
-        col_blocks.append(np.full(rows.shape, col_idx, dtype=np.int32))
-        col_idx += 1
-
-    n_cols = len(kept_features)
-    if n_cols == 0:
-        return csr_matrix((n_rows, 0), dtype=np.int8), [], np.zeros((0,), dtype=np.int32), []
-
-    row = np.concatenate(row_blocks)
-    col = np.concatenate(col_blocks)
-    data = np.ones(row.shape[0], dtype=np.int8)
-
-    X = csr_matrix((data, (row, col)), shape=(n_rows, n_cols), dtype=np.int8)
-    return X, kept_features, np.array(base_counts, dtype=np.int32), feature_rows
+    # Keep cluster signatures stable by using only base unit/trait tokens.
+    return select_feature_tokens(
+        engine,
+        TokenFeatureParams(
+            use_units=params.use_units,
+            use_traits=params.use_traits,
+            use_items=params.use_items,
+            use_equipped=False,
+            include_star_units=False,
+            include_tier_traits=False,
+            min_token_freq=params.min_token_freq,
+        ),
+    )
 
 
 def _signature_tokens(
@@ -349,7 +269,7 @@ def compute_clusters(engine: GraphEngine, tokens: list[str], params: ClusterPara
         return result
 
     features = _select_features(engine, params)
-    X, kept_features, base_counts, feature_rows = _build_sparse_feature_matrix(
+    X, kept_features, base_counts, feature_rows = build_sparse_feature_matrix(
         engine, base, base_ids, features
     )
 

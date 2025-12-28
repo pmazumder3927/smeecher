@@ -297,10 +297,11 @@
       (openItems
         ? (/\bworst|bad\b/.test(t) ? "harmful" : null) ??
           (/\bimpact\b/.test(t) ? "impact" : null) ??
+          (/\bnecessary|necessity\b/.test(t) ? "necessity" : null) ??
           (/\bbest|top\b/.test(t) ? "helpful" : null)
         : null);
     const sort =
-      sortRaw === "helpful" || sortRaw === "harmful" || sortRaw === "impact"
+      sortRaw === "helpful" || sortRaw === "harmful" || sortRaw === "impact" || sortRaw === "necessity"
         ? sortRaw
         : null;
 
@@ -418,7 +419,9 @@
           ? "Best first"
           : actions.item_explorer_sort_mode === "harmful"
             ? "Worst first"
-            : "Most impact";
+            : actions.item_explorer_sort_mode === "necessity"
+              ? "Most necessary"
+              : "Most impact";
       preview.push({
         token: `ui:item_explorer_sort:${actions.item_explorer_sort_mode}`,
         label: `Sort: ${label}`,

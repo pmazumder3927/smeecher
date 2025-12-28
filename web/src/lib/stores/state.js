@@ -45,7 +45,7 @@ export const itemPrefixFilters = writable(new Set());
 // Sidebar UI state
 export const itemExplorerOpen = writable(false);
 export const itemExplorerTab = writable('builds'); // builds | items
-export const itemExplorerSortMode = writable('helpful'); // helpful | harmful | impact
+export const itemExplorerSortMode = writable('helpful'); // helpful | harmful | impact | necessity
 export const itemExplorerUnit = writable(null);
 
 export const clusterExplorerOpen = writable(false);

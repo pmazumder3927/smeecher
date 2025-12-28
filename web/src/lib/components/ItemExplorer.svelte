@@ -1,5 +1,5 @@
 <script>
-    import { fetchUnitItems, fetchUnitBuild } from '../api.js';
+    import { fetchItemNecessity, fetchUnitItems, fetchUnitBuild } from '../api.js';
     import {
         selectedTokens,
         addToken,
@@ -23,6 +23,12 @@
     let error = null;
     let data = null;
     let buildData = null;
+
+    let necessityOpenItem = null;
+    let necessityLoadingItem = null;
+    let necessityErrorByItem = {};
+    let necessityByItem = {};
+    let necessityContextKey = '';
 
     let lastQueryKey = '';
     let stale = false;
@@ -56,9 +62,13 @@
 
     $: selectedUnit = $itemExplorerUnit;
 
-    // Keep all selected filters except the explored unit token (so other unit filters still apply)
+    // Keep all selected filters except *this unit's* own unit tokens (including star-level),
+    // since the explorer already conditions on unit presence and should default to "any star level".
     $: contextTokens = selectedUnit
-        ? $selectedTokens.filter(t => t !== `U:${selectedUnit}`)
+        ? $selectedTokens.filter(t => {
+            const parsed = parseToken(t);
+            return !(parsed.type === 'unit' && parsed.unit === selectedUnit);
+        })
         : $selectedTokens;
 
     // Clear stale results when switching the explored unit
@@ -71,9 +81,17 @@
 
     $: activeItemTypes = [...$itemTypeFilters];
     $: activeItemPrefixes = [...$itemPrefixFilters];
+    $: showNecessity = $itemExplorerSortMode === 'necessity';
 
     $: queryKey = `${selectedUnit ?? ''}|${$itemExplorerSortMode}|${activeItemTypes.slice().sort().join('|')}|${activeItemPrefixes.slice().sort().join('|')}|${contextTokens.slice().sort().join(',')}`;
     $: if ($itemExplorerOpen && lastQueryKey && queryKey !== lastQueryKey) stale = true;
+    $: if (queryKey !== necessityContextKey) {
+        necessityContextKey = queryKey;
+        necessityOpenItem = null;
+        necessityLoadingItem = null;
+        necessityErrorByItem = {};
+        necessityByItem = {};
+    }
 
     $: items = data?.items ?? [];
     $: builds = buildData?.builds ?? [];
@@ -174,10 +192,54 @@
         return `${pct.toFixed(1)}%`;
     }
 
+    function fmtPp(effect) {
+        if (effect === null || effect === undefined) return '';
+        const v = effect * 100;
+        const sign = v > 0 ? '+' : '';
+        return `${sign}${v.toFixed(1)}pp`;
+    }
+
+    function fmtCi(low, high) {
+        if (low === null || low === undefined || high === null || high === undefined) return '';
+        return `[${fmtPp(low)}, ${fmtPp(high)}]`;
+    }
+
     function deltaClass(delta) {
         if (delta < -0.1) return 'positive';
         if (delta > 0.1) return 'negative';
         return 'neutral';
+    }
+
+    function necessityClass(tau) {
+        if (tau > 0.01) return 'positive';
+        if (tau < -0.01) return 'negative';
+        return 'neutral';
+    }
+
+    async function toggleNecessity(itemRow) {
+        const itemName = itemRow?.item;
+        if (!selectedUnit || !itemName) return;
+
+        if (necessityOpenItem === itemName) {
+            necessityOpenItem = null;
+            return;
+        }
+
+        necessityOpenItem = itemName;
+        if (itemRow?.necessity) return;
+        if (necessityByItem[itemName]) return;
+
+        necessityLoadingItem = itemName;
+        necessityErrorByItem = { ...necessityErrorByItem, [itemName]: null };
+
+        try {
+            const res = await fetchItemNecessity(selectedUnit, itemName, contextTokens, { outcome: 'top4' });
+            necessityByItem = { ...necessityByItem, [itemName]: res };
+        } catch (e) {
+            necessityErrorByItem = { ...necessityErrorByItem, [itemName]: e?.message ?? String(e) };
+        } finally {
+            if (necessityLoadingItem === itemName) necessityLoadingItem = null;
+        }
     }
 </script>
 
@@ -302,6 +364,7 @@
                                 <option value="helpful">Best first</option>
                                 <option value="harmful">Worst first</option>
                                 <option value="impact">Most impact</option>
+                                <option value="necessity">Most necessary (AIPW)</option>
                             </select>
                         </label>
                     </div>
@@ -366,7 +429,18 @@
                             </div>
                         {:else}
                             {#each items as item, idx (item.item)}
-                                <button class="row item-row" on:click={() => addItem(item)}>
+                                <div
+                                    class="row item-row"
+                                    role="button"
+                                    tabindex="0"
+                                    on:click={() => addItem(item)}
+                                    on:keydown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                            e.preventDefault();
+                                            addItem(item);
+                                        }
+                                    }}
+                                >
                                     <div class="row-rank">#{idx + 1}</div>
                                     <div class="item-icon-wrapper">
                                         {#if itemIcon(item.item) && !hasIconFailed('item', item.item)}
@@ -391,12 +465,84 @@
                                     </div>
                                     <div class="row-metrics">
                                         <div class="row-avg"><AvgPlacement value={item.avg_placement} /></div>
-                                        <div class="row-delta {deltaClass(item.delta)}">
-                                            {fmtDelta(item.delta)}
+                                        <div
+                                            class="row-delta {showNecessity ? necessityClass(item.necessity?.tau ?? null) : deltaClass(item.delta)}"
+                                        >
+                                            {#if showNecessity}
+                                                {#if item.necessity?.tau !== null && item.necessity?.tau !== undefined}
+                                                    {fmtPp(item.necessity.tau)}
+                                                {:else}
+                                                    —
+                                                {/if}
+                                            {:else}
+                                                {fmtDelta(item.delta)}
+                                            {/if}
                                         </div>
                                     </div>
+                                    <button
+                                        class="necessity-btn"
+                                        title="Estimate necessity (AIPW ΔTop4)"
+                                        aria-label="Estimate necessity"
+                                        on:click|stopPropagation={() => toggleNecessity(item)}
+                                        disabled={necessityLoadingItem === item.item}
+                                    >
+                                        N
+                                    </button>
                                     <div class="add-icon">+</div>
-                                </button>
+                                </div>
+                                {#if necessityOpenItem === item.item}
+                                    <div class="necessity-panel">
+                                        {#if necessityLoadingItem === item.item}
+                                            <div class="necessity-row">Estimating…</div>
+                                        {:else if necessityErrorByItem[item.item]}
+                                            <div class="necessity-row error">{necessityErrorByItem[item.item]}</div>
+                                        {:else if item.necessity}
+                                            {@const r = item.necessity}
+                                            <div class="necessity-row">
+                                                <span class="k">AIPW ΔTop4</span>
+                                                <span class="v">{fmtPp(r.tau)}</span>
+                                                <span class="ci">{fmtCi(r.ci95_low, r.ci95_high)}</span>
+                                            </div>
+                                            <div class="necessity-row meta">
+                                                <span>{r.n_treated.toLocaleString()} with</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{r.n_control.toLocaleString()} without</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{r.n_used.toLocaleString()} used</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{Math.round(r.frac_trimmed * 100)}% trimmed</span>
+                                            </div>
+                                            {#if r.warnings?.length}
+                                                {#each r.warnings as w (w)}
+                                                    <div class="necessity-row warn">{w}</div>
+                                                {/each}
+                                            {/if}
+                                        {:else if necessityByItem[item.item]?.effect}
+                                            {@const r = necessityByItem[item.item]}
+                                            <div class="necessity-row">
+                                                <span class="k">AIPW ΔTop4</span>
+                                                <span class="v">{fmtPp(r.effect.tau)}</span>
+                                                <span class="ci">{fmtCi(r.effect.ci95_low, r.effect.ci95_high)}</span>
+                                            </div>
+                                            <div class="necessity-row meta">
+                                                <span>{r.treatment.n_treated.toLocaleString()} with</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{r.treatment.n_control.toLocaleString()} without</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{r.overlap.n_used.toLocaleString()} used</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{Math.round(r.overlap.frac_trimmed * 100)}% trimmed</span>
+                                            </div>
+                                            {#if r.warnings?.length}
+                                                {#each r.warnings as w (w)}
+                                                    <div class="necessity-row warn">{w}</div>
+                                                {/each}
+                                            {/if}
+                                        {:else}
+                                            <div class="necessity-row meta">No estimate available.</div>
+                                        {/if}
+                                    </div>
+                                {/if}
                             {/each}
                         {/if}
                     {/if}
@@ -968,6 +1114,85 @@
 
     .stat-sep {
         opacity: 0.5;
+    }
+
+    .necessity-btn {
+        width: 26px;
+        height: 22px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text-tertiary);
+        font-weight: 900;
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        cursor: pointer;
+        flex-shrink: 0;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .necessity-btn:hover {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text-secondary);
+    }
+
+    .necessity-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+    }
+
+    .necessity-panel {
+        border-bottom: 1px solid var(--border);
+        padding: 8px 14px 10px 58px;
+        background: rgba(255, 255, 255, 0.02);
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .necessity-row {
+        font-size: 11px;
+        color: var(--text-secondary);
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        flex-wrap: wrap;
+        line-height: 1.3;
+    }
+
+    .necessity-row .k {
+        font-weight: 900;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        font-size: 10px;
+        color: var(--text-tertiary);
+    }
+
+    .necessity-row .v {
+        font-weight: 900;
+        font-size: 12px;
+        color: var(--text-primary);
+    }
+
+    .necessity-row .ci {
+        color: var(--text-tertiary);
+        font-size: 10px;
+    }
+
+    .necessity-row.meta {
+        color: var(--text-tertiary);
+        font-size: 10px;
+    }
+
+    .necessity-row.warn {
+        color: var(--warning);
+        font-size: 10px;
+    }
+
+    .necessity-row.error {
+        color: var(--error);
+        font-size: 10px;
     }
 
     @media (max-width: 768px) {

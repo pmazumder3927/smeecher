@@ -216,3 +216,32 @@ export async function fetchUnitBuild(unit, tokens = [], options = {}) {
 
     return response.json();
 }
+
+/**
+ * Fetch doubly-robust "necessity" estimate for an item on a unit.
+ * @param {string} unit - Unit name (e.g., "KaiSa")
+ * @param {string} item - Item id (e.g., "GuinsoosRageblade")
+ * @param {string[]} tokens - Additional filter tokens
+ * @param {Object} options
+ * @param {string} options.outcome - top4 | win | placement | rank_score
+ * @param {boolean} options.byCluster - Include coarse CATE map
+ */
+export async function fetchItemNecessity(unit, item, tokens = [], options = {}) {
+    const { outcome = 'top4', byCluster = false } = options;
+    const tokensParam = tokens.join(',');
+    const search = new URLSearchParams({
+        unit,
+        item,
+        tokens: tokensParam,
+        outcome,
+        by_cluster: byCluster ? '1' : '0',
+        t: String(Date.now())
+    });
+
+    const response = await fetch(`${API_BASE}/item-necessity?${search.toString()}`);
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+        throw new Error(data?.detail || 'Failed to fetch item necessity');
+    }
+    return data;
+}
