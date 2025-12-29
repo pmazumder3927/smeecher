@@ -65,6 +65,20 @@ class GraphEngine:
         'two_star_count',
         'three_star_count',
         'unit_gold_value',
+        # Precomputed causal "necessity" cache (engine.bin v3+)
+        'necessity_top4_ready',
+        'necessity_top4_tau',
+        'necessity_top4_ci95_low',
+        'necessity_top4_ci95_high',
+        'necessity_top4_se',
+        'necessity_top4_raw_tau',
+        'necessity_top4_frac_trimmed',
+        'necessity_top4_e_p01',
+        'necessity_top4_e_p99',
+        'necessity_top4_n_treated',
+        'necessity_top4_n_control',
+        'necessity_top4_n_used',
+        'necessity_top4_scope_min_star',
     )
 
     def __init__(self):
@@ -82,6 +96,255 @@ class GraphEngine:
         self.two_star_count: np.ndarray | None = None
         self.three_star_count: np.ndarray | None = None
         self.unit_gold_value: np.ndarray | None = None
+        self.necessity_top4_ready: bool = False
+        self.necessity_top4_tau: np.ndarray | None = None
+        self.necessity_top4_ci95_low: np.ndarray | None = None
+        self.necessity_top4_ci95_high: np.ndarray | None = None
+        self.necessity_top4_se: np.ndarray | None = None
+        self.necessity_top4_raw_tau: np.ndarray | None = None
+        self.necessity_top4_frac_trimmed: np.ndarray | None = None
+        self.necessity_top4_e_p01: np.ndarray | None = None
+        self.necessity_top4_e_p99: np.ndarray | None = None
+        self.necessity_top4_n_treated: np.ndarray | None = None
+        self.necessity_top4_n_control: np.ndarray | None = None
+        self.necessity_top4_n_used: np.ndarray | None = None
+        self.necessity_top4_scope_min_star: np.ndarray | None = None
+
+    def init_necessity_cache_top4(self) -> None:
+        """Initialize in-memory arrays for the top4 necessity cache (engine.bin v3+)."""
+        n_tokens = len(self.id_to_token)
+        self.necessity_top4_tau = np.full((n_tokens,), np.nan, dtype=np.float32)
+        self.necessity_top4_ci95_low = np.full((n_tokens,), np.nan, dtype=np.float32)
+        self.necessity_top4_ci95_high = np.full((n_tokens,), np.nan, dtype=np.float32)
+        self.necessity_top4_se = np.full((n_tokens,), np.nan, dtype=np.float32)
+        self.necessity_top4_raw_tau = np.full((n_tokens,), np.nan, dtype=np.float32)
+        self.necessity_top4_frac_trimmed = np.full((n_tokens,), np.nan, dtype=np.float32)
+        self.necessity_top4_e_p01 = np.full((n_tokens,), np.nan, dtype=np.float32)
+        self.necessity_top4_e_p99 = np.full((n_tokens,), np.nan, dtype=np.float32)
+        self.necessity_top4_n_treated = np.zeros((n_tokens,), dtype=np.int32)
+        self.necessity_top4_n_control = np.zeros((n_tokens,), dtype=np.int32)
+        self.necessity_top4_n_used = np.zeros((n_tokens,), dtype=np.int32)
+        # 0 = unknown/unset; 1..6 = min star level for unit scope used to compute the estimate.
+        self.necessity_top4_scope_min_star = np.zeros((n_tokens,), dtype=np.uint8)
+
+    def precompute_necessity_cache_top4(
+        self,
+        *,
+        min_token_freq: int = 25,
+        min_group: int = 100,
+        overlap_min: float = 0.05,
+        overlap_max: float = 0.95,
+        n_splits: int = 2,
+        max_rows_per_unit: int | None = 80_000,
+        auto_unit_stars_min: bool = True,
+        star2plus_share_threshold: float = 0.7,
+        star2plus_min_rows: int = 2000,
+        max_units: int | None = None,
+        only_units: list[str] | None = None,
+    ) -> None:
+        """
+        Precompute AIPW ΔTop4 "necessity" for each equipped token E:Unit|Item.
+
+        This cache is intended to make the default "Most necessary" unit-items view fast
+        without fitting thousands of causal models at request time.
+
+        Notes:
+          - Effects are computed in a base context of "unit present" (optionally restricted
+            to 2★+ when 2★+ dominates the sample).
+          - Only units/traits are used as token features (no items/equipped in X).
+          - Board-strength proxies are adjusted to use rest-of-board item counts
+            (subtracting all items equipped on the unit).
+        """
+        from .causal import AIPWConfig, OverlapError, aipw_ate, placements_to_outcome
+        from .features import (
+            TokenFeatureParams,
+            build_sparse_feature_matrix,
+            board_strength_features,
+            select_feature_tokens,
+        )
+
+        from scipy.sparse import csr_matrix, hstack
+
+        if self.placements is None or not self.id_to_token:
+            raise ValueError("Engine must be built/loaded before precomputing necessity cache")
+
+        self.init_necessity_cache_top4()
+
+        # Global feature pool (filtered by global frequency); exclude the current unit per-scope.
+        feature_pool = select_feature_tokens(
+            self,
+            TokenFeatureParams(
+                use_units=True,
+                use_traits=True,
+                use_items=False,
+                use_equipped=False,
+                include_star_units=False,
+                include_tier_traits=True,
+                min_token_freq=min_token_freq,
+            ),
+            exclude=set(),
+        )
+
+        rng = np.random.default_rng(42)
+        unit_tokens = [t for t in self.id_to_token if t.startswith("U:") and t.count(":") == 1]
+        if only_units:
+            allowed = {u.strip() for u in only_units if u and u.strip()}
+            unit_tokens = [t for t in unit_tokens if t[2:] in allowed]
+        unit_tokens.sort()
+        if max_units is not None:
+            unit_tokens = unit_tokens[: int(max_units)]
+
+        total_units = len(unit_tokens)
+        for i, unit_token in enumerate(unit_tokens, start=1):
+            unit = unit_token[2:]
+            base_bitmap_full = self.filter_bitmap([unit_token], [])
+            if not base_bitmap_full:
+                continue
+
+            scope_min_star = 1
+            star2plus_bm = BitMap()
+            if auto_unit_stars_min:
+                for s in range(2, 7):
+                    star_tok = f"U:{unit}:{s}"
+                    token_id = self.token_to_id.get(star_tok)
+                    if token_id is None:
+                        continue
+                    stats = self.tokens.get(token_id)
+                    if stats is None:
+                        continue
+                    star2plus_bm |= stats.bitmap
+
+                if star2plus_bm:
+                    n_all = len(base_bitmap_full)
+                    n_2p = len(base_bitmap_full & star2plus_bm)
+                    if n_all > 0 and n_2p >= star2plus_min_rows and (n_2p / float(n_all)) >= star2plus_share_threshold:
+                        scope_min_star = 2
+
+            if scope_min_star >= 2 and star2plus_bm:
+                base_bitmap_full &= star2plus_bm
+
+            n_base_full = int(len(base_bitmap_full))
+            if n_base_full < max(500, min_group * 3):
+                continue
+
+            base_ids_full = np.array(base_bitmap_full.to_array(), dtype=np.int64)
+            base_bitmap_model = base_bitmap_full
+            base_ids = base_ids_full
+            if max_rows_per_unit is not None and base_ids_full.size > int(max_rows_per_unit):
+                sel = rng.choice(base_ids_full.size, size=int(max_rows_per_unit), replace=False)
+                base_ids = np.sort(base_ids_full[sel])
+                base_bitmap_model = BitMap(base_ids)
+
+            placements = self.placements[base_ids].astype(np.int16, copy=False)
+            y, kind = placements_to_outcome(placements, "top4")
+
+            feature_tokens = [t for t in feature_pool if t != unit_token]
+            X_tok, _, _, _ = build_sparse_feature_matrix(self, base_bitmap_model, base_ids, feature_tokens)
+
+            # Board-strength proxy features (rest-of-board counts).
+            Z_full = board_strength_features(self, base_ids).astype(np.float32, copy=False)
+            unit_item_count = np.zeros((base_ids.size,), dtype=np.float32)
+            unit_component_count = np.zeros((base_ids.size,), dtype=np.float32)
+            unit_completed_count = np.zeros((base_ids.size,), dtype=np.float32)
+
+            prefix = f"E:{unit}|"
+            equipped_tokens = [t for t in self.id_to_token if t.startswith(prefix)]
+            equipped_token_ids: list[int] = []
+            for eq_tok in equipped_tokens:
+                tok_id = self.token_to_id.get(eq_tok)
+                tok_stats = self.tokens.get(tok_id) if tok_id is not None else None
+                if tok_id is None or tok_stats is None:
+                    continue
+                equipped_token_ids.append(int(tok_id))
+
+                bm = base_bitmap_model & tok_stats.bitmap
+                if not bm:
+                    continue
+                ids = np.array(bm.to_array(), dtype=np.int64)
+                rows = np.searchsorted(base_ids, ids).astype(np.int64, copy=False)
+                unit_item_count[rows] += 1.0
+
+                item_name = eq_tok.split("|", 1)[1]
+                if get_item_type(item_name) == "component":
+                    unit_component_count[rows] += 1.0
+                else:
+                    unit_completed_count[rows] += 1.0
+
+            other_item_count = np.clip(Z_full[:, 0] - unit_item_count, 0.0, None)
+            other_component_count = np.clip(Z_full[:, 1] - unit_component_count, 0.0, None)
+            other_completed_count = np.clip(Z_full[:, 2] - unit_completed_count, 0.0, None)
+            Z = np.stack(
+                [
+                    other_item_count,
+                    other_component_count,
+                    other_completed_count,
+                    Z_full[:, 3],
+                    Z_full[:, 4],
+                    Z_full[:, 5],
+                    Z_full[:, 6],
+                ],
+                axis=1,
+            )
+            X = hstack([X_tok.astype(np.float32), csr_matrix(Z, dtype=np.float32)], format="csr")
+
+            cfg = AIPWConfig(
+                n_splits=n_splits,
+                random_state=42,
+                clip_eps=0.01,
+                trim_low=overlap_min,
+                trim_high=overlap_max,
+            )
+
+            computed = 0
+            for token_id in equipped_token_ids:
+                tok_stats = self.tokens.get(token_id)
+                if tok_stats is None:
+                    continue
+
+                treated_bm_full = base_bitmap_full & tok_stats.bitmap
+                n_treated_full = int(len(treated_bm_full))
+                n_control_full = int(n_base_full - n_treated_full)
+                if n_treated_full < min_group or n_control_full < min_group:
+                    continue
+
+                treated_bm = base_bitmap_model & tok_stats.bitmap
+                treated_ids = np.array(treated_bm.to_array(), dtype=np.int64)
+                T = np.zeros((base_ids.size,), dtype=np.int8)
+                if treated_ids.size:
+                    idxs = np.searchsorted(base_ids, treated_ids).astype(np.int64, copy=False)
+                    T[idxs] = 1
+
+                n_treated_model = int(T.sum())
+                n_control_model = int(base_ids.size - n_treated_model)
+                if n_treated_model < min_group or n_control_model < min_group:
+                    continue
+
+                raw_tau = float(y[T == 1].mean() - y[T == 0].mean())
+                try:
+                    est, _, _, _ = aipw_ate(X, T, y, kind=kind, cfg=cfg)
+                except OverlapError:
+                    continue
+                except Exception:
+                    continue
+
+                self.necessity_top4_tau[token_id] = float(est.tau)
+                self.necessity_top4_ci95_low[token_id] = float(est.ci95_low)
+                self.necessity_top4_ci95_high[token_id] = float(est.ci95_high)
+                self.necessity_top4_se[token_id] = float(est.se)
+                self.necessity_top4_raw_tau[token_id] = float(raw_tau)
+                self.necessity_top4_frac_trimmed[token_id] = float(est.frac_trimmed)
+                self.necessity_top4_e_p01[token_id] = float(est.e_p01)
+                self.necessity_top4_e_p99[token_id] = float(est.e_p99)
+                self.necessity_top4_n_treated[token_id] = int(n_treated_full)
+                self.necessity_top4_n_control[token_id] = int(n_control_full)
+                self.necessity_top4_n_used[token_id] = int(est.n_used)
+                self.necessity_top4_scope_min_star[token_id] = int(scope_min_star)
+                computed += 1
+
+            if computed:
+                print(f"[{i}/{total_units}] {unit}: computed {computed} necessity estimates (n={n_base_full}, scope>= {scope_min_star}★)")
+
+        self.necessity_top4_ready = bool(np.isfinite(self.necessity_top4_tau).any())
 
     def _get_or_create_token_id(self, token: str) -> TokenId:
         """Get existing token ID or create new one."""
@@ -648,7 +911,7 @@ class GraphEngine:
         with open(path, "wb") as f:
             # Magic + version
             f.write(b"SMEE")
-            f.write(struct.pack("<I", 2))  # Version 2
+            f.write(struct.pack("<I", 3))  # Version 3
 
             # Counts
             f.write(struct.pack("<QQQ",
@@ -707,6 +970,37 @@ class GraphEngine:
                     f.write(struct.pack("<I", 0))
                     f.write(struct.pack("<qi", 0, 0))
 
+            # Precomputed necessity cache (Version 3+).
+            n_tokens = len(self.id_to_token)
+
+            def _float_arr(arr: np.ndarray | None) -> np.ndarray:
+                if arr is None or arr.shape[0] != n_tokens:
+                    return np.full((n_tokens,), np.nan, dtype=np.float32)
+                return arr.astype(np.float32, copy=False)
+
+            def _int_arr(arr: np.ndarray | None) -> np.ndarray:
+                if arr is None or arr.shape[0] != n_tokens:
+                    return np.zeros((n_tokens,), dtype=np.int32)
+                return arr.astype(np.int32, copy=False)
+
+            def _u8_arr(arr: np.ndarray | None) -> np.ndarray:
+                if arr is None or arr.shape[0] != n_tokens:
+                    return np.zeros((n_tokens,), dtype=np.uint8)
+                return arr.astype(np.uint8, copy=False)
+
+            f.write(_float_arr(self.necessity_top4_tau).tobytes())
+            f.write(_float_arr(self.necessity_top4_ci95_low).tobytes())
+            f.write(_float_arr(self.necessity_top4_ci95_high).tobytes())
+            f.write(_float_arr(self.necessity_top4_se).tobytes())
+            f.write(_float_arr(self.necessity_top4_raw_tau).tobytes())
+            f.write(_float_arr(self.necessity_top4_frac_trimmed).tobytes())
+            f.write(_float_arr(self.necessity_top4_e_p01).tobytes())
+            f.write(_float_arr(self.necessity_top4_e_p99).tobytes())
+            f.write(_int_arr(self.necessity_top4_n_treated).tobytes())
+            f.write(_int_arr(self.necessity_top4_n_control).tobytes())
+            f.write(_int_arr(self.necessity_top4_n_used).tobytes())
+            f.write(_u8_arr(self.necessity_top4_scope_min_star).tobytes())
+
         print(f"Saved engine to {path} ({Path(path).stat().st_size / 1024 / 1024:.2f} MB)")
 
     @classmethod
@@ -721,8 +1015,10 @@ class GraphEngine:
                 raise ValueError(f"Invalid engine file: bad magic {magic}")
 
             version = struct.unpack("<I", f.read(4))[0]
-            if version not in (1, 2):
-                raise ValueError(f"Unsupported engine version: {version}")
+            if version != 3:
+                raise ValueError(
+                    f"Unsupported engine version: {version} (expected 3). Rebuild engine.bin with smeecher-build."
+                )
 
             # Counts
             placements_len, num_tokens, total_matches = struct.unpack("<QQQ", f.read(24))
@@ -734,25 +1030,15 @@ class GraphEngine:
                 dtype=np.int8
             ).copy()  # Copy to make writable
 
-            # Board-strength proxy arrays
-            if version >= 2:
-                n = int(placements_len)
-                engine.item_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
-                engine.component_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
-                engine.completed_item_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
-                engine.unit_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
-                engine.two_star_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
-                engine.three_star_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
-                engine.unit_gold_value = np.frombuffer(f.read(n * 4), dtype=np.int32).copy()
-            else:
-                n = int(placements_len)
-                engine.item_count = np.zeros(n, dtype=np.int16)
-                engine.component_count = np.zeros(n, dtype=np.int16)
-                engine.completed_item_count = np.zeros(n, dtype=np.int16)
-                engine.unit_count = np.zeros(n, dtype=np.int16)
-                engine.two_star_count = np.zeros(n, dtype=np.int16)
-                engine.three_star_count = np.zeros(n, dtype=np.int16)
-                engine.unit_gold_value = np.zeros(n, dtype=np.int32)
+            # Board-strength proxy arrays (Version 3).
+            n = int(placements_len)
+            engine.item_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+            engine.component_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+            engine.completed_item_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+            engine.unit_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+            engine.two_star_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+            engine.three_star_count = np.frombuffer(f.read(n * 2), dtype=np.int16).copy()
+            engine.unit_gold_value = np.frombuffer(f.read(n * 4), dtype=np.int32).copy()
 
             # All players bitmap
             all_players_len = struct.unpack("<I", f.read(4))[0]
@@ -785,6 +1071,22 @@ class GraphEngine:
                     )
                 else:
                     f.read(12)  # Skip empty stats
+
+            # Precomputed necessity cache (Version 3).
+            n = int(num_tokens)
+            engine.necessity_top4_tau = np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
+            engine.necessity_top4_ci95_low = np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
+            engine.necessity_top4_ci95_high = np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
+            engine.necessity_top4_se = np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
+            engine.necessity_top4_raw_tau = np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
+            engine.necessity_top4_frac_trimmed = np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
+            engine.necessity_top4_e_p01 = np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
+            engine.necessity_top4_e_p99 = np.frombuffer(f.read(n * 4), dtype=np.float32).copy()
+            engine.necessity_top4_n_treated = np.frombuffer(f.read(n * 4), dtype=np.int32).copy()
+            engine.necessity_top4_n_control = np.frombuffer(f.read(n * 4), dtype=np.int32).copy()
+            engine.necessity_top4_n_used = np.frombuffer(f.read(n * 4), dtype=np.int32).copy()
+            engine.necessity_top4_scope_min_star = np.frombuffer(f.read(n), dtype=np.uint8).copy()
+            engine.necessity_top4_ready = bool(np.isfinite(engine.necessity_top4_tau).any())
 
         print(f"Loaded engine: {num_tokens} tokens, {total_matches} matches")
         return engine
@@ -980,6 +1282,9 @@ def build_engine(db_path: str = None, save_path: str = None):
     print(f"  Equipped: {stats['equipped_tokens']}")
     print(f"  Traits: {stats['trait_tokens']}")
     print(f"Placements array: {stats['placements_size_mb']:.2f} MB")
+
+    print("Precomputing AIPW necessity cache (top4)...")
+    engine.precompute_necessity_cache_top4()
 
     engine.save(save_path)
     return engine

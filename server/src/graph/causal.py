@@ -13,6 +13,45 @@ import math
 import numpy as np
 
 
+class OverlapError(ValueError):
+    """
+    Raised when propensity overlap (positivity) is too poor to estimate reliably.
+
+    Carries overlap diagnostics so callers can surface meaningful warnings.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        n: int,
+        n_used: int,
+        n_treated_used: int,
+        n_control_used: int,
+        trim_low: float | None,
+        trim_high: float | None,
+        e_min: float,
+        e_p01: float,
+        e_p50: float,
+        e_p99: float,
+        e_max: float,
+        frac_trimmed: float,
+    ) -> None:
+        super().__init__(message)
+        self.n = int(n)
+        self.n_used = int(n_used)
+        self.n_treated_used = int(n_treated_used)
+        self.n_control_used = int(n_control_used)
+        self.trim_low = trim_low
+        self.trim_high = trim_high
+        self.e_min = float(e_min)
+        self.e_p01 = float(e_p01)
+        self.e_p50 = float(e_p50)
+        self.e_p99 = float(e_p99)
+        self.e_max = float(e_max)
+        self.frac_trimmed = float(frac_trimmed)
+
+
 @dataclass(frozen=True, slots=True)
 class AIPWConfig:
     n_splits: int = 2
@@ -227,16 +266,37 @@ def aipw_ate(
         mu1_hat = np.clip(mu1_hat, 0.0, 1.0)
         mu0_hat = np.clip(mu0_hat, 0.0, 1.0)
 
+    qs = np.quantile(e_hat, [0.01, 0.50, 0.99])
+
     if cfg.trim_low is not None and cfg.trim_high is not None:
         used = (e_hat >= float(cfg.trim_low)) & (e_hat <= float(cfg.trim_high))
     else:
         used = np.ones((n,), dtype=bool)
 
     n_used = int(used.sum())
-    if n_used < max(100, int(0.1 * n)):
-        # If trimming nukes the sample, fall back to using everything (still clipped).
-        used = np.ones((n,), dtype=bool)
-        n_used = n
+    n_treated_used = int(T[used].sum())
+    n_control_used = int(n_used - n_treated_used)
+
+    # If trimming removes too much of the sample, the effect is not identifiable in this
+    # feature space (positivity violation). Don't silently fall back to "use everything",
+    # since clipped propensities can produce wildly unstable estimates.
+    min_used = max(200, int(0.05 * n))
+    if n_used < min_used or n_treated_used < 50 or n_control_used < 50:
+        raise OverlapError(
+            "Insufficient propensity overlap after trimming; effect is not reliably identifiable in this context.",
+            n=n,
+            n_used=n_used,
+            n_treated_used=n_treated_used,
+            n_control_used=n_control_used,
+            trim_low=cfg.trim_low,
+            trim_high=cfg.trim_high,
+            e_min=float(e_hat.min()),
+            e_p01=float(qs[0]),
+            e_p50=float(qs[1]),
+            e_p99=float(qs[2]),
+            e_max=float(e_hat.max()),
+            frac_trimmed=float(1.0 - (n_used / float(n))) if n else 1.0,
+        )
 
     T_f = T.astype(np.float64, copy=False)
     y_f = y.astype(np.float64, copy=False)
@@ -253,7 +313,6 @@ def aipw_ate(
     if math.isfinite(se) and se > 0:
         p_value = _normal_two_sided_p_value(tau / se)
 
-    qs = np.quantile(e_hat, [0.01, 0.50, 0.99])
     estimate = AIPWEstimate(
         tau=tau,
         se=se,

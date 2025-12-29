@@ -30,11 +30,15 @@
     let necessityByItem = {};
     let necessityContextKey = '';
 
-    let lastQueryKey = '';
+    let lastBuildQueryKey = '';
+    let lastItemsQueryKey = '';
+    let staleBuild = false;
+    let staleItems = false;
     let stale = false;
     let fetchVersion = 0;
 
     let lastSelectedUnit = null;
+    let sortHelpOpen = false;
 
     // Units available from the current filter selection
     $: availableUnits = (() => {
@@ -62,13 +66,10 @@
 
     $: selectedUnit = $itemExplorerUnit;
 
-    // Keep all selected filters except *this unit's* own unit tokens (including star-level),
-    // since the explorer already conditions on unit presence and should default to "any star level".
+    // Keep all selected filters except the explored unit token (so other unit filters still apply).
+    // Star-level tokens like U:Unit:2 are preserved, enabling users to opt into star-specific analysis.
     $: contextTokens = selectedUnit
-        ? $selectedTokens.filter(t => {
-            const parsed = parseToken(t);
-            return !(parsed.type === 'unit' && parsed.unit === selectedUnit);
-        })
+        ? $selectedTokens.filter(t => t !== `U:${selectedUnit}`)
         : $selectedTokens;
 
     // Clear stale results when switching the explored unit
@@ -83,10 +84,16 @@
     $: activeItemPrefixes = [...$itemPrefixFilters];
     $: showNecessity = $itemExplorerSortMode === 'necessity';
 
-    $: queryKey = `${selectedUnit ?? ''}|${$itemExplorerSortMode}|${activeItemTypes.slice().sort().join('|')}|${activeItemPrefixes.slice().sort().join('|')}|${contextTokens.slice().sort().join(',')}`;
-    $: if ($itemExplorerOpen && lastQueryKey && queryKey !== lastQueryKey) stale = true;
-    $: if (queryKey !== necessityContextKey) {
-        necessityContextKey = queryKey;
+    $: baseQueryKey = `${selectedUnit ?? ''}|${activeItemTypes.slice().sort().join('|')}|${activeItemPrefixes.slice().sort().join('|')}|${contextTokens.slice().sort().join(',')}`;
+    $: buildQueryKey = baseQueryKey;
+    $: itemsQueryKey = `${baseQueryKey}|${$itemExplorerSortMode}`;
+
+    $: if ($itemExplorerOpen && lastBuildQueryKey && buildQueryKey !== lastBuildQueryKey) staleBuild = true;
+    $: if ($itemExplorerOpen && lastItemsQueryKey && itemsQueryKey !== lastItemsQueryKey) staleItems = true;
+    $: stale = $itemExplorerTab === 'items' ? staleItems : staleBuild;
+
+    $: if (itemsQueryKey !== necessityContextKey) {
+        necessityContextKey = itemsQueryKey;
         necessityOpenItem = null;
         necessityLoadingItem = null;
         necessityErrorByItem = {};
@@ -98,9 +105,14 @@
     $: sidebarWidth = $itemExplorerOpen ? EXPANDED_WIDTH_PX : COLLAPSED_WIDTH_PX;
 
     // Auto-fetch when opening with a selected unit
-    $: if ($itemExplorerOpen && selectedUnit && (!data || stale)) {
-        run();
+    $: if ($itemExplorerOpen && selectedUnit) {
+        const needBuild = !buildData || staleBuild;
+        const needItems = $itemExplorerTab === 'items' && (!data || staleItems);
+        if (needBuild || needItems) run();
     }
+
+    // Close help popover when leaving the items tab
+    $: if ($itemExplorerTab !== 'items' && sortHelpOpen) sortHelpOpen = false;
 
     function toggleOpen() {
         const nextOpen = !$itemExplorerOpen;
@@ -110,7 +122,7 @@
             return;
         }
         posthog.capture('item_explorer_opened');
-        if (selectedUnit && !data) run();
+        if (selectedUnit && (!buildData || ($itemExplorerTab === 'items' && !data))) run();
     }
 
     async function run() {
@@ -120,22 +132,39 @@
         loading = true;
         error = null;
         stale = false;
-        lastQueryKey = queryKey;
+
+        const needBuild = !buildData || staleBuild;
+        const needItems = $itemExplorerTab === 'items' && (!data || staleItems);
 
         try {
-            // Fetch both build recommendation and all items in parallel
             const [buildResult, itemsResult] = await Promise.all([
-                fetchUnitBuild(selectedUnit, contextTokens, { slots: 3, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes }),
-                fetchUnitItems(selectedUnit, contextTokens, { sortMode: $itemExplorerSortMode, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes })
+                needBuild
+                    ? fetchUnitBuild(selectedUnit, contextTokens, { slots: 3, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes })
+                    : Promise.resolve(buildData),
+                needItems
+                    ? fetchUnitItems(selectedUnit, contextTokens, { sortMode: $itemExplorerSortMode, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes })
+                    : Promise.resolve(data)
             ]);
             if (version !== fetchVersion) return;
-            buildData = buildResult;
-            data = itemsResult;
+
+            if (needBuild) {
+                buildData = buildResult;
+                staleBuild = false;
+                lastBuildQueryKey = buildQueryKey;
+            }
+            if (needItems) {
+                data = itemsResult;
+                staleItems = false;
+                lastItemsQueryKey = itemsQueryKey;
+            }
+
             posthog.capture('item_explorer_run', {
                 unit: selectedUnit,
                 filter_count: contextTokens.length,
                 build_items: buildResult?.builds?.length ?? 0,
-                result_count: itemsResult?.items?.length ?? 0
+                result_count: itemsResult?.items?.length ?? 0,
+                tab: $itemExplorerTab,
+                sort_mode: $itemExplorerSortMode,
             });
         } catch (e) {
             if (version !== fetchVersion) return;
@@ -214,6 +243,14 @@
         if (tau > 0.01) return 'positive';
         if (tau < -0.01) return 'negative';
         return 'neutral';
+    }
+
+    function toggleSortHelp() {
+        sortHelpOpen = !sortHelpOpen;
+    }
+
+    function closeSortHelp() {
+        sortHelpOpen = false;
     }
 
     async function toggleNecessity(itemRow) {
@@ -359,7 +396,19 @@
                 {#if $itemExplorerTab === 'items'}
                     <div class="sort-bar">
                         <label class="select">
-                            <span>Sort</span>
+                            <span class="sort-label">
+                                Sort
+                                <button
+                                    type="button"
+                                    class="sort-help-btn"
+                                    title="How sorting works"
+                                    aria-label="How sorting works"
+                                    aria-expanded={sortHelpOpen}
+                                    on:click|stopPropagation={toggleSortHelp}
+                                >
+                                    ?
+                                </button>
+                            </span>
                             <select bind:value={$itemExplorerSortMode} on:change={run}>
                                 <option value="helpful">Best first</option>
                                 <option value="harmful">Worst first</option>
@@ -367,7 +416,88 @@
                                 <option value="necessity">Most necessary (AIPW)</option>
                             </select>
                         </label>
+                        {#if sortHelpOpen}
+                            <div class="sort-help" role="dialog" aria-label="Sort mode help">
+                                <div class="sort-help-header">
+                                    <div class="sort-help-title">How sorting works</div>
+                                    <button
+                                        type="button"
+                                        class="sort-help-close"
+                                        on:click|stopPropagation={closeSortHelp}
+                                        aria-label="Close sort help"
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+
+                                <div class="sort-help-section">
+                                    <div class="sort-help-mode">Most necessary (AIPW)</div>
+                                    <div class="sort-help-text">
+                                        Estimates how much the item <em>causally</em> increases your chance to Top4 when equipped on the selected unit.
+                                        It answers: “If two endgame boards look similar, what’s the expected Top4 difference if this unit has this item vs not?”
+                                    </div>
+                                    <div class="sort-help-text">
+                                        Inspired by <a href="https://tftable.cc/" target="_blank" rel="noopener noreferrer">TFTable</a>’s “Necessity” idea (“what do you lose when the item is missing?”),
+                                        but implemented as a doubly‑robust causal estimate instead of a baseline‑adjusted placement comparison. This helps reduce bias from strong boards being more likely to
+                                        have the components, tempo, and shops to build the item in the first place.
+                                    </div>
+                                    <div class="sort-help-text">
+                                        Under the hood:
+                                        <ul>
+                                            <li><span class="k">Treatment (T)</span>: this item is equipped on this unit (<code>E:Unit|Item</code>).</li>
+                                            <li><span class="k">Outcome (Y)</span>: Top4 (1 if placement ≤ 4, else 0).</li>
+                                            <li><span class="k">Context (X)</span>: the rest of the board (units + traits) and strength proxies (unit count, 2★/3★ count, gold-value proxy, and <em>rest-of-board</em> item counts).</li>
+                                        </ul>
+                                    </div>
+                                    <div class="sort-help-text">
+                                        We fit two models and combine them using a doubly‑robust estimator (AIPW):
+                                        a propensity model <code>P(T=1|X)</code> (how “buildable” the item is in that context) and outcome models for <code>E[Y|T=1,X]</code> and <code>E[Y|T=0,X]</code>.
+                                        If either the propensity model or the outcome models are reasonably accurate, AIPW still gives a good estimate.
+                                        We use cross‑fitting to reduce overfitting bias.
+                                    </div>
+                                    <div class="sort-help-text">
+                                        Reliability guardrails:
+                                        <ul>
+                                            <li><span class="k">Overlap trimming</span>: boards where the model says the item is almost never/always built are trimmed (positivity). High “trimmed %” means the estimate relies on a narrow slice of data.</li>
+                                            <li><span class="k">Auto 2★+ scope</span>: if most samples are 2★+, we automatically scope to 2★+ to avoid mixing “1★ desperation” boards. Add a star filter (e.g. <code>U:Unit:1</code>) to override.</li>
+                                        </ul>
+                                    </div>
+                                    <div class="sort-help-text">
+                                        Performance note: in the default unfiltered view, these necessity estimates are precomputed and load fast. If you add extra filters, we re‑estimate necessity for that specific context and it can take longer.
+                                    </div>
+                                    <div class="sort-help-text">
+                                        Interpreting the number: <span class="k">+3.0pp</span> means <em>+3 percentage points</em> Top4 chance (e.g. 52% → 55%), not “+3%”.
+                                    </div>
+                                </div>
+
+                                <div class="sort-help-section">
+                                    <div class="sort-help-mode">Best first</div>
+                                    <div class="sort-help-text">
+                                        Sorts by the item’s average placement when equipped on the selected unit (lower is better), with small‑sample shrinkage so rare items don’t jump to the top from noise.
+                                    </div>
+                                </div>
+
+                                <div class="sort-help-section">
+                                    <div class="sort-help-mode">Worst first</div>
+                                    <div class="sort-help-text">
+                                        The reverse of “Best first” (highest average placement at the top).
+                                    </div>
+                                </div>
+
+                                <div class="sort-help-section">
+                                    <div class="sort-help-mode">Most impact</div>
+                                    <div class="sort-help-text">
+                                        Sorts by absolute change in (shrunk) average placement versus the current filtered baseline — shows the most polarizing items first (good or bad).
+                                    </div>
+                                </div>
+                            </div>
+                        {/if}
                     </div>
+                    {#if showNecessity && data?.scope}
+                        <div class="scope-note">
+                            Necessity scope: {data.scope.unit_stars_min}★+{data.scope.auto ? ' (auto)' : ''}
+                        </div>
+                    {/if}
                 {/if}
 
                 <div class="list-container">
@@ -517,26 +647,44 @@
                                                     <div class="necessity-row warn">{w}</div>
                                                 {/each}
                                             {/if}
-                                        {:else if necessityByItem[item.item]?.effect}
+                                        {:else if necessityByItem[item.item]}
                                             {@const r = necessityByItem[item.item]}
-                                            <div class="necessity-row">
-                                                <span class="k">AIPW ΔTop4</span>
-                                                <span class="v">{fmtPp(r.effect.tau)}</span>
-                                                <span class="ci">{fmtCi(r.effect.ci95_low, r.effect.ci95_high)}</span>
-                                            </div>
-                                            <div class="necessity-row meta">
-                                                <span>{r.treatment.n_treated.toLocaleString()} with</span>
-                                                <span class="dot">&bull;</span>
-                                                <span>{r.treatment.n_control.toLocaleString()} without</span>
-                                                <span class="dot">&bull;</span>
-                                                <span>{r.overlap.n_used.toLocaleString()} used</span>
-                                                <span class="dot">&bull;</span>
-                                                <span>{Math.round(r.overlap.frac_trimmed * 100)}% trimmed</span>
-                                            </div>
+                                            {#if r.effect}
+                                                <div class="necessity-row">
+                                                    <span class="k">AIPW ΔTop4</span>
+                                                    <span class="v">{fmtPp(r.effect.tau)}</span>
+                                                    <span class="ci">{fmtCi(r.effect.ci95_low, r.effect.ci95_high)}</span>
+                                                </div>
+                                                <div class="necessity-row meta">
+                                                    <span>{r.treatment.n_treated.toLocaleString()} with</span>
+                                                    <span class="dot">&bull;</span>
+                                                    <span>{r.treatment.n_control.toLocaleString()} without</span>
+                                                    <span class="dot">&bull;</span>
+                                                    <span>{r.overlap.n_used.toLocaleString()} used</span>
+                                                    <span class="dot">&bull;</span>
+                                                    <span>{Math.round(r.overlap.frac_trimmed * 100)}% trimmed</span>
+                                                </div>
+                                            {:else if r.warning}
+                                                <div class="necessity-row warn">{r.warning}</div>
+                                                {#if r.overlap}
+                                                    <div class="necessity-row meta">
+                                                        <span>{r.treatment?.n_treated?.toLocaleString?.() ?? '—'} with</span>
+                                                        <span class="dot">&bull;</span>
+                                                        <span>{r.treatment?.n_control?.toLocaleString?.() ?? '—'} without</span>
+                                                        <span class="dot">&bull;</span>
+                                                        <span>{r.overlap?.n_used?.toLocaleString?.() ?? '—'} used</span>
+                                                        <span class="dot">&bull;</span>
+                                                        <span>{r.overlap?.frac_trimmed !== undefined ? Math.round(r.overlap.frac_trimmed * 100) : '—'}% trimmed</span>
+                                                    </div>
+                                                {/if}
+                                            {/if}
                                             {#if r.warnings?.length}
                                                 {#each r.warnings as w (w)}
                                                     <div class="necessity-row warn">{w}</div>
                                                 {/each}
+                                            {/if}
+                                            {#if !r.effect}
+                                                <div class="necessity-row meta">No estimate available.</div>
                                             {/if}
                                         {:else}
                                             <div class="necessity-row meta">No estimate available.</div>
@@ -832,6 +980,7 @@
 
     /* Sort bar */
     .sort-bar {
+        position: relative;
         display: flex;
         gap: 10px;
         padding: 8px 14px;
@@ -852,6 +1001,120 @@
         letter-spacing: 0.08em;
         font-weight: 700;
         color: var(--text-tertiary);
+    }
+
+    .sort-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .sort-help-btn {
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--bg-secondary);
+        color: var(--text-muted);
+        font-weight: 700;
+        font-size: 12px;
+        line-height: 16px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+    }
+
+    .sort-help-btn:hover {
+        color: var(--text);
+        border-color: var(--accent);
+    }
+
+    .sort-help {
+        position: absolute;
+        top: 48px;
+        left: 0;
+        right: 0;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+        padding: 12px 12px 6px;
+        z-index: 50;
+        max-height: 60vh;
+        overflow: auto;
+    }
+
+    .sort-help-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+    }
+
+    .sort-help-title {
+        font-weight: 700;
+        color: var(--text);
+    }
+
+    .sort-help-close {
+        border: 0;
+        background: transparent;
+        color: var(--text-muted);
+        font-size: 18px;
+        cursor: pointer;
+        padding: 4px 6px;
+        line-height: 1;
+        border-radius: 8px;
+    }
+
+    .sort-help-close:hover {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+    }
+
+    .sort-help-section {
+        padding: 10px 8px;
+        border-top: 1px solid var(--border);
+    }
+
+    .sort-help-section:first-of-type {
+        border-top: 0;
+        padding-top: 8px;
+    }
+
+    .sort-help-mode {
+        font-weight: 700;
+        margin-bottom: 6px;
+    }
+
+    .sort-help-text {
+        color: var(--text-muted);
+        font-size: 13px;
+        line-height: 1.4;
+        margin-bottom: 8px;
+    }
+
+    .sort-help-text ul {
+        margin: 6px 0 0 18px;
+        padding: 0;
+    }
+
+    .sort-help-text li {
+        margin: 4px 0;
+    }
+
+    .sort-help-text .k {
+        color: var(--text);
+        font-weight: 600;
+    }
+
+    .scope-note {
+        margin: 8px 12px 0;
+        font-size: 12px;
+        color: var(--text-muted);
     }
 
     .select select {

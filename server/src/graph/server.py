@@ -25,7 +25,7 @@ import httpx
 
 from .engine import GraphEngine, build_engine
 from .clustering import ClusterParams, compute_clusters, compute_cluster_playbook
-from .causal import AIPWConfig, aipw_ate, e_value_from_risk_ratio, placements_to_outcome
+from .causal import AIPWConfig, OverlapError, aipw_ate, e_value_from_risk_ratio, placements_to_outcome
 from .features import TokenFeatureParams, board_strength_features, build_sparse_feature_matrix, select_feature_tokens
 from .items import get_item_prefix, get_item_type
 
@@ -188,9 +188,19 @@ async def lifespan(app: FastAPI):
     db_path = data_dir / "smeecher.db"
 
     if engine_path.exists():
-        ENGINE = GraphEngine.load(str(engine_path))
-        stats = ENGINE.stats()
-        print(f"Engine ready: {stats['total_tokens']} tokens, {stats['total_matches']} matches")
+        try:
+            ENGINE = GraphEngine.load(str(engine_path))
+            stats = ENGINE.stats()
+            print(f"Engine ready: {stats['total_tokens']} tokens, {stats['total_matches']} matches")
+        except Exception as e:
+            print(f"Failed to load engine.bin ({e}).")
+            if db_path.exists():
+                print("Rebuilding engine from database...")
+                ENGINE = build_engine(str(db_path), str(engine_path))
+                stats = ENGINE.stats()
+                print(f"Engine ready: {stats['total_tokens']} tokens, {stats['total_matches']} matches")
+            else:
+                ENGINE = None
     elif db_path.exists():
         print("Engine not found, building from database...")
         ENGINE = build_engine(str(db_path), str(engine_path))
@@ -1854,7 +1864,7 @@ def get_unit_items(
     tokens: str = Query(default="", description="Additional filter tokens (comma-separated)"),
     min_sample: int = Query(default=30, description="Minimum sample size for inclusion"),
     top_k: int = Query(default=0, description="Max items to return (0 = unlimited)"),
-    sort_mode: str = Query(default="helpful", description="Sort mode: helpful (best avg), harmful (worst avg), impact (abs delta), necessity (AIPW ΔTop4)"),
+    sort_mode: str = Query(default="necessity", description="Sort mode: necessity (AIPW ΔTop4), helpful (best avg), harmful (worst avg), impact (abs delta)"),
     item_types: str = Query(
         default="",
         description="Item types to include (comma-separated): component, full, artifact, emblem, radiant",
@@ -1909,6 +1919,45 @@ def get_unit_items(
             "base": {"n": 0, "avg_placement": 4.5},
             "items": []
         }
+
+    scope = None
+    # In "necessity" mode, avoid mixing "1★ desperation" boards into carry-item estimates.
+    # If the unit's sample is dominated by 2★+ boards, auto-scope to 2★+ unless the
+    # user explicitly constrained star level via filters.
+    if sort_mode == "necessity":
+        scope = {"unit_stars_min": 1, "auto": False}
+        has_star_filter = any(t.startswith(f"U:{unit}:") for t in include_filters) or any(
+            t.startswith(f"U:{unit}:") for t in exclude_filters
+        )
+        if not has_star_filter:
+            from pyroaring import BitMap
+
+            star2plus_bm = BitMap()
+            for s in range(2, 7):
+                star_tok = f"U:{unit}:{s}"
+                token_id = ENGINE.token_to_id.get(star_tok)
+                if token_id is None:
+                    continue
+                stats = ENGINE.tokens.get(token_id)
+                if stats is None:
+                    continue
+                star2plus_bm |= stats.bitmap
+
+            if star2plus_bm:
+                n_all = len(base_bitmap)
+                n_2p = len(base_bitmap & star2plus_bm)
+                if n_all > 0 and n_2p >= 2000 and (n_2p / float(n_all)) >= 0.7:
+                    base_bitmap &= star2plus_bm
+                    n_base = len(base_bitmap)
+                    scope = {"unit_stars_min": 2, "auto": True}
+                    if n_base == 0:
+                        return {
+                            "unit": unit,
+                            "filters": filter_tokens,
+                            "base": {"n": 0, "avg_placement": 4.5},
+                            "items": [],
+                            "scope": scope,
+                        }
 
     avg_base = ENGINE.avg_placement_for_bitmap(base_bitmap)
 
@@ -1990,127 +2039,239 @@ def get_unit_items(
         results.sort(key=lambda x: x["delta"], reverse=True)
     elif sort_mode == "necessity":
         # Causal "necessity" sort: AIPW estimate of ΔTop4 for each item-on-unit treatment.
-        # This shares a single feature matrix X across items to avoid N× re-featurization.
-        from pyroaring import BitMap
-        from scipy.sparse import csr_matrix, hstack
-
+        # When possible (no additional filter tokens), use the engine.bin cache to avoid
+        # fitting thousands of models at request time.
         necessity_outcome = "top4"
-        max_rows = 80_000
-        min_token_freq = max(50, int(min_sample))
-        overlap_min = 0.05
-        overlap_max = 0.95
-        min_group = max(100, int(min_sample))
+        use_cache = bool(
+            getattr(ENGINE, "necessity_top4_ready", False)
+            and not include_filters
+            and not exclude_filters
+            and scope is not None
+        )
 
-        base_ids_full = np.array(base_bitmap.to_array(), dtype=np.int64)
-        rng = np.random.default_rng(42)
-        if base_ids_full.size > max_rows:
-            sel = rng.choice(base_ids_full.size, size=max_rows, replace=False)
-            base_ids = np.sort(base_ids_full[sel])
-            base_bitmap_model = BitMap(base_ids)
+        if use_cache:
+            scope_min_star = int(scope.get("unit_stars_min") or 1)
+            for row in results:
+                eq_token = row.get("token")
+                token_id = ENGINE.token_to_id.get(eq_token) if isinstance(eq_token, str) else None
+                if token_id is None:
+                    row["necessity"] = None
+                    continue
+
+                stored_scope = int(ENGINE.necessity_top4_scope_min_star[token_id])
+                if stored_scope and stored_scope != scope_min_star:
+                    row["necessity"] = None
+                    continue
+
+                tau = float(ENGINE.necessity_top4_tau[token_id])
+                if not np.isfinite(tau):
+                    row["necessity"] = None
+                    continue
+
+                ci_low = float(ENGINE.necessity_top4_ci95_low[token_id])
+                ci_high = float(ENGINE.necessity_top4_ci95_high[token_id])
+                se = float(ENGINE.necessity_top4_se[token_id])
+                raw_tau = float(ENGINE.necessity_top4_raw_tau[token_id])
+                frac_trimmed = float(ENGINE.necessity_top4_frac_trimmed[token_id])
+                e_p01 = float(ENGINE.necessity_top4_e_p01[token_id])
+                e_p99 = float(ENGINE.necessity_top4_e_p99[token_id])
+
+                warnings: list[str] = []
+                if np.isfinite(frac_trimmed) and frac_trimmed > 0.5:
+                    warnings.append("Low overlap: large fraction of samples trimmed by propensity bounds.")
+                if np.isfinite(e_p01) and np.isfinite(e_p99) and (e_p01 < 0.02 or e_p99 > 0.98):
+                    warnings.append("Positivity warning: propensity is near 0/1 in parts of X (effect may be unstable).")
+
+                row["necessity"] = {
+                    "method": "aipw",
+                    "outcome": necessity_outcome,
+                    "tau": round(tau, 6),
+                    "ci95_low": round(ci_low, 6) if np.isfinite(ci_low) else None,
+                    "ci95_high": round(ci_high, 6) if np.isfinite(ci_high) else None,
+                    "se": round(se, 6) if np.isfinite(se) else None,
+                    "p_value": None,
+                    "raw_tau": round(raw_tau, 6) if np.isfinite(raw_tau) else None,
+                    "n_treated": int(ENGINE.necessity_top4_n_treated[token_id]),
+                    "n_control": int(ENGINE.necessity_top4_n_control[token_id]),
+                    "n_used": int(ENGINE.necessity_top4_n_used[token_id]),
+                    "frac_trimmed": round(frac_trimmed, 6) if np.isfinite(frac_trimmed) else None,
+                    "e_p01": round(e_p01, 6) if np.isfinite(e_p01) else None,
+                    "e_p50": None,
+                    "e_p99": round(e_p99, 6) if np.isfinite(e_p99) else None,
+                    "risk_ratio": None,
+                    "e_value": None,
+                    "warnings": warnings,
+                    "cached": True,
+                    "scope_min_star": stored_scope or scope_min_star,
+                }
         else:
-            base_ids = base_ids_full
-            base_bitmap_model = base_bitmap
+            # Fall back to per-request estimation (needed when additional filter tokens are applied).
+            from pyroaring import BitMap
+            from scipy.sparse import csr_matrix, hstack
 
-        placements = ENGINE.placements[base_ids].astype(np.int16, copy=False)
-        y, kind = placements_to_outcome(placements, necessity_outcome)
+            max_rows = 80_000
+            min_token_freq = max(50, int(min_sample))
+            overlap_min = 0.05
+            overlap_max = 0.95
+            min_group = max(100, int(min_sample))
 
-        feature_tokens = select_feature_tokens(
-            ENGINE,
-            TokenFeatureParams(
-                use_units=True,
-                use_traits=True,
-                use_items=False,
-                use_equipped=False,
-                include_star_units=False,
-                include_tier_traits=True,
-                min_token_freq=min_token_freq,
-            ),
-            exclude={unit_token},
-        )
+            base_ids_full = np.array(base_bitmap.to_array(), dtype=np.int64)
+            rng = np.random.default_rng(42)
+            if base_ids_full.size > max_rows:
+                sel = rng.choice(base_ids_full.size, size=max_rows, replace=False)
+                base_ids = np.sort(base_ids_full[sel])
+                base_bitmap_model = BitMap(base_ids)
+            else:
+                base_ids = base_ids_full
+                base_bitmap_model = base_bitmap
 
-        X_tok, _, _, _ = build_sparse_feature_matrix(ENGINE, base_bitmap_model, base_ids, feature_tokens)
-        Z = board_strength_features(ENGINE, base_ids)
-        X = hstack([X_tok.astype(np.float32), csr_matrix(Z, dtype=np.float32)], format="csr")
+            placements = ENGINE.placements[base_ids].astype(np.int16, copy=False)
+            y, kind = placements_to_outcome(placements, necessity_outcome)
 
-        cfg = AIPWConfig(
-            n_splits=2,
-            random_state=42,
-            clip_eps=0.01,
-            trim_low=overlap_min,
-            trim_high=overlap_max,
-        )
+            feature_tokens = select_feature_tokens(
+                ENGINE,
+                TokenFeatureParams(
+                    use_units=True,
+                    use_traits=True,
+                    use_items=False,
+                    use_equipped=False,
+                    include_star_units=False,
+                    include_tier_traits=True,
+                    min_token_freq=min_token_freq,
+                ),
+                exclude={unit_token},
+            )
 
-        for row in results:
-            eq_token = row.get("token")
-            token_id = ENGINE.token_to_id.get(eq_token) if isinstance(eq_token, str) else None
-            token_stats = ENGINE.tokens.get(token_id) if token_id is not None else None
-            if token_stats is None:
-                row["necessity"] = None
-                continue
+            X_tok, _, _, _ = build_sparse_feature_matrix(ENGINE, base_bitmap_model, base_ids, feature_tokens)
+            X_tok_f = X_tok.astype(np.float32)
 
-            treated_bm = base_bitmap_model & token_stats.bitmap
-            n_treated = len(treated_bm)
-            n_control = int(base_ids.size - n_treated)
-            if n_treated < min_group or n_control < min_group:
-                row["necessity"] = None
-                continue
+            # Rest-of-board strength proxies (avoid conditioning on the unit's own items).
+            Z_full = board_strength_features(ENGINE, base_ids).astype(np.float32, copy=False)
+            unit_item_count = np.zeros((base_ids.size,), dtype=np.float32)
+            unit_component_count = np.zeros((base_ids.size,), dtype=np.float32)
+            unit_completed_count = np.zeros((base_ids.size,), dtype=np.float32)
 
-            treated_ids = np.array(treated_bm.to_array(), dtype=np.int64)
-            T = np.zeros((base_ids.size,), dtype=np.int8)
-            if treated_ids.size:
-                idxs = np.searchsorted(base_ids, treated_ids).astype(np.int64, copy=False)
-                T[idxs] = 1
+            for eq_tok in equipped_tokens:
+                tok_id = ENGINE.token_to_id.get(eq_tok)
+                tok_stats = ENGINE.tokens.get(tok_id) if tok_id is not None else None
+                if tok_stats is None:
+                    continue
+                bm = base_bitmap_model & tok_stats.bitmap
+                if not bm:
+                    continue
+                ids = np.array(bm.to_array(), dtype=np.int64)
+                rows = np.searchsorted(base_ids, ids).astype(np.int64, copy=False)
+                unit_item_count[rows] += 1.0
 
-            raw_tau = float(y[T == 1].mean() - y[T == 0].mean())
+                item_name = eq_tok.split("|", 1)[1]
+                if get_item_type(item_name) == "component":
+                    unit_component_count[rows] += 1.0
+                else:
+                    unit_completed_count[rows] += 1.0
 
-            try:
-                est, _, _, _ = aipw_ate(X, T, y, kind=kind, cfg=cfg)
-            except Exception:
-                row["necessity"] = None
-                continue
+            other_item_count = np.clip(Z_full[:, 0] - unit_item_count, 0.0, None)
+            other_component_count = np.clip(Z_full[:, 1] - unit_component_count, 0.0, None)
+            other_completed_count = np.clip(Z_full[:, 2] - unit_completed_count, 0.0, None)
+            Z = np.stack(
+                [
+                    other_item_count,
+                    other_component_count,
+                    other_completed_count,
+                    Z_full[:, 3],
+                    Z_full[:, 4],
+                    Z_full[:, 5],
+                    Z_full[:, 6],
+                ],
+                axis=1,
+            )
 
-            warnings: list[str] = []
-            if est.frac_trimmed > 0.5:
-                warnings.append("Low overlap: large fraction of samples trimmed by propensity bounds.")
-            if est.e_p01 < 0.02 or est.e_p99 > 0.98:
-                warnings.append("Positivity warning: propensity is near 0/1 in parts of X (effect may be unstable).")
+            X = hstack([X_tok_f, csr_matrix(Z, dtype=np.float32)], format="csr")
 
-            rr = None
-            e_value = None
-            if kind == "binary" and est.y0 > 0 and np.isfinite(est.y0) and np.isfinite(est.y1):
-                rr = float(est.y1 / est.y0)
-                e_value = e_value_from_risk_ratio(rr)
+            cfg = AIPWConfig(
+                n_splits=2,
+                random_state=42,
+                clip_eps=0.01,
+                trim_low=overlap_min,
+                trim_high=overlap_max,
+            )
 
-            row["necessity"] = {
-                "method": "aipw",
-                "outcome": necessity_outcome,
-                "tau": round(float(est.tau), 6),
-                "ci95_low": round(float(est.ci95_low), 6) if np.isfinite(est.ci95_low) else None,
-                "ci95_high": round(float(est.ci95_high), 6) if np.isfinite(est.ci95_high) else None,
-                "se": round(float(est.se), 6) if np.isfinite(est.se) else None,
-                "p_value": round(float(est.p_value), 6) if est.p_value is not None else None,
-                "raw_tau": round(raw_tau, 6),
-                "n_treated": int(n_treated),
-                "n_control": int(n_control),
-                "n_used": int(est.n_used),
-                "frac_trimmed": round(float(est.frac_trimmed), 6),
-                "e_p01": round(float(est.e_p01), 6),
-                "e_p50": round(float(est.e_p50), 6),
-                "e_p99": round(float(est.e_p99), 6),
-                "risk_ratio": round(rr, 6) if rr is not None and np.isfinite(rr) else None,
-                "e_value": round(float(e_value), 6) if e_value is not None and np.isfinite(e_value) else None,
-                "warnings": warnings,
-            }
+            for row in results:
+                eq_token = row.get("token")
+                token_id = ENGINE.token_to_id.get(eq_token) if isinstance(eq_token, str) else None
+                token_stats = ENGINE.tokens.get(token_id) if token_id is not None else None
+                if token_stats is None:
+                    row["necessity"] = None
+                    continue
+
+                treated_bm = base_bitmap_model & token_stats.bitmap
+                n_treated = len(treated_bm)
+                n_control = int(base_ids.size - n_treated)
+                if n_treated < min_group or n_control < min_group:
+                    row["necessity"] = None
+                    continue
+
+                treated_ids = np.array(treated_bm.to_array(), dtype=np.int64)
+                T = np.zeros((base_ids.size,), dtype=np.int8)
+                if treated_ids.size:
+                    idxs = np.searchsorted(base_ids, treated_ids).astype(np.int64, copy=False)
+                    T[idxs] = 1
+
+                raw_tau = float(y[T == 1].mean() - y[T == 0].mean())
+
+                try:
+                    est, _, _, _ = aipw_ate(X, T, y, kind=kind, cfg=cfg)
+                except Exception:
+                    row["necessity"] = None
+                    continue
+
+                warnings: list[str] = []
+                if est.frac_trimmed > 0.5:
+                    warnings.append("Low overlap: large fraction of samples trimmed by propensity bounds.")
+                if est.e_p01 < 0.02 or est.e_p99 > 0.98:
+                    warnings.append("Positivity warning: propensity is near 0/1 in parts of X (effect may be unstable).")
+
+                rr = None
+                e_value = None
+                if kind == "binary" and est.y0 > 0 and np.isfinite(est.y0) and np.isfinite(est.y1):
+                    rr = float(est.y1 / est.y0)
+                    e_value = e_value_from_risk_ratio(rr)
+
+                row["necessity"] = {
+                    "method": "aipw",
+                    "outcome": necessity_outcome,
+                    "tau": round(float(est.tau), 6),
+                    "ci95_low": round(float(est.ci95_low), 6) if np.isfinite(est.ci95_low) else None,
+                    "ci95_high": round(float(est.ci95_high), 6) if np.isfinite(est.ci95_high) else None,
+                    "se": round(float(est.se), 6) if np.isfinite(est.se) else None,
+                    "p_value": round(float(est.p_value), 6) if est.p_value is not None else None,
+                    "raw_tau": round(raw_tau, 6),
+                    "n_treated": int(n_treated),
+                    "n_control": int(n_control),
+                    "n_used": int(est.n_used),
+                    "frac_trimmed": round(float(est.frac_trimmed), 6),
+                    "e_p01": round(float(est.e_p01), 6),
+                    "e_p50": round(float(est.e_p50), 6),
+                    "e_p99": round(float(est.e_p99), 6),
+                    "risk_ratio": round(rr, 6) if rr is not None and np.isfinite(rr) else None,
+                    "e_value": round(float(e_value), 6) if e_value is not None and np.isfinite(e_value) else None,
+                    "warnings": warnings,
+                }
 
         def _sort_key(x: dict) -> tuple:
             nec = x.get("necessity") or {}
             tau = nec.get("tau")
             if tau is None:
                 return (1, 0.0, 1.0, 0)
+            frac_trimmed = float(nec.get("frac_trimmed") or 1.0)
+            overlap_weight = max(0.0, 1.0 - frac_trimmed)
+            # Prefer large effects that also have decent overlap; heavily penalize
+            # estimates that rely on a narrow sliver of the data.
+            score = float(tau) * (overlap_weight**2)
             return (
                 0,
+                -score,
                 -float(tau),
-                float(nec.get("frac_trimmed") or 1.0),
+                frac_trimmed,
                 -int(nec.get("n_used") or 0),
             )
 
@@ -2130,6 +2291,7 @@ def get_unit_items(
             "n": n_base,
             "avg_placement": round(avg_base, 3)
         },
+        "scope": scope,
         "items": results
     }
 
@@ -2140,6 +2302,8 @@ def get_item_necessity(
     item: str = Query(..., description="Item id (e.g., GuinsoosRageblade)"),
     tokens: str = Query(default="", description="Additional filter tokens (comma-separated)"),
     outcome: str = Query(default="top4", description="Outcome: top4, win, placement, rank_score"),
+    unit_stars_min: int = Query(default=1, ge=1, le=6, description="Minimum star level for the unit"),
+    auto_unit_stars_min: bool = Query(default=True, description="Auto-upgrade to 2★+ when the sample is dominated by 2★+ boards"),
     n_splits: int = Query(default=2, ge=2, le=5, description="Cross-fitting folds"),
     max_rows: int = Query(default=80_000, ge=1_000, le=500_000, description="Max rows to model (stratified subsample)"),
     min_token_freq: int = Query(default=25, ge=1, le=10_000, description="Min global token frequency for X features"),
@@ -2181,6 +2345,45 @@ def get_item_necessity(
     # Base set: unit + included filters, minus excluded filters
     base_tokens = [unit_token] + include_filters
     base_bitmap = ENGINE.filter_bitmap(base_tokens, exclude_filters)
+    scope = {"unit_stars_min": unit_stars_min, "auto": False}
+    has_star_filter = any(t.startswith(f"U:{unit}:") for t in include_filters) or any(
+        t.startswith(f"U:{unit}:") for t in exclude_filters
+    )
+    if auto_unit_stars_min and not has_star_filter and unit_stars_min == 1:
+        from pyroaring import BitMap
+
+        star2plus_bm = BitMap()
+        for s in range(2, 7):
+            star_tok = f"U:{unit}:{s}"
+            token_id = ENGINE.token_to_id.get(star_tok)
+            if token_id is None:
+                continue
+            stats = ENGINE.tokens.get(token_id)
+            if stats is None:
+                continue
+            star2plus_bm |= stats.bitmap
+        if star2plus_bm:
+            n_all = len(base_bitmap)
+            n_2p = len(base_bitmap & star2plus_bm)
+            if n_all > 0 and n_2p >= 2000 and (n_2p / float(n_all)) >= 0.7:
+                unit_stars_min = 2
+                scope = {"unit_stars_min": unit_stars_min, "auto": True}
+
+    if unit_stars_min >= 2:
+        from pyroaring import BitMap
+
+        stars_bm = BitMap()
+        for s in range(unit_stars_min, 7):
+            star_tok = f"U:{unit}:{s}"
+            token_id = ENGINE.token_to_id.get(star_tok)
+            if token_id is None:
+                continue
+            stats = ENGINE.tokens.get(token_id)
+            if stats is None:
+                continue
+            stars_bm |= stats.bitmap
+        if stars_bm:
+            base_bitmap &= stars_bm
     n_base = len(base_bitmap)
     if n_base == 0:
         return {
@@ -2188,6 +2391,7 @@ def get_item_necessity(
             "item": item,
             "filters": filter_tokens,
             "base": {"n": 0},
+            "scope": scope,
             "effect": None,
             "warning": "No matches for the current filters.",
         }
@@ -2205,6 +2409,7 @@ def get_item_necessity(
             "item": item,
             "filters": filter_tokens,
             "base": {"n": int(n_base)},
+            "scope": scope,
             "treatment": {"token": eq_token, "n_treated": int(n_treated), "n_control": int(n_control)},
             "effect": None,
             "warning": "Insufficient overlap/sample size for a reliable causal estimate.",
@@ -2264,6 +2469,82 @@ def get_item_necessity(
     treated_rates = _rates(placements[T == 1])
     control_rates = _rates(placements[T == 0])
 
+    # Fast path: use precomputed necessity cache when we're in the default
+    # "unit present (auto 2★+)" context and Top4 outcome.
+    cache_eligible = (
+        outcome.strip().lower() in ("top4", "top_4", "topfour")
+        and not include_filters
+        and not exclude_filters
+        and not by_cluster
+        and getattr(ENGINE, "necessity_top4_ready", False)
+        and n_splits == 2
+        and max_rows == 80_000
+        and min_token_freq == 25
+        and overlap_min == 0.05
+        and overlap_max == 0.95
+    )
+    if cache_eligible:
+        tok_id = ENGINE.token_to_id.get(eq_token)
+        if tok_id is not None:
+            stored_scope = int(ENGINE.necessity_top4_scope_min_star[tok_id])
+            if stored_scope and stored_scope == int(scope.get("unit_stars_min") or 1):
+                tau = float(ENGINE.necessity_top4_tau[tok_id])
+                if np.isfinite(tau):
+                    ci_low = float(ENGINE.necessity_top4_ci95_low[tok_id])
+                    ci_high = float(ENGINE.necessity_top4_ci95_high[tok_id])
+                    se = float(ENGINE.necessity_top4_se[tok_id])
+                    raw_tau_cached = float(ENGINE.necessity_top4_raw_tau[tok_id])
+                    frac_trimmed = float(ENGINE.necessity_top4_frac_trimmed[tok_id])
+                    e_p01 = float(ENGINE.necessity_top4_e_p01[tok_id])
+                    e_p99 = float(ENGINE.necessity_top4_e_p99[tok_id])
+
+                    warnings: list[str] = []
+                    if np.isfinite(frac_trimmed) and frac_trimmed > 0.5:
+                        warnings.append("Low overlap: large fraction of samples trimmed by propensity bounds.")
+                    if np.isfinite(e_p01) and np.isfinite(e_p99) and (e_p01 < 0.02 or e_p99 > 0.98):
+                        warnings.append("Positivity warning: propensity is near 0/1 in parts of X (effect may be unstable).")
+
+                    return {
+                        "unit": unit,
+                        "item": item,
+                        "filters": filter_tokens,
+                        "scope": scope,
+                        "base": {"n": int(n_base), **{k: round(v, 6) for k, v in base_rates.items()}},
+                        "treatment": {
+                            "token": eq_token,
+                            "n_treated": int(n_treated),
+                            "n_control": int(n_control),
+                            "treated": {k: round(v, 6) for k, v in treated_rates.items()},
+                            "control": {k: round(v, 6) for k, v in control_rates.items()},
+                        },
+                        "effect": {
+                            "method": "aipw",
+                            "outcome": "top4",
+                            "kind": "binary",
+                            "tau": round(tau, 6),
+                            "ci95_low": round(ci_low, 6) if np.isfinite(ci_low) else None,
+                            "ci95_high": round(ci_high, 6) if np.isfinite(ci_high) else None,
+                            "se": round(se, 6) if np.isfinite(se) else None,
+                            "p_value": None,
+                            "raw_tau": round(raw_tau_cached, 6) if np.isfinite(raw_tau_cached) else None,
+                            "y1": None,
+                            "y0": None,
+                        },
+                        "overlap": {
+                            "n_used": int(ENGINE.necessity_top4_n_used[tok_id]),
+                            "frac_trimmed": round(frac_trimmed, 6) if np.isfinite(frac_trimmed) else None,
+                            "e_min": None,
+                            "e_p01": round(e_p01, 6) if np.isfinite(e_p01) else None,
+                            "e_p50": None,
+                            "e_p99": round(e_p99, 6) if np.isfinite(e_p99) else None,
+                            "e_max": None,
+                            "bounds": [float(overlap_min), float(overlap_max)],
+                        },
+                        "warning": None,
+                        "warnings": warnings,
+                        "cached": True,
+                    }
+
     # Feature matrix X: sparse token presence + numeric board-strength proxies.
     exclude = {unit_token, eq_token, item_token}
     feature_params = TokenFeatureParams(
@@ -2280,7 +2561,54 @@ def get_item_necessity(
         ENGINE, base_bitmap_model, base_ids, feature_tokens
     )
 
-    Z = board_strength_features(ENGINE, base_ids)
+    # Board-strength proxy features.
+    #
+    # Important: avoid "bad controls" that mechanically include the treated item.
+    #
+    # Instead of using raw totals, we subtract *all* items equipped on this unit and
+    # keep "rest-of-board" counts. This prevents X from trivially encoding T while
+    # still controlling for overall board strength.
+    Z_full = board_strength_features(ENGINE, base_ids).astype(np.float32, copy=False)
+    unit_item_count = np.zeros((base_ids.size,), dtype=np.float32)
+    unit_component_count = np.zeros((base_ids.size,), dtype=np.float32)
+    unit_completed_count = np.zeros((base_ids.size,), dtype=np.float32)
+
+    prefix = f"E:{unit}|"
+    for eq_tok in ENGINE.id_to_token:
+        if not eq_tok.startswith(prefix):
+            continue
+        tok_id = ENGINE.token_to_id.get(eq_tok)
+        tok_stats = ENGINE.tokens.get(tok_id) if tok_id is not None else None
+        if tok_stats is None:
+            continue
+        bm = base_bitmap_model & tok_stats.bitmap
+        if not bm:
+            continue
+        ids = np.array(bm.to_array(), dtype=np.int64)
+        rows = np.searchsorted(base_ids, ids).astype(np.int64, copy=False)
+        unit_item_count[rows] += 1.0
+
+        item_name = eq_tok.split("|", 1)[1]
+        if get_item_type(item_name) == "component":
+            unit_component_count[rows] += 1.0
+        else:
+            unit_completed_count[rows] += 1.0
+
+    other_item_count = np.clip(Z_full[:, 0] - unit_item_count, 0.0, None)
+    other_component_count = np.clip(Z_full[:, 1] - unit_component_count, 0.0, None)
+    other_completed_count = np.clip(Z_full[:, 2] - unit_completed_count, 0.0, None)
+    Z = np.stack(
+        [
+            other_item_count,
+            other_component_count,
+            other_completed_count,
+            Z_full[:, 3],
+            Z_full[:, 4],
+            Z_full[:, 5],
+            Z_full[:, 6],
+        ],
+        axis=1,
+    )
     from scipy.sparse import csr_matrix, hstack
     X = hstack([X_tok.astype(np.float32), csr_matrix(Z, dtype=np.float32)], format="csr")
 
@@ -2291,7 +2619,46 @@ def get_item_necessity(
         trim_low=overlap_min,
         trim_high=overlap_max,
     )
-    est, phi, e_hat, used = aipw_ate(X, T, y, kind=kind, cfg=cfg)
+    try:
+        est, phi, e_hat, used = aipw_ate(X, T, y, kind=kind, cfg=cfg)
+    except OverlapError as e:
+        warnings: list[str] = []
+        if e.frac_trimmed > 0.5:
+            warnings.append("Low overlap: large fraction of samples trimmed by propensity bounds.")
+        if e.e_p01 < 0.02 or e.e_p99 > 0.98:
+            warnings.append("Positivity warning: propensity is near 0/1 in parts of X (effect may be unstable).")
+        if not warnings:
+            warnings.append("Low overlap: effect is not reliably identifiable in this context.")
+
+        return {
+            "unit": unit,
+            "item": item,
+            "filters": filter_tokens,
+            "scope": scope,
+            "base": {"n": int(n_base), **{k: round(v, 6) for k, v in base_rates.items()}},
+            "treatment": {
+                "token": eq_token,
+                "n_treated": int(n_treated),
+                "n_control": int(n_control),
+                "treated": {k: round(v, 6) for k, v in treated_rates.items()},
+                "control": {k: round(v, 6) for k, v in control_rates.items()},
+            },
+            "effect": None,
+            "overlap": {
+                "n_used": int(e.n_used),
+                "frac_trimmed": round(float(e.frac_trimmed), 6),
+                "e_min": round(float(e.e_min), 6),
+                "e_p01": round(float(e.e_p01), 6),
+                "e_p50": round(float(e.e_p50), 6),
+                "e_p99": round(float(e.e_p99), 6),
+                "e_max": round(float(e.e_max), 6),
+                "bounds": [float(overlap_min), float(overlap_max)],
+                "n_treated_used": int(e.n_treated_used),
+                "n_control_used": int(e.n_control_used),
+            },
+            "warning": str(e),
+            "warnings": warnings,
+        }
 
     raw_tau = float(y[T == 1].mean() - y[T == 0].mean())
     warnings: list[str] = []
@@ -2304,6 +2671,7 @@ def get_item_necessity(
         "unit": unit,
         "item": item,
         "filters": filter_tokens,
+        "scope": scope,
         "base": {"n": int(n_base), **{k: round(v, 6) for k, v in base_rates.items()}},
         "treatment": {
             "token": eq_token,

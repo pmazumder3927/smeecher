@@ -127,12 +127,12 @@ export async function getStats() {
  * @param {Object} options - Optional parameters
  * @param {number} options.minSample - Minimum sample size
  * @param {number} options.topK - Max items to return (0 = unlimited)
- * @param {string} options.sortMode - Sort mode: helpful, harmful, impact
+ * @param {string} options.sortMode - Sort mode: necessity, helpful, harmful, impact
  * @param {string[]|Set<string>} options.itemTypes - Item types to include (component, full, artifact, emblem, radiant)
  * @param {string[]|Set<string>} options.itemPrefixes - Item prefixes to include (e.g., Bilgewater)
  */
 export async function fetchUnitItems(unit, tokens = [], options = {}) {
-    const { minSample = 30, topK = 0, sortMode = 'helpful', itemTypes = null, itemPrefixes = null } = options;
+    const { minSample = 30, topK = 0, sortMode = 'necessity', itemTypes = null, itemPrefixes = null } = options;
     const tokensParam = tokens.join(',');
     const search = new URLSearchParams({
         unit,
