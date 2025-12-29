@@ -648,6 +648,162 @@ def compute_cluster_playbook(
     drivers = sorted(rows, key=lambda r: (r["delta_win"], r["delta_top4"], -r["delta_avg"]), reverse=True)
     killers = sorted(rows, key=lambda r: (r["delta_win"], r["delta_top4"], -r["delta_avg"]))
 
+    # ─────────────────────────────────────────────────────────────────
+    # Comp view helpers (traits active + best item holders on-board)
+
+    def _bm_count(tok: str) -> int:
+        token_id = engine.token_to_id.get(tok)
+        if token_id is None:
+            return 0
+        stats = engine.tokens.get(token_id)
+        if stats is None:
+            return 0
+        return int(len(cluster_bm & stats.bitmap))
+
+    # Trait "active" tier summary using inclusive tier tokens (T:Trait:2 means tier 2+).
+    trait_order: list[str] = []
+    seen_traits: set[str] = set()
+    for t in [*sig_traits, *top_traits]:
+        if not isinstance(t, str) or not t.startswith("T:"):
+            continue
+        trait_id = t[2:].split(":", 1)[0]
+        if not trait_id or trait_id in seen_traits:
+            continue
+        seen_traits.add(trait_id)
+        trait_order.append(trait_id)
+
+    trait_summaries: list[dict] = []
+    for trait_id in trait_order:
+        base_tok = f"T:{trait_id}"
+        n_ge_1 = _bm_count(base_tok)
+        if n_ge_1 <= 0:
+            continue
+
+        # Collect tiered tokens that actually appear in the cluster.
+        max_tier = 1
+        n_ge: dict[int, int] = {1: n_ge_1}
+        for tier in range(2, 10):
+            tok = f"T:{trait_id}:{tier}"
+            c = _bm_count(tok)
+            if c <= 0:
+                continue
+            n_ge[tier] = c
+            max_tier = max(max_tier, tier)
+
+        # Compute tier "mode" via exact tier mass: P(tier==k) = P(tier>=k) - P(tier>=k+1).
+        n_exact: dict[int, int] = {}
+        for tier in range(1, max_tier + 1):
+            ge = int(n_ge.get(tier, 0))
+            ge_next = int(n_ge.get(tier + 1, 0)) if tier < max_tier else 0
+            n_exact[tier] = max(0, ge - ge_next)
+
+        active_tier = max(n_exact.keys(), key=lambda t: (n_exact[t], t))
+        active_tok = base_tok if active_tier == 1 else f"T:{trait_id}:{active_tier}"
+
+        levels: list[dict] = []
+        for tier in range(1, max_tier + 1):
+            tok = base_tok if tier == 1 else f"T:{trait_id}:{tier}"
+            n_at_least = int(n_ge.get(tier, 0))
+            n_at_exact = int(n_exact.get(tier, 0))
+            levels.append(
+                {
+                    "tier": tier,
+                    "token": tok,
+                    "label": engine.get_label(tok) or tok[2:],
+                    "n_at_least": n_at_least,
+                    "pct_at_least": round(n_at_least / float(n), 6) if n > 0 else 0.0,
+                    "n_exact": n_at_exact,
+                    "pct_exact": round(n_at_exact / float(n), 6) if n > 0 else 0.0,
+                }
+            )
+
+        active_level = next((lv for lv in levels if lv.get("token") == active_tok), None) or {}
+        trait_summaries.append(
+            {
+                "trait_id": trait_id,
+                "token": base_tok,
+                "label": engine.get_label(base_tok) or trait_id,
+                "n": int(n_ge_1),
+                "pct": round(n_ge_1 / float(n), 6) if n > 0 else 0.0,
+                "active_tier": int(active_tier),
+                "active_token": active_tok,
+                "active_label": active_level.get("label") or (engine.get_label(active_tok) or trait_id),
+                "active_pct_at_least": float(active_level.get("pct_at_least") or 0.0),
+                "active_pct_exact": float(active_level.get("pct_exact") or 0.0),
+                "levels": levels,
+            }
+        )
+
+    # Best equipped unit holders for each key item, within the cluster.
+    item_order: list[str] = []
+    seen_items: set[str] = set()
+    for t in [*sig_items, *top_items]:
+        if not isinstance(t, str) or not t.startswith("I:"):
+            continue
+        item_id = t[2:].split(":", 1)[0]
+        if not item_id or item_id in seen_items:
+            continue
+        seen_items.add(item_id)
+        item_order.append(item_id)
+
+    unit_order: list[str] = []
+    seen_units: set[str] = set()
+    for t in [*sig_units, *defining_units, *top_units]:
+        if not isinstance(t, str) or not t.startswith("U:"):
+            continue
+        unit_id = t[2:].split(":", 1)[0]
+        if not unit_id or unit_id in seen_units:
+            continue
+        seen_units.add(unit_id)
+        unit_order.append(unit_id)
+        if len(unit_order) >= 12:
+            break
+
+    item_summaries: list[dict] = []
+    best_items_by_unit: dict[str, list[dict]] = {}
+    for item_id in item_order[:8]:
+        item_tok = f"I:{item_id}"
+        holders: list[dict] = []
+        for unit_id in unit_order:
+            eq_tok = f"E:{unit_id}|{item_id}"
+            n_with = _bm_count(eq_tok)
+            if n_with <= 0:
+                continue
+            holders.append(
+                {
+                    "unit": unit_id,
+                    "token": eq_tok,
+                    "n_with": int(n_with),
+                    "pct_in_cluster": round(n_with / float(n), 6) if n > 0 else 0.0,
+                }
+            )
+
+        holders.sort(key=lambda h: (-(h.get("pct_in_cluster") or 0.0), -(h.get("n_with") or 0)))
+        best = holders[0] if holders else None
+        if best:
+            best_items_by_unit.setdefault(best["unit"], []).append(
+                {
+                    "item": item_id,
+                    "token": best["token"],
+                    "n_with": best["n_with"],
+                    "pct_in_cluster": best["pct_in_cluster"],
+                }
+            )
+
+        item_summaries.append(
+            {
+                "item": item_id,
+                "token": item_tok,
+                "label": engine.get_label(item_tok) or item_id,
+                "best_holder": best,
+                "top_holders": holders[:3],
+            }
+        )
+
+    for unit_id, items_for_unit in best_items_by_unit.items():
+        items_for_unit.sort(key=lambda r: (-(r.get("pct_in_cluster") or 0.0), r.get("item") or ""))
+        best_items_by_unit[unit_id] = items_for_unit[:3]
+
     return {
         "run_id": run_id,
         "cluster_id": int(cluster_id),
@@ -660,6 +816,11 @@ def compute_cluster_playbook(
         },
         "drivers": drivers[: max_drivers],
         "killers": killers[: max_killers],
+        "comp_view": {
+            "traits": trait_summaries,
+            "items": item_summaries,
+            "best_items_by_unit": best_items_by_unit,
+        },
         "meta": {
             "prior_weight": prior_w,
             "candidates_scored": len(rows),
