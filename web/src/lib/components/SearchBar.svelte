@@ -1054,19 +1054,6 @@
     color: var(--equipped);
   }
 
-  .search-results::-webkit-scrollbar {
-    width: 8px;
-  }
-
-  .search-results::-webkit-scrollbar-track {
-    background: var(--bg-primary);
-  }
-
-  .search-results::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 4px;
-  }
-
   @media (max-width: 768px) {
     .search-wrapper {
       flex: 1 1 100%;
