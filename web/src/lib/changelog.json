@@ -1,7 +1,43 @@
 {
-  "generatedAt": "2025-12-27T09:32:00.000Z",
+  "generatedAt": "2025-12-29T08:17:41.000Z",
   "notice": "This changelog is automatically AI-generated from the project’s history. It’s written for players (not developers), so it may occasionally miss nuance or be slightly wrong.",
   "entries": [
+    {
+      "id": "2025-12-28-playbook-necessity-item-view",
+      "title": "Playbook + Necessity",
+      "dateRange": "Dec 27–28, 2025",
+      "highlights": [
+        "Explorer Playbook: compute the biggest win drivers (and win killers) inside a comp cluster, with one-click add/exclude.",
+        "Items panel now has an Item view: pick an item and see the best champions to hold it in your exact filter context.",
+        "New “Most necessary” sorting estimates how much an item changes Top4 odds (with confidence + reliability notes when you expand a row).",
+        "Avg placement now shows a quick Δ when your filters change, so you can feel what just happened."
+      ],
+      "sections": [
+        {
+          "title": "Added",
+          "items": [
+            "Playbook for clusters: see top win drivers (Δ win / Δ top4) and win killers (Δ win / Δ 8th) within the selected cluster.",
+            "Comp view in Explorer: active trait tiers plus “best holder” hints for key items, with quick equip buttons.",
+            "Item view in the Items panel: explore an item directly to find the best unit holders (not just “best items for a unit”).",
+            "“Most necessary (AIPW)” sorting: a causal-style estimate of how much an item increases Top4 chance, with expandable detail (CI, sample sizes, trimming/warnings)."
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            "Cleaner stats readouts (less duplication) across Explorer and Items.",
+            "Explorer visuals: clearer signature previews and placement distribution snapshots.",
+            "Smoother scrolling with consistent scrollbars across the app."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            "Small UI and layout edge cases in the Explorer and Items panels."
+          ]
+        }
+      ]
+    },
     {
       "id": "2025-12-27-exclusions-stars-voice",
       "title": "Smarter filtering: exclusions + star levels",
