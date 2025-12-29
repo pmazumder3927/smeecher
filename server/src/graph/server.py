@@ -2296,6 +2296,198 @@ def get_unit_items(
     }
 
 
+@app.get("/item-units")
+def get_item_units(
+    item: str = Query(..., description="Item id (e.g., GuinsoosRageblade)"),
+    tokens: str = Query(default="", description="Additional filter tokens (comma-separated)"),
+    min_sample: int = Query(default=30, description="Minimum sample size for inclusion"),
+    top_k: int = Query(default=0, description="Max units to return (0 = unlimited)"),
+    sort_mode: str = Query(
+        default="necessity",
+        description="Sort mode: necessity (AIPW ΔTop4), helpful (best avg), harmful (worst avg), impact (abs delta)",
+    ),
+):
+    """
+    Get best unit holders for a specific item given current filters.
+
+    This endpoint returns units that equip the item (E:{unit}|{item}), ranked either by:
+      - "necessity": cached AIPW ΔTop4 for equipping the item on that unit (causal),
+      - or descriptive placement metrics within the filtered "item present" baseline.
+    """
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    # Parse additional filter tokens (supports exclude tokens prefixed by '-' or '!')
+    filter_tokens = [t.strip() for t in tokens.split(",") if t.strip()]
+    include_filters: list[str] = []
+    exclude_filters: list[str] = []
+    for t in filter_tokens:
+        if t.startswith("-") or t.startswith("!"):
+            raw = t.lstrip("-!")
+            if raw:
+                exclude_filters.append(raw)
+        else:
+            include_filters.append(t)
+
+    item_token = f"I:{item}"
+    if item_token not in ENGINE.token_to_id:
+        raise HTTPException(status_code=404, detail=f"Item '{item}' not found")
+
+    # Base set: item present (any holder) + included filters, minus excluded filters.
+    base_tokens = [item_token] + include_filters
+    base_bitmap = ENGINE.filter_bitmap(base_tokens, exclude_filters)
+    n_base = int(len(base_bitmap))
+    if n_base == 0:
+        return {
+            "item": item,
+            "filters": filter_tokens,
+            "base": {"n": 0, "avg_placement": 4.5},
+            "units": [],
+        }
+    avg_base = ENGINE.avg_placement_for_bitmap(base_bitmap)
+
+    def _shrink_avg(avg: float, n: int, prior_mean: float, prior_weight: float) -> float:
+        """Empirical-Bayes shrinkage to reduce small-sample noise (lower is better)."""
+        if n <= 0:
+            return prior_mean
+        return (avg * n + prior_mean * prior_weight) / (n + prior_weight)
+
+    # Shrinkage strength scales with min_sample so low-n holders don't look extreme.
+    prior_weight = float(max(25, min(200, int(min_sample * 2))))
+
+    # Consider only base unit tokens (exclude star-level U:Unit:2 etc).
+    unit_tokens = [t for t in ENGINE.get_all_tokens_by_type("U:") if ":" not in t[2:]]
+
+    results: list[dict] = []
+    for unit_token in unit_tokens:
+        unit = unit_token[2:]
+        eq_token = f"E:{unit}|{item}"
+        token_id = ENGINE.token_to_id.get(eq_token)
+        if token_id is None:
+            continue
+        token_stats = ENGINE.tokens.get(token_id)
+        if token_stats is None:
+            continue
+
+        with_bitmap = base_bitmap & token_stats.bitmap
+        n_with = int(len(with_bitmap))
+        if n_with < int(min_sample):
+            continue
+
+        avg_with = ENGINE.avg_placement_for_bitmap(with_bitmap)
+        delta_raw = float(avg_with - avg_base)
+        avg_adj = float(_shrink_avg(avg_with, n_with, avg_base, prior_weight))
+        delta_adj = float(avg_adj - avg_base)
+
+        results.append(
+            {
+                "unit": unit,
+                "token": eq_token,
+                "delta": round(delta_adj, 3),
+                "avg_placement": round(avg_adj, 3),
+                "n": n_with,
+                "pct_of_base": round(n_with / float(n_base) * 100.0, 1) if n_base > 0 else 0,
+                "raw_delta": round(delta_raw, 3),
+                "raw_avg_placement": round(float(avg_with), 3),
+            }
+        )
+
+    # Sort based on sort_mode
+    if sort_mode == "helpful":
+        # Best holders first (most negative delta = improves placement most vs item baseline)
+        results.sort(key=lambda x: x["delta"])
+    elif sort_mode == "harmful":
+        # Worst holders first (most positive delta = worsens placement most vs item baseline)
+        results.sort(key=lambda x: x["delta"], reverse=True)
+    elif sort_mode == "necessity":
+        # Cached AIPW ΔTop4 for equipping this item on the unit.
+        necessity_outcome = "top4"
+        use_cache = bool(getattr(ENGINE, "necessity_top4_ready", False))
+
+        if use_cache:
+            for row in results:
+                eq_token = row.get("token")
+                token_id = ENGINE.token_to_id.get(eq_token) if isinstance(eq_token, str) else None
+                if token_id is None:
+                    row["necessity"] = None
+                    continue
+
+                tau = float(ENGINE.necessity_top4_tau[token_id])
+                if not np.isfinite(tau):
+                    row["necessity"] = None
+                    continue
+
+                ci_low = float(ENGINE.necessity_top4_ci95_low[token_id])
+                ci_high = float(ENGINE.necessity_top4_ci95_high[token_id])
+                se = float(ENGINE.necessity_top4_se[token_id])
+                raw_tau = float(ENGINE.necessity_top4_raw_tau[token_id])
+                frac_trimmed = float(ENGINE.necessity_top4_frac_trimmed[token_id])
+                e_p01 = float(ENGINE.necessity_top4_e_p01[token_id])
+                e_p99 = float(ENGINE.necessity_top4_e_p99[token_id])
+                scope_min_star = int(ENGINE.necessity_top4_scope_min_star[token_id] or 1)
+
+                warnings: list[str] = []
+                if np.isfinite(frac_trimmed) and frac_trimmed > 0.5:
+                    warnings.append("Low overlap: large fraction of samples trimmed by propensity bounds.")
+                if np.isfinite(e_p01) and np.isfinite(e_p99) and (e_p01 < 0.02 or e_p99 > 0.98):
+                    warnings.append("Positivity warning: propensity is near 0/1 in parts of X (effect may be unstable).")
+
+                row["necessity"] = {
+                    "method": "aipw",
+                    "outcome": necessity_outcome,
+                    "tau": round(tau, 6),
+                    "ci95_low": round(ci_low, 6) if np.isfinite(ci_low) else None,
+                    "ci95_high": round(ci_high, 6) if np.isfinite(ci_high) else None,
+                    "se": round(se, 6) if np.isfinite(se) else None,
+                    "p_value": None,
+                    "raw_tau": round(raw_tau, 6) if np.isfinite(raw_tau) else None,
+                    "n_treated": int(ENGINE.necessity_top4_n_treated[token_id]),
+                    "n_control": int(ENGINE.necessity_top4_n_control[token_id]),
+                    "n_used": int(ENGINE.necessity_top4_n_used[token_id]),
+                    "frac_trimmed": round(frac_trimmed, 6) if np.isfinite(frac_trimmed) else None,
+                    "e_p01": round(e_p01, 6) if np.isfinite(e_p01) else None,
+                    "e_p50": None,
+                    "e_p99": round(e_p99, 6) if np.isfinite(e_p99) else None,
+                    "risk_ratio": None,
+                    "e_value": None,
+                    "warnings": warnings,
+                    "cached": True,
+                    "scope_min_star": scope_min_star,
+                }
+
+        def _sort_key(x: dict) -> tuple:
+            nec = x.get("necessity") or {}
+            tau = nec.get("tau")
+            if tau is None:
+                return (1, 0.0, 1.0, 0)
+            frac_trimmed = float(nec.get("frac_trimmed") or 1.0)
+            overlap_weight = max(0.0, 1.0 - frac_trimmed)
+            score = float(tau) * (overlap_weight**2)
+            return (
+                0,
+                -score,
+                -float(tau),
+                frac_trimmed,
+                -int(nec.get("n_used") or 0),
+            )
+
+        results.sort(key=_sort_key)
+    else:
+        # Impact: absolute delta, most impactful holders first
+        results.sort(key=lambda x: abs(x["delta"]), reverse=True)
+
+    # Apply top_k limit
+    if top_k > 0:
+        results = results[: int(top_k)]
+
+    return {
+        "item": item,
+        "filters": filter_tokens,
+        "base": {"n": n_base, "avg_placement": round(avg_base, 3)},
+        "units": results,
+    }
+
+
 @app.get("/item-necessity")
 def get_item_necessity(
     unit: str = Query(..., description="Unit name (e.g., KaiSa)"),

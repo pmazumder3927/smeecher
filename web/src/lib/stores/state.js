@@ -46,7 +46,9 @@ export const itemPrefixFilters = writable(new Set());
 export const itemExplorerOpen = writable(false);
 export const itemExplorerTab = writable('builds'); // builds | items
 export const itemExplorerSortMode = writable('necessity'); // helpful | harmful | impact | necessity
+export const itemExplorerFocus = writable('unit'); // unit | item
 export const itemExplorerUnit = writable(null);
+export const itemExplorerItem = writable(null);
 
 export const clusterExplorerOpen = writable(false);
 export const clusterExplorerRunRequest = writable(0);

@@ -1,12 +1,15 @@
 <script>
-    import { fetchItemNecessity, fetchUnitItems, fetchUnitBuild } from '../api.js';
+    import { fetchItemNecessity, fetchItemUnits, fetchUnitItems, fetchUnitBuild } from '../api.js';
     import {
         selectedTokens,
+        lastAction,
         addToken,
         addTokens,
         itemExplorerOpen,
         itemExplorerTab,
         itemExplorerSortMode,
+        itemExplorerFocus,
+        itemExplorerItem,
         itemExplorerUnit,
         itemTypeFilters,
         itemPrefixFilters
@@ -24,10 +27,10 @@
     let data = null;
     let buildData = null;
 
-    let necessityOpenItem = null;
-    let necessityLoadingItem = null;
-    let necessityErrorByItem = {};
-    let necessityByItem = {};
+    let necessityOpenToken = null;
+    let necessityLoadingToken = null;
+    let necessityErrorByToken = {};
+    let necessityByToken = {};
     let necessityContextKey = '';
 
     let lastBuildQueryKey = '';
@@ -37,15 +40,19 @@
     let stale = false;
     let fetchVersion = 0;
 
-    let lastSelectedUnit = null;
+    let lastAnchorKey = '';
     let sortHelpOpen = false;
+    let lastFocusTs = 0;
 
-    // Units available from the current filter selection
+    const FOCUS_SOURCES = new Set(['graph', 'search', 'voice']);
+
+    // Units and items available from the current filter selection (positive tokens only)
     $: availableUnits = (() => {
         const seen = new Set();
         const units = [];
         for (const token of $selectedTokens) {
             const parsed = parseToken(token);
+            if (parsed.negated) continue;
             if (parsed.type === 'unit' && parsed.unit && !seen.has(parsed.unit)) {
                 seen.add(parsed.unit);
                 units.push(parsed.unit);
@@ -57,56 +64,124 @@
         return units;
     })();
 
-    // Keep activeUnit valid as filters change
-    $: if (availableUnits.length === 0) {
-        if ($itemExplorerUnit !== null) itemExplorerUnit.set(null);
-    } else if (!$itemExplorerUnit || !availableUnits.includes($itemExplorerUnit)) {
-        itemExplorerUnit.set(availableUnits[0]);
+    $: availableItems = (() => {
+        const seen = new Set();
+        const items = [];
+        for (const token of $selectedTokens) {
+            const parsed = parseToken(token);
+            if (parsed.negated) continue;
+            if (parsed.type === 'item' && parsed.item && !seen.has(parsed.item)) {
+                seen.add(parsed.item);
+                items.push(parsed.item);
+            }
+        }
+        return items;
+    })();
+
+    // If the user clicks an item/unit in the graph, switch the explorer focus to match.
+    $: if (
+        $lastAction?.type === 'token_added' &&
+        $lastAction?.timestamp &&
+        $lastAction.timestamp !== lastFocusTs &&
+        FOCUS_SOURCES.has($lastAction?.source)
+    ) {
+        lastFocusTs = $lastAction.timestamp;
+        const token = $lastAction?.token;
+        if (typeof token === 'string') {
+            const parsed = parseToken(token);
+            if (!parsed.negated) {
+                if (parsed.type === 'item') itemExplorerFocus.set('item');
+                if (parsed.type === 'unit' || parsed.type === 'equipped') itemExplorerFocus.set('unit');
+            }
+        }
     }
 
-    $: selectedUnit = $itemExplorerUnit;
+    // Keep unit/item selection valid as filters change
+    $: if (availableUnits.length === 0) {
+        if ($itemExplorerUnit !== null) itemExplorerUnit.set(null);
+    }
+    $: if (availableItems.length === 0) {
+        if ($itemExplorerItem !== null) itemExplorerItem.set(null);
+    }
+
+    $: effectiveFocus = (() => {
+        let focus = $itemExplorerFocus;
+        if (focus === 'unit' && availableUnits.length === 0 && availableItems.length > 0) focus = 'item';
+        if (focus === 'item' && availableItems.length === 0 && availableUnits.length > 0) focus = 'unit';
+        return focus;
+    })();
+
+    $: if (effectiveFocus === 'unit' && availableUnits.length > 0) {
+        if (!$itemExplorerUnit || !availableUnits.includes($itemExplorerUnit)) {
+            itemExplorerUnit.set(availableUnits[0]);
+        }
+    }
+
+    $: if (effectiveFocus === 'item' && availableItems.length > 0) {
+        if (!$itemExplorerItem || !availableItems.includes($itemExplorerItem)) {
+            itemExplorerItem.set(availableItems[0]);
+        }
+    }
+
+    $: selectedUnit = effectiveFocus === 'unit' ? $itemExplorerUnit : null;
+    $: selectedItem = effectiveFocus === 'item' ? $itemExplorerItem : null;
+
+    $: exploreMode = selectedUnit ? 'unit' : selectedItem ? 'item' : 'none';
+
+    // Item explorer is only meaningful in the Items tab when exploring an item.
+    $: if (exploreMode === 'item' && $itemExplorerTab !== 'items') itemExplorerTab.set('items');
 
     // Keep all selected filters except the explored unit token (so other unit filters still apply).
     // Star-level tokens like U:Unit:2 are preserved, enabling users to opt into star-specific analysis.
-    $: contextTokens = selectedUnit
-        ? $selectedTokens.filter(t => t !== `U:${selectedUnit}`)
-        : $selectedTokens;
+    $: contextTokens =
+        exploreMode === 'unit'
+            ? $selectedTokens.filter(t => t !== `U:${selectedUnit}`)
+            : exploreMode === 'item'
+                ? $selectedTokens.filter(t => t !== `I:${selectedItem}`)
+                : $selectedTokens;
 
-    // Clear stale results when switching the explored unit
-    $: if (selectedUnit !== lastSelectedUnit) {
+    // Clear stale results when switching the explored anchor (unit or item)
+    $: anchorKey = exploreMode === 'unit' ? `U:${selectedUnit}` : exploreMode === 'item' ? `I:${selectedItem}` : '';
+    $: if (anchorKey !== lastAnchorKey) {
         data = null;
         buildData = null;
         error = null;
-        lastSelectedUnit = selectedUnit;
+        staleBuild = false;
+        staleItems = false;
+        stale = false;
+        lastBuildQueryKey = '';
+        lastItemsQueryKey = '';
+        lastAnchorKey = anchorKey;
     }
 
     $: activeItemTypes = [...$itemTypeFilters];
     $: activeItemPrefixes = [...$itemPrefixFilters];
     $: showNecessity = $itemExplorerSortMode === 'necessity';
 
-    $: baseQueryKey = `${selectedUnit ?? ''}|${activeItemTypes.slice().sort().join('|')}|${activeItemPrefixes.slice().sort().join('|')}|${contextTokens.slice().sort().join(',')}`;
-    $: buildQueryKey = baseQueryKey;
+    $: baseQueryKey = `${anchorKey}|${activeItemTypes.slice().sort().join('|')}|${activeItemPrefixes.slice().sort().join('|')}|${contextTokens.slice().sort().join(',')}`;
+    $: buildQueryKey = exploreMode === 'unit' ? baseQueryKey : '';
     $: itemsQueryKey = `${baseQueryKey}|${$itemExplorerSortMode}`;
 
-    $: if ($itemExplorerOpen && lastBuildQueryKey && buildQueryKey !== lastBuildQueryKey) staleBuild = true;
+    $: if ($itemExplorerOpen && exploreMode === 'unit' && lastBuildQueryKey && buildQueryKey !== lastBuildQueryKey) staleBuild = true;
     $: if ($itemExplorerOpen && lastItemsQueryKey && itemsQueryKey !== lastItemsQueryKey) staleItems = true;
-    $: stale = $itemExplorerTab === 'items' ? staleItems : staleBuild;
+    $: stale = $itemExplorerTab === 'items' ? staleItems : exploreMode === 'unit' ? staleBuild : false;
 
     $: if (itemsQueryKey !== necessityContextKey) {
         necessityContextKey = itemsQueryKey;
-        necessityOpenItem = null;
-        necessityLoadingItem = null;
-        necessityErrorByItem = {};
-        necessityByItem = {};
+        necessityOpenToken = null;
+        necessityLoadingToken = null;
+        necessityErrorByToken = {};
+        necessityByToken = {};
     }
 
-    $: items = data?.items ?? [];
+    $: items = exploreMode === 'unit' ? data?.items ?? [] : [];
+    $: holders = exploreMode === 'item' ? data?.units ?? [] : [];
     $: builds = buildData?.builds ?? [];
     $: sidebarWidth = $itemExplorerOpen ? EXPANDED_WIDTH_PX : COLLAPSED_WIDTH_PX;
 
-    // Auto-fetch when opening with a selected unit
-    $: if ($itemExplorerOpen && selectedUnit) {
-        const needBuild = !buildData || staleBuild;
+    // Auto-fetch when opening with a selected anchor
+    $: if ($itemExplorerOpen && exploreMode !== 'none') {
+        const needBuild = exploreMode === 'unit' && (!buildData || staleBuild);
         const needItems = $itemExplorerTab === 'items' && (!data || staleItems);
         if (needBuild || needItems) run();
     }
@@ -122,29 +197,46 @@
             return;
         }
         posthog.capture('item_explorer_opened');
-        if (selectedUnit && (!buildData || ($itemExplorerTab === 'items' && !data))) run();
+        if (exploreMode === 'unit' && selectedUnit && (!buildData || ($itemExplorerTab === 'items' && !data))) run();
+        if (exploreMode === 'item' && selectedItem && $itemExplorerTab === 'items' && !data) run();
     }
 
     async function run() {
-        if (!selectedUnit) return;
+        if (exploreMode === 'none') return;
 
         const version = ++fetchVersion;
         loading = true;
         error = null;
         stale = false;
 
-        const needBuild = !buildData || staleBuild;
+        const needBuild = exploreMode === 'unit' && (!buildData || staleBuild);
         const needItems = $itemExplorerTab === 'items' && (!data || staleItems);
 
         try {
-            const [buildResult, itemsResult] = await Promise.all([
-                needBuild
-                    ? fetchUnitBuild(selectedUnit, contextTokens, { slots: 3, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes })
-                    : Promise.resolve(buildData),
-                needItems
-                    ? fetchUnitItems(selectedUnit, contextTokens, { sortMode: $itemExplorerSortMode, itemTypes: activeItemTypes, itemPrefixes: activeItemPrefixes })
-                    : Promise.resolve(data)
-            ]);
+            const [buildResult, itemsResult] =
+                exploreMode === 'unit'
+                    ? await Promise.all([
+                        needBuild
+                            ? fetchUnitBuild(selectedUnit, contextTokens, {
+                                slots: 3,
+                                itemTypes: activeItemTypes,
+                                itemPrefixes: activeItemPrefixes,
+                            })
+                            : Promise.resolve(buildData),
+                        needItems
+                            ? fetchUnitItems(selectedUnit, contextTokens, {
+                                sortMode: $itemExplorerSortMode,
+                                itemTypes: activeItemTypes,
+                                itemPrefixes: activeItemPrefixes,
+                            })
+                            : Promise.resolve(data),
+                    ])
+                    : await Promise.all([
+                        Promise.resolve(buildData),
+                        needItems
+                            ? fetchItemUnits(selectedItem, contextTokens, { sortMode: $itemExplorerSortMode })
+                            : Promise.resolve(data),
+                    ]);
             if (version !== fetchVersion) return;
 
             if (needBuild) {
@@ -159,10 +251,12 @@
             }
 
             posthog.capture('item_explorer_run', {
-                unit: selectedUnit,
+                anchor_type: exploreMode,
+                unit: exploreMode === 'unit' ? selectedUnit : null,
+                item: exploreMode === 'item' ? selectedItem : null,
                 filter_count: contextTokens.length,
                 build_items: buildResult?.builds?.length ?? 0,
-                result_count: itemsResult?.items?.length ?? 0,
+                result_count: itemsResult?.items?.length ?? itemsResult?.units?.length ?? 0,
                 tab: $itemExplorerTab,
                 sort_mode: $itemExplorerSortMode,
             });
@@ -185,13 +279,18 @@
         });
     }
 
-    function addItem(item) {
-        const token = `E:${selectedUnit}|${item.item}`;
+    function addEquipped(row) {
+        const token = row?.token;
+        if (!token) return;
         addToken(token, 'item_explorer');
+
+        const parsed = parseToken(token);
         posthog.capture('item_added_from_explorer', {
-            unit: selectedUnit,
-            item: item.item,
-            delta: item.delta
+            unit: parsed?.unit ?? null,
+            item: parsed?.item ?? null,
+            token,
+            delta: row?.delta ?? null,
+            anchor_type: exploreMode,
         });
     }
 
@@ -253,29 +352,31 @@
         sortHelpOpen = false;
     }
 
-    async function toggleNecessity(itemRow) {
-        const itemName = itemRow?.item;
-        if (!selectedUnit || !itemName) return;
+    async function toggleNecessity(row) {
+        const eqToken = row?.token;
+        if (!eqToken) return;
+        const parsed = parseToken(eqToken);
+        if (parsed.type !== 'equipped' || !parsed.unit || !parsed.item) return;
 
-        if (necessityOpenItem === itemName) {
-            necessityOpenItem = null;
+        if (necessityOpenToken === eqToken) {
+            necessityOpenToken = null;
             return;
         }
 
-        necessityOpenItem = itemName;
-        if (itemRow?.necessity) return;
-        if (necessityByItem[itemName]) return;
+        necessityOpenToken = eqToken;
+        if (row?.necessity) return;
+        if (necessityByToken[eqToken]) return;
 
-        necessityLoadingItem = itemName;
-        necessityErrorByItem = { ...necessityErrorByItem, [itemName]: null };
+        necessityLoadingToken = eqToken;
+        necessityErrorByToken = { ...necessityErrorByToken, [eqToken]: null };
 
         try {
-            const res = await fetchItemNecessity(selectedUnit, itemName, contextTokens, { outcome: 'top4' });
-            necessityByItem = { ...necessityByItem, [itemName]: res };
+            const res = await fetchItemNecessity(parsed.unit, parsed.item, contextTokens, { outcome: 'top4' });
+            necessityByToken = { ...necessityByToken, [eqToken]: res };
         } catch (e) {
-            necessityErrorByItem = { ...necessityErrorByItem, [itemName]: e?.message ?? String(e) };
+            necessityErrorByToken = { ...necessityErrorByToken, [eqToken]: e?.message ?? String(e) };
         } finally {
-            if (necessityLoadingItem === itemName) necessityLoadingItem = null;
+            if (necessityLoadingToken === eqToken) necessityLoadingToken = null;
         }
     }
 </script>
@@ -292,7 +393,7 @@
 
     {#if $itemExplorerOpen}
         <div class="panel">
-            {#if !selectedUnit}
+            {#if exploreMode === 'none'}
                 <div class="empty-state">
                     <div class="empty-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -300,10 +401,10 @@
                             <path d="m21 21-4.35-4.35"/>
                         </svg>
                     </div>
-                    <div class="empty-text">Select a unit to see best items</div>
-                    <div class="empty-hint">Search for a champion like "Miss Fortune" or "Lux"</div>
+                    <div class="empty-text">Select a unit or item to explore</div>
+                    <div class="empty-hint">Search for a champion like "Miss Fortune" or an item like "Guinsoo"</div>
                 </div>
-            {:else}
+            {:else if exploreMode === 'unit'}
                 <div class="panel-header">
                     <div class="unit-info">
                         {#if unitIcon(selectedUnit) && !hasIconFailed('unit', selectedUnit)}
@@ -331,16 +432,27 @@
                             </div>
                         </div>
                     </div>
-                    {#if availableUnits.length > 1}
+                    {#if availableUnits.length > 1 || availableItems.length > 0}
                         <div class="unit-select-row">
-                            <label class="select">
-                                <span>Champion</span>
-                                <select bind:value={$itemExplorerUnit} disabled={loading}>
-                                    {#each availableUnits as unit (unit)}
-                                        <option value={unit}>{unitDisplayName(unit)}</option>
-                                    {/each}
-                                </select>
-                            </label>
+                            {#if availableItems.length > 0}
+                                <label class="select">
+                                    <span>View</span>
+                                    <select bind:value={$itemExplorerFocus} disabled={loading}>
+                                        <option value="unit">Champion</option>
+                                        <option value="item">Item</option>
+                                    </select>
+                                </label>
+                            {/if}
+                            {#if availableUnits.length > 1}
+                                <label class="select">
+                                    <span>Champion</span>
+                                    <select bind:value={$itemExplorerUnit} disabled={loading}>
+                                        {#each availableUnits as unit (unit)}
+                                            <option value={unit}>{unitDisplayName(unit)}</option>
+                                        {/each}
+                                    </select>
+                                </label>
+                            {/if}
                         </div>
                     {/if}
                 </div>
@@ -563,11 +675,11 @@
                                     class="row item-row"
                                     role="button"
                                     tabindex="0"
-                                    on:click={() => addItem(item)}
+                                    on:click={() => addEquipped(item)}
                                     on:keydown={(e) => {
                                         if (e.key === 'Enter' || e.key === ' ') {
                                             e.preventDefault();
-                                            addItem(item);
+                                            addEquipped(item);
                                         }
                                     }}
                                 >
@@ -614,18 +726,18 @@
                                         title="Estimate necessity (AIPW ΔTop4)"
                                         aria-label="Estimate necessity"
                                         on:click|stopPropagation={() => toggleNecessity(item)}
-                                        disabled={necessityLoadingItem === item.item}
+                                        disabled={necessityLoadingToken === item.token}
                                     >
                                         N
                                     </button>
                                     <div class="add-icon">+</div>
                                 </div>
-                                {#if necessityOpenItem === item.item}
+                                {#if necessityOpenToken === item.token}
                                     <div class="necessity-panel">
-                                        {#if necessityLoadingItem === item.item}
+                                        {#if necessityLoadingToken === item.token}
                                             <div class="necessity-row">Estimating…</div>
-                                        {:else if necessityErrorByItem[item.item]}
-                                            <div class="necessity-row error">{necessityErrorByItem[item.item]}</div>
+                                        {:else if necessityErrorByToken[item.token]}
+                                            <div class="necessity-row error">{necessityErrorByToken[item.token]}</div>
                                         {:else if item.necessity}
                                             {@const r = item.necessity}
                                             <div class="necessity-row">
@@ -647,8 +759,8 @@
                                                     <div class="necessity-row warn">{w}</div>
                                                 {/each}
                                             {/if}
-                                        {:else if necessityByItem[item.item]}
-                                            {@const r = necessityByItem[item.item]}
+                                        {:else if necessityByToken[item.token]}
+                                            {@const r = necessityByToken[item.token]}
                                             {#if r.effect}
                                                 <div class="necessity-row">
                                                     <span class="k">AIPW ΔTop4</span>
@@ -693,6 +805,347 @@
                                 {/if}
                             {/each}
                         {/if}
+                    {/if}
+                </div>
+            {:else if exploreMode === 'item'}
+                <div class="panel-header">
+                    <div class="unit-info">
+                        {#if itemIcon(selectedItem) && !hasIconFailed('item', selectedItem)}
+                            <img
+                                class="unit-icon"
+                                src={itemIcon(selectedItem)}
+                                alt=""
+                                on:error={() => markIconFailed('item', selectedItem)}
+                            />
+                        {:else}
+                            <div class="unit-fallback"></div>
+                        {/if}
+                        <div class="unit-details">
+                            <div class="unit-name">{itemDisplayName(selectedItem)}</div>
+                            <div class="unit-meta">
+                                {#if data?.base}
+                                    <span>{data.base.n.toLocaleString()} games</span>
+                                    <span class="dot">&bull;</span>
+                                    <AvgPlacement value={data.base.avg_placement} suffix=" avg" />
+                                {:else if loading}
+                                    <span>Loading...</span>
+                                {:else}
+                                    <span>Click Run to analyze</span>
+                                {/if}
+                            </div>
+                        </div>
+                    </div>
+                    {#if availableItems.length > 1 || availableUnits.length > 0}
+                        <div class="unit-select-row">
+                            {#if availableUnits.length > 0}
+                                <label class="select">
+                                    <span>View</span>
+                                    <select bind:value={$itemExplorerFocus} disabled={loading}>
+                                        <option value="unit">Champion</option>
+                                        <option value="item">Item</option>
+                                    </select>
+                                </label>
+                            {/if}
+                            {#if availableItems.length > 1}
+                                <label class="select">
+                                    <span>Item</span>
+                                    <select bind:value={$itemExplorerItem} disabled={loading}>
+                                        {#each availableItems as it (it)}
+                                            <option value={it}>{itemDisplayName(it)}</option>
+                                        {/each}
+                                    </select>
+                                </label>
+                            {/if}
+                        </div>
+                    {/if}
+                </div>
+
+                <div class="tabs">
+                    <button
+                        class="tab"
+                        class:active={$itemExplorerTab === 'items'}
+                        on:click={() => itemExplorerTab.set('items')}
+                    >
+                        Holders
+                        {#if holders.length > 0}
+                            <span class="tab-count">{holders.length}</span>
+                        {/if}
+                    </button>
+                    <button class="refresh-btn" disabled={loading} on:click={run} title="Refresh data">
+                        {#if loading}
+                            <span class="spinner"></span>
+                        {:else if stale}
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M1 4v6h6M23 20v-6h-6"/>
+                                <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+                            </svg>
+                        {:else}
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M1 4v6h6M23 20v-6h-6"/>
+                                <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+                            </svg>
+                        {/if}
+                    </button>
+                </div>
+
+                {#if error}
+                    <div class="callout error">{error}</div>
+                {/if}
+
+                {#if contextTokens.length > 0}
+                    <div class="context-info">
+                        Filtered by {contextTokens.length} additional condition{contextTokens.length > 1 ? 's' : ''}
+                    </div>
+                {/if}
+
+                <div class="sort-bar">
+                    <label class="select">
+                        <span class="sort-label">
+                            Sort
+                            <button
+                                type="button"
+                                class="sort-help-btn"
+                                title="How sorting works"
+                                aria-label="How sorting works"
+                                aria-expanded={sortHelpOpen}
+                                on:click|stopPropagation={toggleSortHelp}
+                            >
+                                ?
+                            </button>
+                        </span>
+                        <select bind:value={$itemExplorerSortMode} on:change={run}>
+                            <option value="helpful">Best first</option>
+                            <option value="harmful">Worst first</option>
+                            <option value="impact">Most impact</option>
+                            <option value="necessity">Most necessary (AIPW)</option>
+                        </select>
+                    </label>
+                    {#if sortHelpOpen}
+                        <div class="sort-help" role="dialog" aria-label="Sort mode help">
+                            <div class="sort-help-header">
+                                <div class="sort-help-title">How sorting works</div>
+                                <button
+                                    type="button"
+                                    class="sort-help-close"
+                                    on:click|stopPropagation={closeSortHelp}
+                                    aria-label="Close sort help"
+                                >
+                                    ×
+                                </button>
+                            </div>
+
+                            <div class="sort-help-section">
+                                <div class="sort-help-mode">Most necessary (AIPW)</div>
+                                <div class="sort-help-text">
+                                    Estimates how much the item <em>causally</em> increases your chance to Top4 when equipped on a unit.
+                                    It answers: “If two endgame boards look similar, what’s the expected Top4 difference if that unit has this item vs not?”
+                                </div>
+                                <div class="sort-help-text">
+                                    Inspired by <a href="https://tftable.cc/" target="_blank" rel="noopener noreferrer">TFTable</a>’s “Necessity” idea (“what do you lose when the item is missing?”),
+                                    but implemented as a doubly‑robust causal estimate instead of a baseline‑adjusted placement comparison. This helps reduce bias from strong boards being more likely to
+                                    have the components, tempo, and shops to build the item in the first place.
+                                </div>
+                                <div class="sort-help-text">
+                                    Under the hood:
+                                    <ul>
+                                        <li><span class="k">Treatment (T)</span>: this item is equipped on this unit (<code>E:Unit|Item</code>).</li>
+                                        <li><span class="k">Outcome (Y)</span>: Top4 (1 if placement ≤ 4, else 0).</li>
+                                        <li><span class="k">Context (X)</span>: the rest of the board (units + traits) and strength proxies (unit count, 2★/3★ count, gold-value proxy, and <em>rest-of-board</em> item counts).</li>
+                                    </ul>
+                                </div>
+                                <div class="sort-help-text">
+                                    We fit two models and combine them using a doubly‑robust estimator (AIPW):
+                                    a propensity model <code>P(T=1|X)</code> (how “buildable” the item is in that context) and outcome models for <code>E[Y|T=1,X]</code> and <code>E[Y|T=0,X]</code>.
+                                    If either the propensity model or the outcome models are reasonably accurate, AIPW still gives a good estimate.
+                                    We use cross‑fitting to reduce overfitting bias.
+                                </div>
+                                <div class="sort-help-text">
+                                    Reliability guardrails:
+                                    <ul>
+                                        <li><span class="k">Overlap trimming</span>: boards where the model says the item is almost never/always built are trimmed (positivity). High “trimmed %” means the estimate relies on a narrow slice of data.</li>
+                                        <li><span class="k">Auto 2★+ scope</span>: if most samples are 2★+, we automatically scope to 2★+ to avoid mixing “1★ desperation” boards. Add a star filter (e.g. <code>U:Unit:1</code>) to override.</li>
+                                    </ul>
+                                </div>
+                                <div class="sort-help-text">
+                                    Performance note: necessity values are precomputed and load fast. If you add extra filters, the list still uses the cached global necessity values, but expanding a row will estimate necessity for your exact filtered context (and can take longer).
+                                </div>
+                                <div class="sort-help-text">
+                                    Interpreting the number: <span class="k">+3.0pp</span> means <em>+3 percentage points</em> Top4 chance (e.g. 52% → 55%), not “+3%”.
+                                </div>
+                            </div>
+
+                            <div class="sort-help-section">
+                                <div class="sort-help-mode">Best first</div>
+                                <div class="sort-help-text">
+                                    Sorts by the unit’s (shrunk) average placement when this item is equipped (lower is better).
+                                </div>
+                            </div>
+
+                            <div class="sort-help-section">
+                                <div class="sort-help-mode">Worst first</div>
+                                <div class="sort-help-text">
+                                    The reverse of “Best first” (highest average placement at the top).
+                                </div>
+                            </div>
+
+                            <div class="sort-help-section">
+                                <div class="sort-help-mode">Most impact</div>
+                                <div class="sort-help-text">
+                                    Sorts by absolute change in (shrunk) average placement versus the current filtered baseline — shows the most polarizing holders first (good or bad).
+                                </div>
+                            </div>
+                        </div>
+                    {/if}
+                </div>
+
+                <div class="list-container">
+                    {#if loading && holders.length === 0}
+                        <div class="loading-skeleton">
+                            {#each Array(6) as _, i}
+                                <div class="skeleton-row"></div>
+                            {/each}
+                        </div>
+                    {:else if holders.length === 0 && !loading}
+                        <div class="no-items">
+                            No unit holders found with sufficient data.
+                            Try adjusting filters or lowering the sample threshold.
+                        </div>
+                    {:else}
+                        {#each holders as h, idx (h.unit)}
+                            <div
+                                class="row item-row"
+                                role="button"
+                                tabindex="0"
+                                on:click={() => addEquipped(h)}
+                                on:keydown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        addEquipped(h);
+                                    }
+                                }}
+                            >
+                                <div class="row-rank">#{idx + 1}</div>
+                                <div class="item-icon-wrapper">
+                                    {#if unitIcon(h.unit) && !hasIconFailed('unit', h.unit)}
+                                        <img
+                                            class="item-icon"
+                                            src={unitIcon(h.unit)}
+                                            alt=""
+                                            loading="lazy"
+                                            on:error={() => markIconFailed('unit', h.unit)}
+                                        />
+                                    {:else}
+                                        <div class="item-fallback"></div>
+                                    {/if}
+                                </div>
+                                <div class="item-info">
+                                    <div class="item-name">{unitDisplayName(h.unit)}</div>
+                                    <div class="item-stats">
+                                        <span class="stat-n">{h.n.toLocaleString()}</span>
+                                        <span class="stat-sep">&bull;</span>
+                                        <span class="stat-pct">{fmtPct(h.pct_of_base)} hold</span>
+                                    </div>
+                                </div>
+                                <div class="row-metrics">
+                                    <div class="row-avg"><AvgPlacement value={h.avg_placement} /></div>
+                                    <div
+                                        class="row-delta {showNecessity ? necessityClass(h.necessity?.tau ?? null) : deltaClass(h.delta)}"
+                                    >
+                                        {#if showNecessity}
+                                            {#if h.necessity?.tau !== null && h.necessity?.tau !== undefined}
+                                                {fmtPp(h.necessity.tau)}
+                                            {:else}
+                                                —
+                                            {/if}
+                                        {:else}
+                                            {fmtDelta(h.delta)}
+                                        {/if}
+                                    </div>
+                                </div>
+                                <button
+                                    class="necessity-btn"
+                                    title="Estimate necessity (AIPW ΔTop4)"
+                                    aria-label="Estimate necessity"
+                                    on:click|stopPropagation={() => toggleNecessity(h)}
+                                    disabled={necessityLoadingToken === h.token}
+                                >
+                                    N
+                                </button>
+                                <div class="add-icon">+</div>
+                            </div>
+
+                            {#if necessityOpenToken === h.token}
+                                <div class="necessity-panel">
+                                    {#if h.necessity}
+                                        {@const r = h.necessity}
+                                        <div class="necessity-row">
+                                            <span class="k">AIPW ΔTop4</span>
+                                            <span class="v">{fmtPp(r.tau)}</span>
+                                            <span class="ci">{fmtCi(r.ci95_low, r.ci95_high)}</span>
+                                        </div>
+                                        <div class="necessity-row meta">
+                                            <span>{r.n_treated.toLocaleString()} with</span>
+                                            <span class="dot">&bull;</span>
+                                            <span>{r.n_control.toLocaleString()} without</span>
+                                            <span class="dot">&bull;</span>
+                                            <span>{r.n_used.toLocaleString()} used</span>
+                                            <span class="dot">&bull;</span>
+                                            <span>{Math.round(r.frac_trimmed * 100)}% trimmed</span>
+                                        </div>
+                                        {#if r.warnings?.length}
+                                            {#each r.warnings as w (w)}
+                                                <div class="necessity-row warn">{w}</div>
+                                            {/each}
+                                        {/if}
+                                    {:else if necessityByToken[h.token]}
+                                        {@const r = necessityByToken[h.token]}
+                                        {#if r.effect}
+                                            <div class="necessity-row">
+                                                <span class="k">AIPW ΔTop4</span>
+                                                <span class="v">{fmtPp(r.effect.tau)}</span>
+                                                <span class="ci">{fmtCi(r.effect.ci95_low, r.effect.ci95_high)}</span>
+                                            </div>
+                                            <div class="necessity-row meta">
+                                                <span>{r.treatment.n_treated.toLocaleString()} with</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{r.treatment.n_control.toLocaleString()} without</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{r.overlap.n_used.toLocaleString()} used</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{Math.round(r.overlap.frac_trimmed * 100)}% trimmed</span>
+                                            </div>
+                                        {:else if r.warning}
+                                            <div class="necessity-row warn">{r.warning}</div>
+                                            {#if r.overlap}
+                                                <div class="necessity-row meta">
+                                                    <span>{r.treatment?.n_treated?.toLocaleString?.() ?? '—'} with</span>
+                                                    <span class="dot">&bull;</span>
+                                                    <span>{r.treatment?.n_control?.toLocaleString?.() ?? '—'} without</span>
+                                                    <span class="dot">&bull;</span>
+                                                    <span>{r.overlap?.n_used?.toLocaleString?.() ?? '—'} used</span>
+                                                    <span class="dot">&bull;</span>
+                                                    <span>{r.overlap?.frac_trimmed !== undefined ? Math.round(r.overlap.frac_trimmed * 100) : '—'}% trimmed</span>
+                                                </div>
+                                            {/if}
+                                        {/if}
+                                        {#if r.warnings?.length}
+                                            {#each r.warnings as w (w)}
+                                                <div class="necessity-row warn">{w}</div>
+                                            {/each}
+                                        {/if}
+                                        {#if !r.effect}
+                                            <div class="necessity-row meta">No estimate available.</div>
+                                        {/if}
+                                    {:else if necessityErrorByToken[h.token]}
+                                        <div class="necessity-row error">{necessityErrorByToken[h.token]}</div>
+                                    {:else if necessityLoadingToken === h.token}
+                                        <div class="necessity-row">Estimating…</div>
+                                    {:else}
+                                        <div class="necessity-row meta">No estimate available.</div>
+                                    {/if}
+                                </div>
+                            {/if}
+                        {/each}
                     {/if}
                 </div>
             {/if}

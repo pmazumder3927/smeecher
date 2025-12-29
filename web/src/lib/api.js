@@ -171,6 +171,43 @@ export async function fetchUnitItems(unit, tokens = [], options = {}) {
 }
 
 /**
+ * Fetch best unit holders for an item given current filters
+ * @param {string} item - Item id (e.g., "GuinsoosRageblade")
+ * @param {string[]} tokens - Additional filter tokens (excluding the explored item token)
+ * @param {Object} options - Optional parameters
+ * @param {number} options.minSample - Minimum sample size
+ * @param {number} options.topK - Max units to return (0 = unlimited)
+ * @param {string} options.sortMode - Sort mode: necessity, helpful, harmful, impact
+ */
+export async function fetchItemUnits(item, tokens = [], options = {}) {
+    const { minSample = 30, topK = 0, sortMode = 'necessity' } = options;
+    const tokensParam = tokens.join(',');
+    const search = new URLSearchParams({
+        item,
+        tokens: tokensParam,
+        min_sample: String(minSample),
+        top_k: String(topK),
+        sort_mode: sortMode,
+        t: String(Date.now())
+    });
+
+    const response = await fetch(`${API_BASE}/item-units?${search.toString()}`);
+
+    if (!response.ok) {
+        let errorMsg = 'Failed to fetch item units';
+        try {
+            const data = await response.json();
+            errorMsg = data?.detail || errorMsg;
+        } catch {
+            // Response wasn't JSON
+        }
+        throw new Error(errorMsg);
+    }
+
+    return response.json();
+}
+
+/**
  * Fetch recommended item builds for a unit (searches item sets)
  * @param {string} unit - Unit name (e.g., "MissFortune")
  * @param {string[]} tokens - Additional filter tokens
