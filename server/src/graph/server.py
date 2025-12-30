@@ -192,6 +192,62 @@ async def lifespan(app: FastAPI):
             ENGINE = GraphEngine.load(str(engine_path))
             stats = ENGINE.stats()
             print(f"Engine ready: {stats['total_tokens']} tokens, {stats['total_matches']} matches")
+
+            # Upgrade old engines (built before equipped-count tokens) so duplicate-item
+            # filters/builds work without requiring manual rebuild steps.
+            if db_path.exists():
+                has_equipped_counts = any(
+                    t.startswith("E:") and int(parse_token(t).get("copies", 1) or 1) >= 2
+                    for t in ENGINE.id_to_token
+                )
+                if not has_equipped_counts:
+                    print("Engine is missing duplicate-item tokens; rebuilding a count-aware engine (preserving cached necessity estimates)...")
+                    old_engine = ENGINE
+                    ENGINE = GraphEngine()
+                    ENGINE.build_from_db(str(db_path))
+
+                    # Preserve labels where possible (helps search UX) by copying from the old engine
+                    # for shared tokens.
+                    for tok in old_engine.id_to_token:
+                        old_id = old_engine.token_to_id.get(tok)
+                        new_id = ENGINE.token_to_id.get(tok)
+                        if old_id is None or new_id is None:
+                            continue
+                        label = old_engine.labels.get(old_id)
+                        if label:
+                            ENGINE.labels[new_id] = label
+
+                    # Preserve cached top4 necessity estimates from the previous engine for any
+                    # shared tokens. New duplicate-count tokens will remain uncached (NaN).
+                    if getattr(old_engine, "necessity_top4_tau", None) is not None:
+                        try:
+                            ENGINE.init_necessity_cache_top4()
+                            for tok in old_engine.id_to_token:
+                                old_id = old_engine.token_to_id.get(tok)
+                                new_id = ENGINE.token_to_id.get(tok)
+                                if old_id is None or new_id is None:
+                                    continue
+
+                                ENGINE.necessity_top4_tau[new_id] = old_engine.necessity_top4_tau[old_id]
+                                ENGINE.necessity_top4_ci95_low[new_id] = old_engine.necessity_top4_ci95_low[old_id]
+                                ENGINE.necessity_top4_ci95_high[new_id] = old_engine.necessity_top4_ci95_high[old_id]
+                                ENGINE.necessity_top4_se[new_id] = old_engine.necessity_top4_se[old_id]
+                                ENGINE.necessity_top4_raw_tau[new_id] = old_engine.necessity_top4_raw_tau[old_id]
+                                ENGINE.necessity_top4_frac_trimmed[new_id] = old_engine.necessity_top4_frac_trimmed[old_id]
+                                ENGINE.necessity_top4_e_p01[new_id] = old_engine.necessity_top4_e_p01[old_id]
+                                ENGINE.necessity_top4_e_p99[new_id] = old_engine.necessity_top4_e_p99[old_id]
+                                ENGINE.necessity_top4_n_treated[new_id] = old_engine.necessity_top4_n_treated[old_id]
+                                ENGINE.necessity_top4_n_control[new_id] = old_engine.necessity_top4_n_control[old_id]
+                                ENGINE.necessity_top4_n_used[new_id] = old_engine.necessity_top4_n_used[old_id]
+                                ENGINE.necessity_top4_scope_min_star[new_id] = old_engine.necessity_top4_scope_min_star[old_id]
+
+                            ENGINE.necessity_top4_ready = bool(np.isfinite(ENGINE.necessity_top4_tau).any())
+                        except Exception as e:
+                            print(f"Warning: failed to preserve necessity cache ({e}); continuing without it.")
+
+                    ENGINE.save(str(engine_path))
+                    stats = ENGINE.stats()
+                    print(f"Engine ready: {stats['total_tokens']} tokens, {stats['total_matches']} matches")
         except Exception as e:
             print(f"Failed to load engine.bin ({e}).")
             if db_path.exists():
@@ -354,8 +410,22 @@ def parse_token(token: str) -> dict:
     elif token_type == "item":
         return {"type": "item", "item": token[2:], "negated": negated}
     elif token_type == "equipped":
-        parts = token[2:].split("|")
-        return {"type": "equipped", "unit": parts[0], "item": parts[1], "negated": negated}
+        rest = token[2:]
+        if "|" not in rest:
+            return {"type": "equipped", "unit": rest, "item": "", "copies": 1, "negated": negated}
+        unit, item_part = rest.split("|", 1)
+        copies = 1
+        item = item_part
+        if ":" in item_part:
+            base, maybe_copies = item_part.rsplit(":", 1)
+            try:
+                c = int(maybe_copies)
+            except ValueError:
+                c = None
+            if c is not None and c >= 2:
+                copies = c
+                item = base
+        return {"type": "equipped", "unit": unit, "item": item, "copies": copies, "negated": negated}
     elif token_type == "trait":
         # Handle tiered traits like T:Brawler:2
         parts = token[2:].split(":")
@@ -490,8 +560,9 @@ def generate_candidates(center_info: dict, current_tokens: list[str]) -> list[tu
             for eq_token in all_equipped:
                 if eq_token not in current_set and eq_token.startswith(prefix):
                     # Check item not in center
-                    item_name = eq_token.split("|")[1]
-                    if item_name not in center_items:
+                    parsed = parse_token(eq_token)
+                    item_name = parsed.get("item")
+                    if item_name and item_name not in center_items:
                         candidates.append((eq_token, "equipped"))
 
         # Show supporting units
@@ -1601,7 +1672,7 @@ def get_stats():
 def get_unit_build(
     unit: str = Query(..., description="Unit name (e.g., MissFortune)"),
     tokens: str = Query(default="", description="Additional filter tokens (comma-separated)"),
-    min_sample: int = Query(default=10, description="Minimum sample size for inclusion"),
+    min_sample: int = Query(default=30, description="Minimum sample size for inclusion"),
     slots: int = Query(default=3, ge=1, le=3, description="Number of item slots to fill"),
     item_types: str = Query(
         default="",
@@ -1662,22 +1733,27 @@ def get_unit_build(
             return prior_mean
         return (avg * n + prior_mean * prior_weight) / (n + prior_weight)
 
-    # Items already locked-in for this unit via filters (E:{unit}|{item})
-    locked_items: list[str] = []
-    locked_item_set: set[str] = set()
+    # Items already locked-in for this unit via filters (E:{unit}|{item}[:2|:3]).
+    # We treat count tokens as consuming multiple slots.
+    locked_counts: dict[str, int] = {}
+    locked_order: list[str] = []
     for t in include_filters:
         parsed = parse_token(t)
-        if parsed["type"] == "equipped" and parsed["unit"] == unit:
-            item_name = parsed["item"]
-            if item_name in locked_item_set:
-                continue
-            locked_item_set.add(item_name)
-            locked_items.append(item_name)
+        if parsed["type"] != "equipped" or parsed.get("unit") != unit:
+            continue
+        item_name = parsed.get("item") or ""
+        if not item_name:
+            continue
+        copies = int(parsed.get("copies") or 1)
+        copies = max(1, min(3, copies))
+        if item_name not in locked_counts:
+            locked_order.append(item_name)
+        locked_counts[item_name] = max(locked_counts.get(item_name, 0), copies)
 
     # Beam-search parameters (kept internal to avoid API churn)
     beam_width = 40
     max_builds = 25
-    prior_weight = float(max(25, min(200, int(n_base * 0.05))))
+    prior_weight = float(max(25, min(2000, int(n_base * 0.05))))
 
     # Find all equipped tokens for this unit
     prefix = f"E:{unit}|"
@@ -1685,22 +1761,31 @@ def get_unit_build(
 
     # If the user already filtered by equipped items on this unit, treat them as locked
     # and only recommend the remaining slots.
-    locked_items = locked_items[:slots]
-    locked_item_set = set(locked_items)
-    remaining_slots = max(0, slots - len(locked_items))
+    base_item_dicts: list[dict] = []
+    effective_locked_counts: dict[str, int] = {}
+    for item_name in locked_order:
+        if len(base_item_dicts) >= slots:
+            break
+        want = locked_counts.get(item_name, 0)
+        if want <= 0:
+            continue
+        take = min(want, slots - len(base_item_dicts))
+        for k in range(1, take + 1):
+            tok = f"E:{unit}|{item_name}" if k == 1 else f"E:{unit}|{item_name}:{k}"
+            base_item_dicts.append(
+                {
+                    "item": item_name,
+                    "token": tok,
+                    "delta": 0.0,
+                    "avg_placement": round(avg_base, 3),
+                    "n": n_base,
+                    "item_type": get_item_type(item_name),
+                    "item_prefix": get_item_prefix(item_name),
+                }
+            )
+        effective_locked_counts[item_name] = take
 
-    base_item_dicts = [
-        {
-            "item": item_name,
-            "token": f"E:{unit}|{item_name}",
-            "delta": 0.0,
-            "avg_placement": round(avg_base, 3),
-            "n": n_base,
-            "item_type": get_item_type(item_name),
-            "item_prefix": get_item_prefix(item_name),
-        }
-        for item_name in locked_items
-    ]
+    remaining_slots = max(0, slots - len(base_item_dicts))
 
     if remaining_slots == 0:
         all_builds = [
@@ -1713,11 +1798,17 @@ def get_unit_build(
             }
         ]
     else:
-        # Candidate items: equipped items for this unit with enough sample size under the current filters.
-        candidates = []
+        # Candidate items: map base item -> {copies -> token+bitmap}.
+        candidates_by_item: dict[str, dict] = {}
         for eq_token in all_equipped:
-            item_name = eq_token.split("|")[1]
-            if item_name in locked_item_set:
+            parsed_eq = parse_token(eq_token)
+            if parsed_eq.get("type") != "equipped":
+                continue
+            item_name = parsed_eq.get("item") or ""
+            if not item_name:
+                continue
+            copies = int(parsed_eq.get("copies") or 1)
+            if copies < 1 or copies > 3:
                 continue
 
             cand_type = get_item_type(item_name)
@@ -1734,20 +1825,34 @@ def get_unit_build(
             if token_stats is None:
                 continue
 
-            with_bitmap = base_bitmap & token_stats.bitmap
-            n_with = len(with_bitmap)
+            entry = candidates_by_item.get(item_name)
+            if entry is None:
+                entry = {
+                    "item": item_name,
+                    "item_type": cand_type,
+                    "item_prefix": cand_prefix,
+                    "tokens": {},
+                    "bitmaps": {},
+                }
+                candidates_by_item[item_name] = entry
+
+            entry["tokens"][copies] = eq_token
+            entry["bitmaps"][copies] = token_stats.bitmap
+
+        # Require a valid >=1 token and enough sample size in the current context.
+        pruned: dict[str, dict] = {}
+        for item_name, entry in candidates_by_item.items():
+            tok1 = entry["tokens"].get(1)
+            bm1 = entry["bitmaps"].get(1)
+            if not tok1 or bm1 is None:
+                continue
+            n_with = len(base_bitmap & bm1)
             if n_with < min_sample:
                 continue
+            pruned[item_name] = entry
+        candidates_by_item = pruned
 
-            candidates.append({
-                "item": item_name,
-                "token": eq_token,
-                "bitmap": token_stats.bitmap,
-                "item_type": cand_type,
-                "item_prefix": cand_prefix,
-            })
-
-        if not candidates:
+        if not candidates_by_item:
             all_builds = []
             if base_item_dicts:
                 all_builds.append({
@@ -1766,18 +1871,24 @@ def get_unit_build(
                     "n": n_base,
                     "avg": avg_base,
                     "score": _shrink_avg(avg_base, n_base, avg_base, prior_weight),
-                    "used": set(locked_item_set),
+                    "counts": dict(effective_locked_counts),
                 }
             ]
 
             for _ in range(remaining_slots):
                 next_states = []
                 for state in beam:
-                    for cand in candidates:
-                        if cand["item"] in state["used"]:
+                    for item_name, cand in candidates_by_item.items():
+                        prev = int(state["counts"].get(item_name, 0) or 0)
+                        want = prev + 1
+                        if want > 3:
+                            continue
+                        tok = cand["tokens"].get(want)
+                        bm = cand["bitmaps"].get(want)
+                        if not tok or bm is None:
                             continue
 
-                        with_bitmap = state["bitmap"] & cand["bitmap"]
+                        with_bitmap = state["bitmap"] & bm
                         n_with = len(with_bitmap)
                         if n_with < min_sample:
                             continue
@@ -1786,8 +1897,8 @@ def get_unit_build(
                         score_with = _shrink_avg(avg_with, n_with, avg_base, prior_weight)
 
                         item_stats = {
-                            "item": cand["item"],
-                            "token": cand["token"],
+                            "item": item_name,
+                            "token": tok,
                             "delta": round(avg_with - state["avg"], 3),
                             "avg_placement": round(avg_with, 3),
                             "n": n_with,
@@ -1795,13 +1906,16 @@ def get_unit_build(
                             "item_prefix": cand["item_prefix"],
                         }
 
+                        next_counts = dict(state["counts"])
+                        next_counts[item_name] = want
+
                         next_states.append({
                             "items": state["items"] + [item_stats],
                             "bitmap": with_bitmap,
                             "n": n_with,
                             "avg": avg_with,
                             "score": score_with,
-                            "used": state["used"] | {cand["item"]},
+                            "counts": next_counts,
                         })
 
                 if not next_states:
@@ -1842,7 +1956,7 @@ def get_unit_build(
                 })
 
             # Sort and trim.
-            all_builds.sort(key=lambda b: (-b["num_items"], b["final_avg"], -b["final_n"], b["_score"]))
+            all_builds.sort(key=lambda b: (-b["num_items"], b["_score"], b["final_avg"], -b["final_n"]))
             all_builds = all_builds[:max_builds]
             for b in all_builds:
                 b.pop("_score", None)
@@ -1864,7 +1978,8 @@ def get_unit_items(
     tokens: str = Query(default="", description="Additional filter tokens (comma-separated)"),
     min_sample: int = Query(default=30, description="Minimum sample size for inclusion"),
     top_k: int = Query(default=0, description="Max items to return (0 = unlimited)"),
-    sort_mode: str = Query(default="necessity", description="Sort mode: necessity (AIPW ΔTop4), helpful (best avg), harmful (worst avg), impact (abs delta)"),
+    sort_mode: str = Query(default="necessity", description="Sort mode: necessity (causal Δ outcome), helpful (best avg), harmful (worst avg), impact (abs delta)"),
+    necessity_outcome: str = Query(default="top4", description="Necessity outcome: top4, win, placement, rank_score"),
     item_types: str = Query(
         default="",
         description="Item types to include (comma-separated): component, full, artifact, emblem, radiant",
@@ -1980,7 +2095,7 @@ def get_unit_items(
 
     # Find all equipped tokens for this unit: E:{unit}|*
     prefix = f"E:{unit}|"
-    equipped_tokens = [t for t in ENGINE.id_to_token if t.startswith(prefix)]
+    equipped_tokens = [t for t in ENGINE.id_to_token if t.startswith(prefix) and parse_token(t).get("copies", 1) == 1]
 
     # Track which items are already equipped on this unit in filters (to exclude from recommendations).
     # NOTE: We intentionally do *not* treat global item tokens (I:Item) as "already present",
@@ -1994,7 +2109,10 @@ def get_unit_items(
     # Score each equipped token
     results = []
     for eq_token in equipped_tokens:
-        item_name = eq_token.split("|")[1]
+        parsed_eq = parse_token(eq_token)
+        item_name = parsed_eq.get("item")
+        if not item_name:
+            continue
 
         # Skip items already in filters
         if item_name in existing_items:
@@ -2046,17 +2164,20 @@ def get_unit_items(
         # Worst items first (most positive delta = worsens placement most)
         results.sort(key=lambda x: x["delta"], reverse=True)
     elif sort_mode == "necessity":
-        # Causal "necessity" sort: estimated ΔTop4 for each item-on-unit treatment.
+        # Causal "necessity" sort: estimated causal Δ for each item-on-unit treatment.
         #
         # - Default view (no extra filters): use the engine.bin cache (fast + stable).
         # - Filtered context: compute a fast, context-specific estimate for ranking; the
         #   UI can request the full AIPW estimate for a specific item via /item-necessity.
-        necessity_outcome = "top4"
+        necessity_outcome_norm = (necessity_outcome or "").strip().lower()
+        if necessity_outcome_norm in ("top_4", "topfour"):
+            necessity_outcome_norm = "top4"
         use_cache = bool(
             getattr(ENGINE, "necessity_top4_ready", False)
             and not include_filters
             and not exclude_filters
             and scope is not None
+            and necessity_outcome_norm == "top4"
         )
 
         if use_cache:
@@ -2094,7 +2215,7 @@ def get_unit_items(
 
                 row["necessity"] = {
                     "method": "aipw",
-                    "outcome": necessity_outcome,
+                    "outcome": "top4",
                     "tau": round(tau, 6),
                     "ci95_low": round(ci_low, 6) if np.isfinite(ci_low) else None,
                     "ci95_high": round(ci_high, 6) if np.isfinite(ci_high) else None,
@@ -2138,9 +2259,7 @@ def get_unit_items(
                 base_bitmap_model = base_bitmap
 
             placements = ENGINE.placements[base_ids].astype(np.int16, copy=False)
-            y, kind = placements_to_outcome(placements, necessity_outcome)
-            if kind != "binary":
-                y = (placements <= 4).astype(np.float32, copy=False)
+            y, kind = placements_to_outcome(placements, necessity_outcome_norm)
 
             feature_tokens = select_feature_tokens(
                 ENGINE,
@@ -2179,7 +2298,12 @@ def get_unit_items(
                 labels = kmeans.fit_predict(X_tok).astype(np.int32, copy=False)
 
                 cluster_sizes = np.bincount(labels, minlength=n_clusters).astype(np.int32, copy=False)
-                cluster_y_sum = np.bincount(labels, weights=y.astype(np.float64, copy=False), minlength=n_clusters).astype(
+                y_f = y.astype(np.float64, copy=False)
+                y2_f = (y_f * y_f).astype(np.float64, copy=False)
+                cluster_y_sum = np.bincount(labels, weights=y_f, minlength=n_clusters).astype(
+                    np.float64, copy=False
+                )
+                cluster_y2_sum = np.bincount(labels, weights=y2_f, minlength=n_clusters).astype(
                     np.float64, copy=False
                 )
                 n_total = int(base_ids.size)
@@ -2202,6 +2326,13 @@ def get_unit_items(
                     idx = max(0, min(idx, v_s.size - 1))
                     return float(v_s[idx])
 
+                def _var_from_sums(n: np.ndarray, s: np.ndarray, s2: np.ndarray) -> np.ndarray:
+                    n_f = n.astype(np.float64, copy=False)
+                    mu = s / np.maximum(n_f, 1.0)
+                    denom = np.maximum(n_f - 1.0, 1.0)
+                    var = (s2 - n_f * (mu * mu)) / denom
+                    return np.clip(var, 0.0, None)
+
                 # Iterate items and compute a trimmed, cluster-adjusted estimate.
                 for row in results:
                     eq_token = row.get("token")
@@ -2221,20 +2352,25 @@ def get_unit_items(
                         row["necessity"] = None
                         continue
 
-                    # Raw (unadjusted) Top4 delta.
-                    y_t = y[T_rows] if T_rows.size else np.zeros((0,), dtype=np.float32)
+                    # Raw (unadjusted) outcome delta.
+                    y_t = y[T_rows] if T_rows.size else np.zeros((0,), dtype=y.dtype)
                     y1_mean = float(y_t.mean()) if y_t.size else float("nan")
                     y0_mean = float(((y.sum() - y_t.sum()) / max(1, n_control)))
                     raw_tau = float(y1_mean - y0_mean) if np.isfinite(y1_mean) and np.isfinite(y0_mean) else float("nan")
 
                     treated_labels = labels[T_rows] if T_rows.size else np.zeros((0,), dtype=np.int32)
                     treated_counts = np.bincount(treated_labels, minlength=n_clusters).astype(np.int32, copy=False)
-                    treated_y_sum = np.bincount(treated_labels, weights=y_t.astype(np.float64, copy=False), minlength=n_clusters).astype(
+                    treated_y = y_f[T_rows] if T_rows.size else np.zeros((0,), dtype=np.float64)
+                    treated_y_sum = np.bincount(treated_labels, weights=treated_y, minlength=n_clusters).astype(
+                        np.float64, copy=False
+                    )
+                    treated_y2_sum = np.bincount(treated_labels, weights=(treated_y * treated_y), minlength=n_clusters).astype(
                         np.float64, copy=False
                     )
 
                     control_counts = (cluster_sizes - treated_counts).astype(np.int32, copy=False)
                     control_y_sum = (cluster_y_sum - treated_y_sum).astype(np.float64, copy=False)
+                    control_y2_sum = (cluster_y2_sum - treated_y2_sum).astype(np.float64, copy=False)
 
                     with np.errstate(divide="ignore", invalid="ignore"):
                         e = treated_counts.astype(np.float64) / np.maximum(cluster_sizes.astype(np.float64), 1.0)
@@ -2260,9 +2396,17 @@ def get_unit_items(
                     weights = cluster_sizes[used_clusters].astype(np.float64, copy=False)
                     tau = float(np.average(diffs, weights=weights)) if weights.size else float("nan")
 
-                    # Approx SE for weighted stratified difference in means (binary Y).
-                    var1 = mu1 * (1.0 - mu1)
-                    var0 = mu0 * (1.0 - mu0)
+                    # Approx SE for weighted stratified difference in means.
+                    var1 = _var_from_sums(
+                        treated_counts[used_clusters],
+                        treated_y_sum[used_clusters],
+                        treated_y2_sum[used_clusters],
+                    )
+                    var0 = _var_from_sums(
+                        control_counts[used_clusters],
+                        control_y_sum[used_clusters],
+                        control_y2_sum[used_clusters],
+                    )
                     var_diff = (var1 / treated_counts[used_clusters]) + (var0 / control_counts[used_clusters])
                     w = weights / float(n_used) if n_used > 0 else np.zeros_like(weights)
                     var_tau = float(np.sum((w**2) * var_diff)) if weights.size else float("nan")
@@ -2283,7 +2427,7 @@ def get_unit_items(
 
                     row["necessity"] = {
                         "method": "cluster_adjusted",
-                        "outcome": necessity_outcome,
+                        "outcome": necessity_outcome_norm or "top4",
                         "tau": round(tau, 6) if np.isfinite(tau) else None,
                         "ci95_low": round(tau - 1.96 * se, 6) if np.isfinite(tau) and np.isfinite(se) else None,
                         "ci95_high": round(tau + 1.96 * se, 6) if np.isfinite(tau) and np.isfinite(se) else None,
@@ -2313,11 +2457,13 @@ def get_unit_items(
             overlap_weight = max(0.0, 1.0 - frac_trimmed)
             # Prefer large effects that also have decent overlap; heavily penalize
             # estimates that rely on a narrow sliver of the data.
-            score = float(tau) * (overlap_weight**2)
+            higher_is_better = str(nec.get("outcome") or "").strip().lower() not in ("placement", "expected_placement")
+            direction = 1.0 if higher_is_better else -1.0
+            score = direction * float(tau) * (overlap_weight**2)
             return (
                 0,
                 -score,
-                -float(tau),
+                -(direction * float(tau)),
                 frac_trimmed,
                 -int(nec.get("n_used") or 0),
             )
@@ -2816,6 +2962,8 @@ def get_item_necessity(
     for eq_tok in ENGINE.id_to_token:
         if not eq_tok.startswith(prefix):
             continue
+        if parse_token(eq_tok).get("copies", 1) != 1:
+            continue
         tok_id = ENGINE.token_to_id.get(eq_tok)
         tok_stats = ENGINE.tokens.get(tok_id) if tok_id is not None else None
         if tok_stats is None:
@@ -2827,7 +2975,9 @@ def get_item_necessity(
         rows = np.searchsorted(base_ids, ids).astype(np.int64, copy=False)
         unit_item_count[rows] += 1.0
 
-        item_name = eq_tok.split("|", 1)[1]
+        item_name = parse_token(eq_tok).get("item")
+        if not item_name:
+            continue
         if get_item_type(item_name) == "component":
             unit_component_count[rows] += 1.0
         else:

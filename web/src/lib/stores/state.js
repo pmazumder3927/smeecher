@@ -22,6 +22,18 @@ export const activeTypes = writable(new Set(['unit', 'item', 'trait']));
 // Highlighted tokens (e.g., cluster selection)
 export const highlightedTokens = writable(new Set());
 
+// Hovered tokens (transient highlight for exploration)
+export const hoveredTokens = writable(new Set());
+
+// Graph highlight priority: hover beats selection.
+export const graphHighlightTokens = derived(
+    [hoveredTokens, highlightedTokens],
+    ([$hoveredTokens, $highlightedTokens]) => {
+        if ($hoveredTokens && $hoveredTokens.size > 0) return $hoveredTokens;
+        return $highlightedTokens;
+    }
+);
+
 // Tooltip state
 export const tooltip = writable({
     visible: false,
@@ -46,6 +58,7 @@ export const itemPrefixFilters = writable(new Set());
 export const itemExplorerOpen = writable(false);
 export const itemExplorerTab = writable('builds'); // builds | items
 export const itemExplorerSortMode = writable('necessity'); // helpful | harmful | impact | necessity
+export const itemExplorerNecessityOutcome = writable('top4'); // top4 | win | placement | rank_score
 export const itemExplorerFocus = writable('unit'); // unit | item
 export const itemExplorerUnit = writable(null);
 export const itemExplorerItem = writable(null);
@@ -85,6 +98,46 @@ function _oppositeToken(token) {
     return token.startsWith('-') || token.startsWith('!') ? base : `-${base}`;
 }
 
+function _isNegated(token) {
+    return typeof token === 'string' && (token.startsWith('-') || token.startsWith('!'));
+}
+
+function _parseEquippedRaw(rawToken) {
+    if (typeof rawToken !== 'string' || !rawToken.startsWith('E:')) return null;
+    const rest = rawToken.slice(2);
+    const sep = rest.indexOf('|');
+    if (sep === -1) return null;
+    const unit = rest.slice(0, sep);
+    let itemPart = rest.slice(sep + 1);
+    let copies = 1;
+
+    const colon = itemPart.lastIndexOf(':');
+    if (colon !== -1) {
+        const maybe = itemPart.slice(colon + 1);
+        const n = parseInt(maybe, 10);
+        if (Number.isFinite(n) && String(n) === maybe && n >= 2) {
+            copies = n;
+            itemPart = itemPart.slice(0, colon);
+        }
+    }
+
+    if (!unit || !itemPart) return null;
+    return { unit, item: itemPart, copies };
+}
+
+function _equippedPrefix(unit, item) {
+    return `E:${unit}|${item}`;
+}
+
+function _equippedMatchesPrefix(rawToken, prefix) {
+    return rawToken === prefix || rawToken.startsWith(`${prefix}:`);
+}
+
+function _equippedCopiesFromRaw(rawToken) {
+    const parsed = _parseEquippedRaw(rawToken);
+    return parsed?.copies ?? 1;
+}
+
 // For UI events that don't directly change tokens (e.g. "clusters_run")
 export function recordUiAction(type, source = 'ui', payload = {}) {
     recordAction({
@@ -98,6 +151,54 @@ export function recordUiAction(type, source = 'ui', payload = {}) {
 // Helper functions
 export function addToken(token, source = 'unknown') {
     selectedTokens.update(tokens => {
+        const raw = _stripNegation(token);
+        const equipped = _parseEquippedRaw(raw);
+        if (equipped) {
+            const prefix = _equippedPrefix(equipped.unit, equipped.item);
+            const wantCopies = equipped.copies ?? 1;
+            const wantNegated = _isNegated(token);
+
+            // Remove any opposite-sign variants for this exact equipped constraint.
+            let next = tokens.filter((t) => {
+                const tRaw = _stripNegation(t);
+                if (!_equippedMatchesPrefix(tRaw, prefix)) return true;
+                return _isNegated(t) === wantNegated;
+            });
+
+            // Find existing same-sign count tokens for this unit+item.
+            const existing = next.filter((t) => {
+                const tRaw = _stripNegation(t);
+                return _equippedMatchesPrefix(tRaw, prefix) && _isNegated(t) === wantNegated;
+            });
+
+            const best = (() => {
+                if (existing.length === 0) return null;
+                const counts = existing.map((t) => _equippedCopiesFromRaw(_stripNegation(t)));
+                if (!wantNegated) return Math.max(...counts); // include: higher copies is stricter
+                return Math.min(...counts); // exclude: lower copies is stricter (excludes more)
+            })();
+
+            const shouldAdd = (() => {
+                if (best == null) return true;
+                if (!wantNegated) return wantCopies > best;
+                return wantCopies < best;
+            })();
+
+            if (!shouldAdd) return next;
+
+            // Replace existing same-sign variants with the stricter token.
+            next = next.filter((t) => {
+                const tRaw = _stripNegation(t);
+                if (!_equippedMatchesPrefix(tRaw, prefix)) return true;
+                return _isNegated(t) !== wantNegated;
+            });
+
+            const finalToken = wantCopies >= 2 ? `${wantNegated ? '-' : ''}${prefix}:${wantCopies}` : `${wantNegated ? '-' : ''}${prefix}`;
+            posthog.capture('token_added', { token: finalToken, source });
+            recordAction({ type: 'token_added', source, token: finalToken });
+            return [...next, finalToken];
+        }
+
         const opposite = _oppositeToken(token);
         let next = tokens;
         if (opposite && next.includes(opposite)) {
@@ -115,6 +216,7 @@ export function addToken(token, source = 'unknown') {
 export function equipItemOnUnit(unit, item, source = 'equip_ui') {
     const unitToken = `U:${unit}`;
     const equippedToken = `E:${unit}|${item}`;
+    const equippedPrefix = _equippedPrefix(unit, item);
     const oppositeUnitToken = `-U:${unit}`;
     const altOppositeUnitToken = `!U:${unit}`;
     const oppositeEquippedToken = `-E:${unit}|${item}`;
@@ -122,18 +224,21 @@ export function equipItemOnUnit(unit, item, source = 'equip_ui') {
 
     selectedTokens.update(tokens => {
         // Avoid contradictory include+exclude for the exact same token(s)
-        const next = tokens.filter(
-            (t) =>
-                t !== oppositeUnitToken &&
-                t !== altOppositeUnitToken &&
-                t !== oppositeEquippedToken &&
-                t !== altOppositeEquippedToken
-        );
+        const next = tokens.filter((t) => {
+            if (t === oppositeUnitToken || t === altOppositeUnitToken) return false;
+            const raw = _stripNegation(t);
+            // Drop any excludes for this exact unit+item (including count tokens).
+            if (_equippedMatchesPrefix(raw, equippedPrefix) && _isNegated(t)) return false;
+            // Legacy exact-token excludes.
+            if (t === oppositeEquippedToken || t === altOppositeEquippedToken) return false;
+            return true;
+        });
         const existing = new Set(next);
         if (!existing.has(unitToken)) {
             next.push(unitToken);
         }
-        if (!existing.has(equippedToken)) {
+        const hasAnyEquipped = next.some((t) => !_isNegated(t) && _equippedMatchesPrefix(_stripNegation(t), equippedPrefix));
+        if (!hasAnyEquipped) {
             next.push(equippedToken);
             posthog.capture('token_added', { token: equippedToken, source });
             recordAction({ type: 'token_added', source, token: equippedToken });
@@ -144,6 +249,7 @@ export function equipItemOnUnit(unit, item, source = 'equip_ui') {
 
 export function excludeItemOnUnit(unit, item, source = 'equip_ui') {
     const equippedToken = `-E:${unit}|${item}`;
+    const equippedPrefix = _equippedPrefix(unit, item);
     const oppositeEquippedToken = `E:${unit}|${item}`;
     const broadUnitExcludeToken = `-U:${unit}`;
     const altBroadUnitExcludeToken = `!U:${unit}`;
@@ -151,11 +257,26 @@ export function excludeItemOnUnit(unit, item, source = 'equip_ui') {
     selectedTokens.update(tokens => {
         // Avoid contradictory include+exclude for the exact same equipped token
         // Also drop broad unit-exclusion if the user is specifying a narrower exclusion.
-        const next = tokens.filter(
-            (t) => t !== oppositeEquippedToken && t !== broadUnitExcludeToken && t !== altBroadUnitExcludeToken
-        );
-        const existing = new Set(next);
-        if (!existing.has(equippedToken)) {
+        const next = tokens.filter((t) => {
+            if (t === broadUnitExcludeToken || t === altBroadUnitExcludeToken) return false;
+            const raw = _stripNegation(t);
+            // Drop any includes for this exact unit+item (including count tokens).
+            if (_equippedMatchesPrefix(raw, equippedPrefix) && !_isNegated(t)) return false;
+            // Legacy exact-token include.
+            if (t === oppositeEquippedToken) return false;
+            return true;
+        });
+        const existingExclude = next.filter((t) => _isNegated(t) && _equippedMatchesPrefix(_stripNegation(t), equippedPrefix));
+        const bestExcludeCopies = existingExclude.length > 0
+            ? Math.min(...existingExclude.map((t) => _equippedCopiesFromRaw(_stripNegation(t))))
+            : null;
+        const alreadyBroad = bestExcludeCopies === 1;
+        if (!alreadyBroad) {
+            // Replace any narrower exclude (e.g. "-E:Unit|Item:2") with the broad exclusion.
+            for (const t of existingExclude) {
+                const idx = next.indexOf(t);
+                if (idx !== -1) next.splice(idx, 1);
+            }
             next.push(equippedToken);
             posthog.capture('token_added', { token: equippedToken, source });
             recordAction({ type: 'token_added', source, token: equippedToken });
@@ -166,25 +287,73 @@ export function excludeItemOnUnit(unit, item, source = 'equip_ui') {
 
 export function addTokens(tokensToAdd, source = 'unknown') {
     selectedTokens.update(tokens => {
-        const existing = new Set(tokens);
-        const next = [...tokens];
+        let next = [...tokens];
         const added = [];
+
         for (const t of tokensToAdd) {
-            const opposite = _oppositeToken(t);
-            if (opposite && existing.has(opposite)) {
-                existing.delete(opposite);
-                const idx = next.indexOf(opposite);
-                if (idx !== -1) next.splice(idx, 1);
+            const raw = _stripNegation(t);
+            const equipped = _parseEquippedRaw(raw);
+            if (equipped) {
+                const prefix = _equippedPrefix(equipped.unit, equipped.item);
+                const wantCopies = equipped.copies ?? 1;
+                const wantNegated = _isNegated(t);
+
+                // Remove opposite-sign variants.
+                next = next.filter((x) => {
+                    const xRaw = _stripNegation(x);
+                    if (!_equippedMatchesPrefix(xRaw, prefix)) return true;
+                    return _isNegated(x) === wantNegated;
+                });
+
+                const sameSign = next.filter((x) => {
+                    const xRaw = _stripNegation(x);
+                    return _equippedMatchesPrefix(xRaw, prefix) && _isNegated(x) === wantNegated;
+                });
+
+                const best = (() => {
+                    if (sameSign.length === 0) return null;
+                    const counts = sameSign.map((x) => _equippedCopiesFromRaw(_stripNegation(x)));
+                    if (!wantNegated) return Math.max(...counts);
+                    return Math.min(...counts);
+                })();
+
+                const shouldAdd = (() => {
+                    if (best == null) return true;
+                    if (!wantNegated) return wantCopies > best;
+                    return wantCopies < best;
+                })();
+
+                if (!shouldAdd) continue;
+
+                // Replace same-sign variants with stricter token.
+                next = next.filter((x) => {
+                    const xRaw = _stripNegation(x);
+                    if (!_equippedMatchesPrefix(xRaw, prefix)) return true;
+                    return _isNegated(x) !== wantNegated;
+                });
+
+                const finalToken = wantCopies >= 2 ? `${wantNegated ? '-' : ''}${prefix}:${wantCopies}` : `${wantNegated ? '-' : ''}${prefix}`;
+                if (!next.includes(finalToken)) {
+                    next.push(finalToken);
+                    added.push(finalToken);
+                }
+                continue;
             }
-            if (!existing.has(t)) {
-                existing.add(t);
+
+            const opposite = _oppositeToken(t);
+            if (opposite && next.includes(opposite)) {
+                next = next.filter((x) => x !== opposite);
+            }
+            if (!next.includes(t)) {
                 next.push(t);
                 added.push(t);
             }
         }
+
         if (Array.isArray(tokensToAdd) && tokensToAdd.length > 0) {
             recordAction({ type: 'tokens_added', source, tokens: added });
         }
+
         return next;
     });
 }
@@ -438,4 +607,12 @@ export function setHighlightedTokens(tokens) {
 
 export function clearHighlightedTokens() {
     highlightedTokens.set(new Set());
+}
+
+export function setHoveredTokens(tokens) {
+    hoveredTokens.set(new Set(tokens));
+}
+
+export function clearHoveredTokens() {
+    hoveredTokens.set(new Set());
 }

@@ -29,6 +29,11 @@ def get_item_type(item_name: str) -> str:
     """
     if item_name in COMPONENT_ITEMS:
         return "component"
+    # Set-specific / generated items often keep a "TFTxx_" or "TFTx_Item_" prefix
+    # even after cleaning. Treat them as artifacts so "full" remains close to
+    # "standard craftable" completed items in filtering UIs.
+    if (item_name.startswith("TFT") or item_name.startswith("Set")) and "_" in item_name:
+        return "artifact"
     if item_name.endswith("Radiant"):
         return "radiant"
     if item_name.startswith("Artifact_") or "Item_Ornn" in item_name:
@@ -55,4 +60,3 @@ def get_item_prefix(item_name: str) -> str | None:
         return prefix or None
 
     return None
-

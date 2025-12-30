@@ -1,6 +1,5 @@
 <script>
     import { activeTypes, toggleType, showTooltip, hideTooltip } from '../stores/state.js';
-    import ItemFilterMenu from './ItemFilterMenu.svelte';
 
     $: unitActive = $activeTypes.has('unit');
     $: itemActive = $activeTypes.has('item');
@@ -25,20 +24,15 @@
     >
         Units
     </button>
-    <div class="item-toggle-group">
-        <button
-            class="filter-toggle item main"
-            class:active={itemActive}
-            on:click={() => toggleType('item')}
-            on:mouseenter={(e) => handleMouseEnter(e, 'Toggle item nodes in graph')}
-            on:mouseleave={hideTooltip}
-        >
-            Items
-        </button>
-        <div class="item-filter-trigger">
-            <ItemFilterMenu compact active={itemActive} />
-        </div>
-    </div>
+    <button
+        class="filter-toggle item"
+        class:active={itemActive}
+        on:click={() => toggleType('item')}
+        on:mouseenter={(e) => handleMouseEnter(e, 'Toggle item nodes in graph')}
+        on:mouseleave={hideTooltip}
+    >
+        Items
+    </button>
     <button
         class="filter-toggle trait"
         class:active={traitActive}
@@ -54,23 +48,6 @@
     .filter-toggles {
         display: flex;
         gap: 4px;
-    }
-
-    .item-toggle-group {
-        display: inline-flex;
-        align-items: stretch;
-        gap: 0;
-    }
-
-    .filter-toggle.main {
-        border-top-right-radius: 0;
-        border-bottom-right-radius: 0;
-    }
-
-    .item-filter-trigger :global(.trigger) {
-        border-top-left-radius: 0;
-        border-bottom-left-radius: 0;
-        margin-left: -1px;
     }
 
     .filter-toggle {

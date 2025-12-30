@@ -132,7 +132,14 @@ export async function getStats() {
  * @param {string[]|Set<string>} options.itemPrefixes - Item prefixes to include (e.g., Bilgewater)
  */
 export async function fetchUnitItems(unit, tokens = [], options = {}) {
-    const { minSample = 30, topK = 0, sortMode = 'necessity', itemTypes = null, itemPrefixes = null } = options;
+    const {
+        minSample = 30,
+        topK = 0,
+        sortMode = 'necessity',
+        necessityOutcome = 'top4',
+        itemTypes = null,
+        itemPrefixes = null,
+    } = options;
     const tokensParam = tokens.join(',');
     const search = new URLSearchParams({
         unit,
@@ -142,6 +149,9 @@ export async function fetchUnitItems(unit, tokens = [], options = {}) {
         sort_mode: sortMode,
         t: String(Date.now())
     });
+    if (sortMode === 'necessity' && necessityOutcome) {
+        search.set('necessity_outcome', String(necessityOutcome));
+    }
 
     const types = itemTypes instanceof Set ? [...itemTypes] : Array.isArray(itemTypes) ? itemTypes : [];
     if (types.length > 0) {
@@ -218,7 +228,7 @@ export async function fetchItemUnits(item, tokens = [], options = {}) {
  * @param {string[]|Set<string>} options.itemPrefixes - Item prefixes to include (e.g., Bilgewater)
  */
 export async function fetchUnitBuild(unit, tokens = [], options = {}) {
-    const { minSample = 10, slots = 3, itemTypes = null, itemPrefixes = null } = options;
+    const { minSample = 30, slots = 3, itemTypes = null, itemPrefixes = null } = options;
     const tokensParam = tokens.join(',');
     const search = new URLSearchParams({
         unit,

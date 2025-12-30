@@ -8,11 +8,14 @@
         itemExplorerOpen,
         itemExplorerTab,
         itemExplorerSortMode,
+        itemExplorerNecessityOutcome,
         itemExplorerFocus,
         itemExplorerItem,
         itemExplorerUnit,
         itemTypeFilters,
-        itemPrefixFilters
+        itemPrefixFilters,
+        setHoveredTokens,
+        clearHoveredTokens
     } from '../stores/state.js';
     import { parseToken } from '../utils/tokens.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
@@ -45,6 +48,44 @@
     let lastFocusTs = 0;
 
     const FOCUS_SOURCES = new Set(['graph', 'search', 'voice']);
+
+    function nodeIdsForToken(token) {
+        if (typeof token !== 'string') return [];
+        const parsed = parseToken(token);
+        if (parsed.type === 'equipped') {
+            const ids = [];
+            if (parsed.unit) ids.push(`U:${parsed.unit}`);
+            if (parsed.item) ids.push(`I:${parsed.item}`);
+            return ids;
+        }
+        if (parsed.type === 'unit') return parsed.unit ? [`U:${parsed.unit}`] : [];
+        if (parsed.type === 'item') return parsed.item ? [`I:${parsed.item}`] : [];
+        if (parsed.type === 'trait') {
+            if (!parsed.trait) return [];
+            if (Number.isFinite(parsed.tier) && parsed.tier !== null) return [`T:${parsed.trait}:${parsed.tier}`];
+            return [`T:${parsed.trait}`];
+        }
+        if (token.startsWith('U:') || token.startsWith('I:') || token.startsWith('T:')) return [token];
+        return [];
+    }
+
+    function setHoverForTokens(tokens) {
+        const ids = new Set();
+        for (const t of tokens ?? []) {
+            for (const id of nodeIdsForToken(t)) ids.add(id);
+        }
+        setHoveredTokens(ids);
+    }
+
+    function setHoverForBuild(build) {
+        const ids = new Set();
+        if (selectedUnit) ids.add(`U:${selectedUnit}`);
+        for (const row of (build?.items ?? [])) {
+            const itemId = row?.item;
+            if (typeof itemId === 'string' && itemId) ids.add(`I:${itemId}`);
+        }
+        setHoveredTokens(ids);
+    }
 
     // Units and items available from the current filter selection (positive tokens only)
     $: availableUnits = (() => {
@@ -160,7 +201,7 @@
 
     $: baseQueryKey = `${anchorKey}|${activeItemTypes.slice().sort().join('|')}|${activeItemPrefixes.slice().sort().join('|')}|${contextTokens.slice().sort().join(',')}`;
     $: buildQueryKey = exploreMode === 'unit' ? baseQueryKey : '';
-    $: itemsQueryKey = `${baseQueryKey}|${$itemExplorerSortMode}`;
+    $: itemsQueryKey = `${baseQueryKey}|${$itemExplorerSortMode}|${$itemExplorerNecessityOutcome}`;
 
     $: if ($itemExplorerOpen && exploreMode === 'unit' && lastBuildQueryKey && buildQueryKey !== lastBuildQueryKey) staleBuild = true;
     $: if ($itemExplorerOpen && lastItemsQueryKey && itemsQueryKey !== lastItemsQueryKey) staleItems = true;
@@ -194,6 +235,7 @@
         itemExplorerOpen.set(nextOpen);
         if (!nextOpen) {
             posthog.capture('item_explorer_closed');
+            clearHoveredTokens();
             return;
         }
         posthog.capture('item_explorer_opened');
@@ -226,6 +268,7 @@
                         needItems
                             ? fetchUnitItems(selectedUnit, contextTokens, {
                                 sortMode: $itemExplorerSortMode,
+                                necessityOutcome: $itemExplorerNecessityOutcome,
                                 itemTypes: activeItemTypes,
                                 itemPrefixes: activeItemPrefixes,
                             })
@@ -234,7 +277,10 @@
                     : await Promise.all([
                         Promise.resolve(buildData),
                         needItems
-                            ? fetchItemUnits(selectedItem, contextTokens, { sortMode: $itemExplorerSortMode })
+                            ? fetchItemUnits(selectedItem, contextTokens, {
+                                sortMode: $itemExplorerSortMode,
+                                necessityOutcome: $itemExplorerNecessityOutcome,
+                            })
                             : Promise.resolve(data),
                     ]);
             if (version !== fetchVersion) return;
@@ -259,6 +305,7 @@
                 result_count: itemsResult?.items?.length ?? itemsResult?.units?.length ?? 0,
                 tab: $itemExplorerTab,
                 sort_mode: $itemExplorerSortMode,
+                necessity_outcome: showNecessity ? $itemExplorerNecessityOutcome : null,
             });
         } catch (e) {
             if (version !== fetchVersion) return;
@@ -327,9 +374,55 @@
         return `${sign}${v.toFixed(1)}pp`;
     }
 
-    function fmtCi(low, high) {
+    function fmtSigned(value, digits = 2) {
+        if (value === null || value === undefined) return '';
+        const sign = value > 0 ? '+' : '';
+        return `${sign}${value.toFixed(digits)}`;
+    }
+
+    function normalizeOutcome(outcome) {
+        const o = String(outcome ?? '').trim().toLowerCase();
+        if (o === 'top_4' || o === 'topfour') return 'top4';
+        return o || 'top4';
+    }
+
+    function outcomeLabel(outcome) {
+        const o = normalizeOutcome(outcome);
+        if (o === 'top4') return 'Top4';
+        if (o === 'win') return 'Win';
+        if (o === 'placement') return 'Avg placement';
+        if (o === 'rank_score') return 'Rank score';
+        return o;
+    }
+
+    function outcomeDefinition(outcome) {
+        const o = normalizeOutcome(outcome);
+        if (o === 'top4') return 'Top4 (1 if placement ≤ 4, else 0)';
+        if (o === 'win') return 'Win (1 if placement = 1, else 0)';
+        if (o === 'rank_score') return 'Rank score (8 − placement; higher is better)';
+        return 'Avg placement (lower is better)';
+    }
+
+    function outcomeUnit(outcome) {
+        const o = normalizeOutcome(outcome);
+        if (o === 'top4' || o === 'win') return 'pp';
+        if (o === 'placement') return 'places';
+        if (o === 'rank_score') return 'pts';
+        return '';
+    }
+
+    function fmtNecessity(effect, outcome) {
+        if (effect === null || effect === undefined) return '';
+        const o = normalizeOutcome(outcome);
+        if (o === 'top4' || o === 'win') return fmtPp(effect);
+        if (o === 'placement') return fmtSigned(effect, 2);
+        if (o === 'rank_score') return fmtSigned(effect, 2);
+        return fmtPp(effect);
+    }
+
+    function fmtCi(low, high, outcome) {
         if (low === null || low === undefined || high === null || high === undefined) return '';
-        return `[${fmtPp(low)}, ${fmtPp(high)}]`;
+        return `[${fmtNecessity(low, outcome)}, ${fmtNecessity(high, outcome)}]`;
     }
 
     function deltaClass(delta) {
@@ -338,9 +431,17 @@
         return 'neutral';
     }
 
-    function necessityClass(tau) {
-        if (tau > 0.01) return 'positive';
-        if (tau < -0.01) return 'negative';
+    function necessityClass(tau, outcome) {
+        if (tau === null || tau === undefined) return 'neutral';
+        const o = normalizeOutcome(outcome);
+        const abs = Math.abs(Number(tau) || 0);
+        const thresh = o === 'placement' ? 0.05 : 0.01;
+        if (abs < thresh) return 'neutral';
+        const higherIsBetter = o !== 'placement';
+        const dir = higherIsBetter ? 1 : -1;
+        const v = dir * Number(tau);
+        if (v > 0) return 'positive';
+        if (v < 0) return 'negative';
         return 'neutral';
     }
 
@@ -369,14 +470,16 @@
         // If we already computed an estimate for this context, don't refetch.
         if (necessityByToken[eqToken]) return;
 
-        // In the default (unfiltered) view, necessity is precomputed and already present on the row.
-        if (!hasExtraContext && row?.necessity) return;
+        const desiredOutcome = normalizeOutcome($itemExplorerNecessityOutcome);
+        const cachedOutcome = normalizeOutcome(row?.necessity?.outcome);
+        // In the default (unfiltered) view, Top4 necessity is precomputed and already present on the row.
+        if (!hasExtraContext && row?.necessity?.cached === true && cachedOutcome === desiredOutcome) return;
 
         necessityLoadingToken = eqToken;
         necessityErrorByToken = { ...necessityErrorByToken, [eqToken]: null };
 
         try {
-            const res = await fetchItemNecessity(parsed.unit, parsed.item, contextTokens, { outcome: 'top4' });
+            const res = await fetchItemNecessity(parsed.unit, parsed.item, contextTokens, { outcome: $itemExplorerNecessityOutcome });
             necessityByToken = { ...necessityByToken, [eqToken]: res };
         } catch (e) {
             necessityErrorByToken = { ...necessityErrorByToken, [eqToken]: e?.message ?? String(e) };
@@ -533,6 +636,15 @@
                                 <option value="necessity">Most necessary (AIPW)</option>
                             </select>
                         </label>
+                        <label class="select">
+                            <span>Outcome</span>
+                            <select bind:value={$itemExplorerNecessityOutcome} on:change={run} disabled={!showNecessity}>
+                                <option value="top4">Top4</option>
+                                <option value="win">Win</option>
+                                <option value="placement">Avg placement</option>
+                                <option value="rank_score">Rank score</option>
+                            </select>
+                        </label>
                         {#if sortHelpOpen}
                             <div class="sort-help" role="dialog" aria-label="Sort mode help">
                                 <div class="sort-help-header">
@@ -550,8 +662,8 @@
                                 <div class="sort-help-section">
                                     <div class="sort-help-mode">Most necessary (AIPW)</div>
                                     <div class="sort-help-text">
-                                        Estimates how much the item <em>causally</em> increases your chance to Top4 when equipped on the selected unit.
-                                        It answers: “If two endgame boards look similar, what’s the expected Top4 difference if this unit has this item vs not?”
+                                        Estimates how much the item <em>causally</em> changes the selected outcome when equipped on the selected unit.
+                                        It answers: “If two endgame boards look similar, what’s the expected difference if this unit has this item vs not?”
                                     </div>
                                     <div class="sort-help-text">
                                         Inspired by <a href="https://tftable.cc/" target="_blank" rel="noopener noreferrer">TFTable</a>’s “Necessity” idea (“what do you lose when the item is missing?”),
@@ -562,7 +674,7 @@
                                         Under the hood:
                                         <ul>
                                             <li><span class="k">Treatment (T)</span>: this item is equipped on this unit (<code>E:Unit|Item</code>).</li>
-                                            <li><span class="k">Outcome (Y)</span>: Top4 (1 if placement ≤ 4, else 0).</li>
+                                            <li><span class="k">Outcome (Y)</span>: {outcomeDefinition($itemExplorerNecessityOutcome)}.</li>
                                             <li><span class="k">Context (X)</span>: the rest of the board (units + traits) and strength proxies (unit count, 2★/3★ count, gold-value proxy, and <em>rest-of-board</em> item counts).</li>
                                         </ul>
                                     </div>
@@ -583,7 +695,13 @@
                                         Performance note: in the default view, necessity values are precomputed and load fast. If you add extra filters, we compute a fast context-specific estimate for ranking; expanding a row runs the full causal estimate for your exact context (and can take longer).
                                     </div>
                                     <div class="sort-help-text">
-                                        Interpreting the number: <span class="k">+3.0pp</span> means <em>+3 percentage points</em> Top4 chance (e.g. 52% → 55%), not “+3%”.
+                                        {#if normalizeOutcome($itemExplorerNecessityOutcome) === 'placement'}
+                                            Interpreting the number: <span class="k">-0.30</span> means <em>0.30 lower</em> average placement (e.g. 4.2 → 3.9).
+                                        {:else if normalizeOutcome($itemExplorerNecessityOutcome) === 'rank_score'}
+                                            Interpreting the number: <span class="k">+0.50</span> means <em>+0.50 points</em> of rank score (8 − placement).
+                                        {:else}
+                                            Interpreting the number: <span class="k">+3.0pp</span> means <em>+3 percentage points</em> {outcomeLabel($itemExplorerNecessityOutcome)} rate (e.g. 52% → 55%), not “+3%”.
+                                        {/if}
                                     </div>
                                 </div>
 
@@ -632,7 +750,12 @@
                             </div>
                         {:else}
                             {#each builds as build, idx (build.items?.map(i => i?.item ?? '').join('|'))}
-                                <button class="row build-row" on:click={() => applyBuild(build)}>
+                                <button
+                                    class="row build-row"
+                                    on:click={() => applyBuild(build)}
+                                    on:mouseenter={() => setHoverForBuild(build)}
+                                    on:mouseleave={clearHoveredTokens}
+                                >
                                     <div class="row-rank">#{idx + 1}</div>
                                     <div class="build-icons">
                                         {#each [0, 1, 2] as slotIdx}
@@ -677,11 +800,14 @@
                         {:else}
                             {#each items as item, idx (item.item)}
                                 {@const tau = necessityByToken[item.token]?.effect?.tau ?? item.necessity?.tau}
+                                {@const necOutcome = normalizeOutcome(necessityByToken[item.token]?.effect?.outcome ?? item.necessity?.outcome ?? $itemExplorerNecessityOutcome)}
                                 <div
                                     class="row item-row"
                                     role="button"
                                     tabindex="0"
                                     on:click={() => addEquipped(item)}
+                                    on:mouseenter={() => setHoverForTokens([item.token])}
+                                    on:mouseleave={clearHoveredTokens}
                                     on:keydown={(e) => {
                                         if (e.key === 'Enter' || e.key === ' ') {
                                             e.preventDefault();
@@ -714,11 +840,11 @@
                                     <div class="row-metrics">
                                         <div class="row-avg"><AvgPlacement value={item.avg_placement} /></div>
                                         <div
-                                            class="row-delta {showNecessity ? necessityClass(tau ?? null) : deltaClass(item.delta)}"
+                                            class="row-delta {showNecessity ? necessityClass(tau ?? null, necOutcome) : deltaClass(item.delta)}"
                                         >
                                             {#if showNecessity}
                                                 {#if tau !== null && tau !== undefined}
-                                                    {fmtPp(tau)}
+                                                    {fmtNecessity(tau, necOutcome)}
                                                 {:else}
                                                     —
                                                 {/if}
@@ -729,7 +855,7 @@
                                     </div>
                                     <button
                                         class="necessity-btn"
-                                        title="Estimate necessity (AIPW ΔTop4)"
+                                        title={`Estimate necessity (AIPW Δ${outcomeLabel($itemExplorerNecessityOutcome)})`}
                                         aria-label="Estimate necessity"
                                         on:click|stopPropagation={() => toggleNecessity(item)}
                                         disabled={necessityLoadingToken === item.token}
@@ -747,10 +873,11 @@
                                         {:else if necessityByToken[item.token]}
                                             {@const r = necessityByToken[item.token]}
                                             {#if r.effect}
+                                                {@const o = normalizeOutcome(r.effect.outcome)}
                                                 <div class="necessity-row">
-                                                    <span class="k">AIPW ΔTop4</span>
-                                                    <span class="v">{fmtPp(r.effect.tau)}</span>
-                                                    <span class="ci">{fmtCi(r.effect.ci95_low, r.effect.ci95_high)}</span>
+                                                    <span class="k">AIPW Δ{outcomeLabel(o)}{outcomeUnit(o) ? ` (${outcomeUnit(o)})` : ''}</span>
+                                                    <span class="v">{fmtNecessity(r.effect.tau, o)}</span>
+                                                    <span class="ci">{fmtCi(r.effect.ci95_low, r.effect.ci95_high, o)}</span>
                                                 </div>
                                                 <div class="necessity-row meta">
                                                     <span>{r.treatment.n_treated.toLocaleString()} with</span>
@@ -785,10 +912,11 @@
                                             {/if}
                                         {:else if item.necessity}
                                             {@const r = item.necessity}
+                                            {@const o = normalizeOutcome(r.outcome ?? $itemExplorerNecessityOutcome)}
                                             <div class="necessity-row">
-                                                <span class="k">{r.method === 'aipw' ? 'AIPW ΔTop4' : 'Fast ΔTop4'}</span>
-                                                <span class="v">{fmtPp(r.tau)}</span>
-                                                <span class="ci">{fmtCi(r.ci95_low, r.ci95_high)}</span>
+                                                <span class="k">{r.method === 'aipw' ? 'AIPW' : 'Fast'} Δ{outcomeLabel(o)}{outcomeUnit(o) ? ` (${outcomeUnit(o)})` : ''}</span>
+                                                <span class="v">{fmtNecessity(r.tau, o)}</span>
+                                                <span class="ci">{fmtCi(r.ci95_low, r.ci95_high, o)}</span>
                                             </div>
                                             <div class="necessity-row meta">
                                                 <span>{r.n_treated.toLocaleString()} with</span>
@@ -943,8 +1071,8 @@
                             <div class="sort-help-section">
                                 <div class="sort-help-mode">Most necessary (AIPW)</div>
                                 <div class="sort-help-text">
-                                    Estimates how much the item <em>causally</em> increases your chance to Top4 when equipped on a unit.
-                                    It answers: “If two endgame boards look similar, what’s the expected Top4 difference if that unit has this item vs not?”
+                                    Estimates how much the item <em>causally</em> changes the selected outcome when equipped on a unit.
+                                    It answers: “If two endgame boards look similar, what’s the expected difference if that unit has this item vs not?”
                                 </div>
                                 <div class="sort-help-text">
                                     Inspired by <a href="https://tftable.cc/" target="_blank" rel="noopener noreferrer">TFTable</a>’s “Necessity” idea (“what do you lose when the item is missing?”),
@@ -955,7 +1083,7 @@
                                     Under the hood:
                                     <ul>
                                         <li><span class="k">Treatment (T)</span>: this item is equipped on this unit (<code>E:Unit|Item</code>).</li>
-                                        <li><span class="k">Outcome (Y)</span>: Top4 (1 if placement ≤ 4, else 0).</li>
+                                        <li><span class="k">Outcome (Y)</span>: {outcomeDefinition($itemExplorerNecessityOutcome)}.</li>
                                         <li><span class="k">Context (X)</span>: the rest of the board (units + traits) and strength proxies (unit count, 2★/3★ count, gold-value proxy, and <em>rest-of-board</em> item counts).</li>
                                     </ul>
                                 </div>
@@ -976,7 +1104,13 @@
                                     Performance note: in the default view, necessity values are precomputed and load fast. If you add extra filters, we compute a fast context-specific estimate for ranking; expanding a row runs the full causal estimate for your exact context (and can take longer).
                                 </div>
                                 <div class="sort-help-text">
-                                    Interpreting the number: <span class="k">+3.0pp</span> means <em>+3 percentage points</em> Top4 chance (e.g. 52% → 55%), not “+3%”.
+                                    {#if normalizeOutcome($itemExplorerNecessityOutcome) === 'placement'}
+                                        Interpreting the number: <span class="k">-0.30</span> means <em>0.30 lower</em> average placement (e.g. 4.2 → 3.9).
+                                    {:else if normalizeOutcome($itemExplorerNecessityOutcome) === 'rank_score'}
+                                        Interpreting the number: <span class="k">+0.50</span> means <em>+0.50 points</em> of rank score (8 − placement).
+                                    {:else}
+                                        Interpreting the number: <span class="k">+3.0pp</span> means <em>+3 percentage points</em> {outcomeLabel($itemExplorerNecessityOutcome)} rate (e.g. 52% → 55%), not “+3%”.
+                                    {/if}
                                 </div>
                             </div>
 
@@ -1019,11 +1153,14 @@
                     {:else}
                         {#each holders as h, idx (h.unit)}
                             {@const tau = necessityByToken[h.token]?.effect?.tau ?? h.necessity?.tau}
+                            {@const necOutcome = normalizeOutcome(necessityByToken[h.token]?.effect?.outcome ?? h.necessity?.outcome ?? $itemExplorerNecessityOutcome)}
                             <div
                                 class="row item-row"
                                 role="button"
                                 tabindex="0"
                                 on:click={() => addEquipped(h)}
+                                on:mouseenter={() => setHoverForTokens([h.token])}
+                                on:mouseleave={clearHoveredTokens}
                                 on:keydown={(e) => {
                                     if (e.key === 'Enter' || e.key === ' ') {
                                         e.preventDefault();
@@ -1056,11 +1193,11 @@
                                 <div class="row-metrics">
                                     <div class="row-avg"><AvgPlacement value={h.avg_placement} /></div>
                                     <div
-                                        class="row-delta {showNecessity ? necessityClass(tau ?? null) : deltaClass(h.delta)}"
+                                        class="row-delta {showNecessity ? necessityClass(tau ?? null, necOutcome) : deltaClass(h.delta)}"
                                     >
                                         {#if showNecessity}
                                             {#if tau !== null && tau !== undefined}
-                                                {fmtPp(tau)}
+                                                {fmtNecessity(tau, necOutcome)}
                                             {:else}
                                                 —
                                             {/if}
@@ -1071,7 +1208,7 @@
                                 </div>
                                 <button
                                     class="necessity-btn"
-                                    title="Estimate necessity (AIPW ΔTop4)"
+                                    title={`Estimate necessity (AIPW Δ${outcomeLabel($itemExplorerNecessityOutcome)})`}
                                     aria-label="Estimate necessity"
                                     on:click|stopPropagation={() => toggleNecessity(h)}
                                     disabled={necessityLoadingToken === h.token}
@@ -1090,10 +1227,11 @@
                                     {:else if necessityByToken[h.token]}
                                         {@const r = necessityByToken[h.token]}
                                         {#if r.effect}
+                                            {@const o = normalizeOutcome(r.effect.outcome)}
                                             <div class="necessity-row">
-                                                <span class="k">AIPW ΔTop4</span>
-                                                <span class="v">{fmtPp(r.effect.tau)}</span>
-                                                <span class="ci">{fmtCi(r.effect.ci95_low, r.effect.ci95_high)}</span>
+                                                <span class="k">AIPW Δ{outcomeLabel(o)}{outcomeUnit(o) ? ` (${outcomeUnit(o)})` : ''}</span>
+                                                <span class="v">{fmtNecessity(r.effect.tau, o)}</span>
+                                                <span class="ci">{fmtCi(r.effect.ci95_low, r.effect.ci95_high, o)}</span>
                                             </div>
                                             <div class="necessity-row meta">
                                                 <span>{r.treatment.n_treated.toLocaleString()} with</span>
@@ -1128,10 +1266,11 @@
                                         {/if}
                                     {:else if h.necessity}
                                         {@const r = h.necessity}
+                                        {@const o = normalizeOutcome(r.outcome ?? $itemExplorerNecessityOutcome)}
                                         <div class="necessity-row">
-                                            <span class="k">{r.method === 'aipw' ? 'AIPW ΔTop4' : 'Fast ΔTop4'}</span>
-                                            <span class="v">{fmtPp(r.tau)}</span>
-                                            <span class="ci">{fmtCi(r.ci95_low, r.ci95_high)}</span>
+                                            <span class="k">{r.method === 'aipw' ? 'AIPW' : 'Fast'} Δ{outcomeLabel(o)}{outcomeUnit(o) ? ` (${outcomeUnit(o)})` : ''}</span>
+                                            <span class="v">{fmtNecessity(r.tau, o)}</span>
+                                            <span class="ci">{fmtCi(r.ci95_low, r.ci95_high, o)}</span>
                                         </div>
                                         <div class="necessity-row meta">
                                             <span>{r.n_treated.toLocaleString()} with</span>
@@ -1445,13 +1584,15 @@
         padding: 8px 14px;
         border-bottom: 1px solid var(--border);
         align-items: center;
+        flex-wrap: wrap;
     }
 
     .select {
         display: flex;
         align-items: center;
         gap: 6px;
-        flex: 1;
+        flex: 1 1 140px;
+        min-width: 0;
     }
 
     .select span {
@@ -1460,6 +1601,12 @@
         letter-spacing: 0.08em;
         font-weight: 700;
         color: var(--text-tertiary);
+        white-space: nowrap;
+    }
+
+    .select select {
+        min-width: 0;
+        width: 100%;
     }
 
     .sort-label {

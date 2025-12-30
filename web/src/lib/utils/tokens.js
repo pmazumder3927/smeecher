@@ -50,8 +50,26 @@ export function parseToken(token) {
             return { type: 'item', item: raw.slice(2), negated };
 
         case 'equipped': {
-            const [unit, item] = raw.slice(2).split('|');
-            return { type: 'equipped', unit, item, negated };
+            const rest = raw.slice(2);
+            const sep = rest.indexOf('|');
+            if (sep === -1) {
+                return { type: 'equipped', unit: rest, item: '', copies: 1, negated };
+            }
+            const unit = rest.slice(0, sep);
+            let itemPart = rest.slice(sep + 1);
+            let copies = 1;
+
+            const colon = itemPart.lastIndexOf(':');
+            if (colon !== -1) {
+                const maybe = itemPart.slice(colon + 1);
+                const n = parseInt(maybe, 10);
+                if (Number.isFinite(n) && String(n) === maybe && n >= 2) {
+                    copies = n;
+                    itemPart = itemPart.slice(0, colon);
+                }
+            }
+
+            return { type: 'equipped', unit, item: itemPart, copies, negated };
         }
 
         case 'trait': {
@@ -88,7 +106,7 @@ export function getTokenLabel(token, getDisplayName) {
             break;
 
         case 'equipped':
-            label = `${getDisplayName('unit', parsed.unit)} → ${getDisplayName('item', parsed.item)}`;
+            label = `${getDisplayName('unit', parsed.unit)} → ${getDisplayName('item', parsed.item)}${parsed.copies >= 2 ? ` ×${parsed.copies}` : ''}`;
             break;
 
         case 'trait':

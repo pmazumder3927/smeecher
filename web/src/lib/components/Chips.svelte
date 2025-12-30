@@ -1,6 +1,6 @@
 <script>
     import { onMount, tick } from 'svelte';
-    import { selectedTokens, removeToken, clearTokens, equipItemOnUnit, excludeItemOnUnit, removeUnitFilters, setUnitStarFilter } from '../stores/state.js';
+    import { selectedTokens, removeToken, clearTokens, addToken, equipItemOnUnit, excludeItemOnUnit, removeUnitFilters, setUnitStarFilter } from '../stores/state.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { getTokenType, getTokenLabel, parseToken } from '../utils/tokens.js';
     import { getSearchIndex } from '../utils/searchIndexCache.js';
@@ -63,13 +63,18 @@
         return matches.slice(0, limit);
     }
 
-    function isEquipped(unit, itemName, negated = false) {
-        const prefix = `${negated ? '-' : ''}E:${unit}|`;
-        const altPrefix = `${negated ? '!' : ''}E:${unit}|`;
-        return (
-            $selectedTokens.includes(`${prefix}${itemName}`) ||
-            (negated && $selectedTokens.includes(`${altPrefix}${itemName}`))
-        );
+    function getSelectedEquippedCopies(unit, itemName, negated = false) {
+        let best = 0;
+        for (const token of $selectedTokens) {
+            const parsed = parseToken(token);
+            if (parsed.type !== 'equipped') continue;
+            if (!!parsed.negated !== negated) continue;
+            if (parsed.unit !== unit || parsed.item !== itemName) continue;
+            const copies = parsed.copies ?? 1;
+            if (!negated) best = Math.max(best, copies);
+            else best = best === 0 ? copies : Math.min(best, copies);
+        }
+        return best;
     }
 
     function getEquippedCount(unit, itemName) {
@@ -154,9 +159,15 @@
             if (equipSelectedIndex < 0 || equipSelectedIndex >= equipResults.length) return;
             const entry = equipResults[equipSelectedIndex];
             const itemName = entry.token.slice(2);
-            if (!isEquipped(unit, itemName, negated)) {
-                if (negated) excludeItemOnUnit(unit, itemName, 'equip_ui');
-                else equipItemOnUnit(unit, itemName, 'equip_ui');
+            const selectedCopies = getSelectedEquippedCopies(unit, itemName, negated);
+            if (negated) {
+                if (!selectedCopies) excludeItemOnUnit(unit, itemName, 'equip_ui');
+            } else {
+                if (!selectedCopies) {
+                    equipItemOnUnit(unit, itemName, 'equip_ui');
+                } else if (selectedCopies < 3) {
+                    addToken(`E:${unit}|${itemName}:${selectedCopies + 1}`, 'equip_ui');
+                }
             }
             equipQuery = '';
             handleEquipInput();
@@ -255,9 +266,10 @@
             } else if (parsed.type === 'equipped') {
                 const unit = parsed.unit;
                 const item = parsed.item;
+                const copies = parsed.copies ?? 1;
                 const key = `${parsed.negated ? '-' : ''}${unit}`;
                 if (!byUnit.has(key)) byUnit.set(key, { key, unit, negated: !!parsed.negated, unitToken: `${parsed.negated ? '-' : ''}U:${unit}`, stars: null, equipped: [] });
-                byUnit.get(key).equipped.push({ token, item });
+                byUnit.get(key).equipped.push({ token, item, copies });
             }
         }
 
@@ -380,11 +392,28 @@
 
                         <div class="champion-items">
                             {#each group.equipped as eq (eq.token)}
+                                {@const decrements = !group.negated && (eq.copies ?? 1) >= 2}
+                                {@const nextCopies = decrements ? (eq.copies ?? 1) - 1 : 0}
                                 <button
                                     class="champion-item"
-                                    on:click={() => removeToken(eq.token)}
-                                    aria-label={`Remove ${getDisplayName('item', eq.item)} from ${getDisplayName('unit', group.unit)}`}
-                                    title={`Remove ${getDisplayName('item', eq.item)}`}
+                                    on:click={() => {
+                                        if (!group.negated && (eq.copies ?? 1) >= 2) {
+                                            const nextCopies = (eq.copies ?? 1) - 1;
+                                            removeToken(eq.token);
+                                            const nextToken = nextCopies >= 2
+                                                ? `E:${group.unit}|${eq.item}:${nextCopies}`
+                                                : `E:${group.unit}|${eq.item}`;
+                                            addToken(nextToken, 'equip_ui');
+                                        } else {
+                                            removeToken(eq.token);
+                                        }
+                                    }}
+                                    aria-label={decrements
+                                        ? `Decrease ${getDisplayName('item', eq.item)} on ${getDisplayName('unit', group.unit)} to ×${nextCopies}`
+                                        : `Remove ${getDisplayName('item', eq.item)}${eq.copies >= 2 ? ` ×${eq.copies}` : ''} from ${getDisplayName('unit', group.unit)}`}
+                                    title={decrements
+                                        ? `Decrease to ×${nextCopies}`
+                                        : `Remove ${getDisplayName('item', eq.item)}${eq.copies >= 2 ? ` ×${eq.copies}` : ''}`}
                                 >
                                     {#if itemIcon(eq.item) && !hasIconFailed('item', eq.item)}
                                         <img
@@ -398,7 +427,7 @@
                                             {getDisplayName('item', eq.item).slice(0, 2)}
                                         </span>
                                     {/if}
-                                    <span class="champion-item-x">×</span>
+                                    <span class="champion-item-x">{eq.copies >= 2 ? `×${eq.copies}` : '×'}</span>
                                 </button>
                             {/each}
 
@@ -455,33 +484,57 @@
 	                                />
 
 	                                <div class="equip-results">
-	                                    {#each equipResults as item, i (item.token)}
+                                    {#each equipResults as item, i (item.token)}
 	                                        {@const itemName = item.apiName}
-	                                        {@const already = isEquipped(group.unit, itemName, group.negated)}
+	                                        {@const selectedCopies = getSelectedEquippedCopies(group.unit, itemName, group.negated)}
+	                                        {@const already = selectedCopies > 0}
+	                                        {@const maxed = !group.negated && selectedCopies >= 3}
 	                                        {@const eqCount = getEquippedCount(group.unit, itemName)}
 	                                        <button
 	                                            class="equip-result"
 	                                            class:selected={i === equipSelectedIndex}
-	                                            disabled={already}
+	                                            disabled={group.negated ? already : maxed}
 	                                            on:click={() => {
-	                                                if (!already) {
-	                                                    if (group.negated) excludeItemOnUnit(group.unit, itemName, 'equip_ui');
-	                                                    else equipItemOnUnit(group.unit, itemName, 'equip_ui');
+	                                                if (group.negated) {
+	                                                    if (!already) excludeItemOnUnit(group.unit, itemName, 'equip_ui');
+	                                                } else {
+	                                                    if (!already) equipItemOnUnit(group.unit, itemName, 'equip_ui');
+	                                                    else if (selectedCopies < 3) addToken(`E:${group.unit}|${itemName}:${selectedCopies + 1}`, 'equip_ui');
 	                                                }
 	                                                equipQuery = '';
 	                                                handleEquipInput();
 	                                                tick().then(() => equipInputEl?.focus?.());
 	                                            }}
-	                                            title={already ? (group.negated ? 'Already excluded' : 'Already equipped') : (group.negated ? 'Exclude item' : 'Equip item')}
+	                                            title={group.negated
+	                                                ? already
+	                                                    ? 'Already excluded'
+	                                                    : 'Exclude item'
+	                                                : maxed
+	                                                    ? 'Max copies selected'
+	                                                    : already
+	                                                        ? 'Add another copy'
+	                                                        : 'Equip item'}
 	                                        >
 	                                            <span class="equip-name">{getDisplayName('item', item.label)}</span>
-	                                            {#if already}
-	                                                <span class="equip-status">{group.negated ? 'Excluded' : 'Added'}</span>
-	                                            {:else if eqCount > 0}
-	                                                <span class="equip-count">{eqCount.toLocaleString()} games</span>
+	                                            {#if group.negated}
+	                                                {#if already}
+	                                                    <span class="equip-status">Excluded</span>
+	                                                {:else if eqCount > 0}
+	                                                    <span class="equip-count">{eqCount.toLocaleString()} games</span>
+	                                                {:else}
+	                                                    <span class="equip-count">No data</span>
+	                                                {/if}
 	                                            {:else}
-	                                                <span class="equip-count">No data</span>
-                                            {/if}
+	                                                {#if maxed}
+	                                                    <span class="equip-count">×{selectedCopies} max</span>
+	                                                {:else if already}
+	                                                    <span class="equip-status">×{selectedCopies} → ×{selectedCopies + 1}</span>
+	                                                {:else if eqCount > 0}
+	                                                    <span class="equip-count">{eqCount.toLocaleString()} games</span>
+	                                                {:else}
+	                                                    <span class="equip-count">No data</span>
+	                                                {/if}
+	                                            {/if}
                                         </button>
                                     {/each}
                                     {#if equipResults.length === 0}
@@ -490,7 +543,7 @@
                                 </div>
 
 	                                <div class="equip-hint">
-	                                    <kbd>Enter</kbd> {group.negated ? 'excludes' : 'equips'} • <kbd>Esc</kbd> closes
+	                                    <kbd>Enter</kbd> {group.negated ? 'excludes' : 'adds'} • <kbd>Esc</kbd> closes
 	                                </div>
 	                            {/if}
 	                        </div>

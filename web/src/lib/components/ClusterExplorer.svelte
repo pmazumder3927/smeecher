@@ -12,10 +12,12 @@
         recordUiAction,
         setHighlightedTokens,
         clearHighlightedTokens,
+        setHoveredTokens,
+        clearHoveredTokens,
         clusterExplorerOpen,
         clusterExplorerRunRequest
     } from '../stores/state.js';
-    import { getTokenType, getTokenLabel } from '../utils/tokens.js';
+    import { getTokenType, getTokenLabel, parseToken } from '../utils/tokens.js';
     import { getSearchIndex } from '../utils/searchIndexCache.js';
     import { getDisplayName, getIconUrl, hasIconFailed, markIconFailed } from '../stores/assets.js';
     import { getPlacementColor } from '../utils/colors.js';
@@ -43,6 +45,11 @@
     let traitsExpanded = false;
 
     let rootEl;
+    let detailsEl;
+    let detailsNavEl;
+    let compSectionEl;
+    let playbookSectionEl;
+    let tokensSectionEl;
     let measuredWidth = 0;
     let widthPx = 440;
     let view = 'list'; // list | details (only used in narrow mode)
@@ -269,6 +276,7 @@
             view = 'list';
             stale = false;
             clearHighlightedTokens();
+            clearHoveredTokens();
             return;
         }
         posthog.capture('explorer_opened');
@@ -293,6 +301,7 @@
         selectedClusterId = null;
         view = 'list';
         clearHighlightedTokens();
+        clearHoveredTokens();
         lastTokensKey = tokensKey;
         lastActiveTypesKey = activeTypesKey;
 
@@ -392,7 +401,49 @@
     function goBack() {
         selectedClusterId = null;
         clearHighlightedTokens();
+        clearHoveredTokens();
         if (isNarrow) view = 'list';
+    }
+
+    function nodeIdsForToken(token) {
+        if (typeof token !== 'string') return [];
+        const parsed = parseToken(token);
+        if (parsed.type === 'equipped') {
+            const ids = [];
+            if (parsed.unit) ids.push(`U:${parsed.unit}`);
+            if (parsed.item) ids.push(`I:${parsed.item}`);
+            return ids;
+        }
+        if (parsed.type === 'unit') return parsed.unit ? [`U:${parsed.unit}`] : [];
+        if (parsed.type === 'item') return parsed.item ? [`I:${parsed.item}`] : [];
+        if (parsed.type === 'trait') {
+            if (!parsed.trait) return [];
+            if (Number.isFinite(parsed.tier) && parsed.tier !== null) return [`T:${parsed.trait}:${parsed.tier}`];
+            return [`T:${parsed.trait}`];
+        }
+        // Fallback: if it's already a graph node id, pass it through.
+        if (token.startsWith('U:') || token.startsWith('I:') || token.startsWith('T:')) return [token];
+        return [];
+    }
+
+    function setHoverForTokens(tokens) {
+        const ids = new Set();
+        for (const t of tokens ?? []) {
+            for (const id of nodeIdsForToken(t)) ids.add(id);
+        }
+        setHoveredTokens(ids);
+    }
+
+    function scrollDetailsTo(el) {
+        if (!detailsEl || !el) return;
+        const navH = detailsNavEl?.getBoundingClientRect?.().height ?? 0;
+        const top = el.offsetTop - navH - 10;
+        detailsEl.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    }
+
+    function scrollDetailsTop() {
+        if (!detailsEl) return;
+        detailsEl.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     function maxHist(hist) {
@@ -641,6 +692,8 @@
                             class="cluster"
                             class:selected={c.cluster_id === selectedClusterId}
                             on:click={() => selectCluster(c)}
+                            on:mouseenter={() => setHoverForTokens(c.signature_tokens ?? [])}
+                            on:mouseleave={clearHoveredTokens}
                         >
                             <div class="cluster-header">
                                 <div class="cluster-left">
@@ -711,7 +764,7 @@
                     {/each}
                 </div>
 
-                <div class="details">
+                <div class="details" bind:this={detailsEl}>
                     {#if selectedCluster}
                         <div class="details-header">
                             <button class="back-btn" on:click={goBack} aria-label="Back to clusters">
@@ -721,6 +774,32 @@
                                 Cluster #{selectedCluster.cluster_id}
                                 <span class="details-sub">{selectedCluster.size.toLocaleString()} games</span>
                             </div>
+                        </div>
+
+                        <div class="details-nav" bind:this={detailsNavEl} aria-label="Cluster sections">
+                            <button type="button" class="details-nav-btn" on:click={scrollDetailsTop}>Overview</button>
+                            <button
+                                type="button"
+                                class="details-nav-btn"
+                                on:click={() => scrollDetailsTo(compSectionEl)}
+                            >
+                                Comp
+                            </button>
+                            <button
+                                type="button"
+                                class="details-nav-btn"
+                                on:click={() => scrollDetailsTo(playbookSectionEl)}
+                            >
+                                Playbook
+                            </button>
+                            <button
+                                type="button"
+                                class="details-nav-btn"
+                                disabled={unifiedTokens.length === 0}
+                                on:click={() => scrollDetailsTo(tokensSectionEl)}
+                            >
+                                Tokens
+                            </button>
                         </div>
 
                         <button
@@ -760,7 +839,7 @@
                             </div>
                         </div>
 
-                        <div class="sig comp">
+                        <div class="sig comp" bind:this={compSectionEl}>
                             <div class="sig-title-row">
                                 <div class="sig-title">Comp</div>
                                 <div class="sig-hint">
@@ -788,6 +867,8 @@
                                             <button
                                                 class="trait-pill"
                                                 on:click={() => addOne(tok)}
+                                                on:mouseenter={() => setHoverForTokens([tok])}
+                                                on:mouseleave={clearHoveredTokens}
                                                 title={`${label}${tr.pct ? ` • ${Math.round(tr.pct * 100)}%` : ''}`}
                                                 aria-label={`Add ${label}`}
                                             >
@@ -836,6 +917,8 @@
                                                 <button
                                                     class="unit-main"
                                                     on:click={() => addOne(u.token)}
+                                                    on:mouseenter={() => setHoverForTokens([u.token])}
+                                                    on:mouseleave={clearHoveredTokens}
                                                     title={`${label}${pct !== null && pct !== undefined ? ` • ${fmtPct(pct)} in cluster` : ''}`}
                                                     aria-label={`Add ${label}`}
                                                 >
@@ -912,6 +995,8 @@
                                                 <button
                                                     class="item-main"
                                                     on:click={() => addOne(`I:${itemId}`)}
+                                                    on:mouseenter={() => setHoverForTokens(holder ? [`I:${itemId}`, `U:${holder}`] : [`I:${itemId}`])}
+                                                    on:mouseleave={clearHoveredTokens}
                                                     title={`${label}${holderLabel ? ` • best on ${holderLabel}` : ''}`}
                                                     aria-label={`Add ${label}`}
                                                 >
@@ -964,7 +1049,7 @@
                             {/if}
                         </div>
 
-	                        <div class="playbook">
+	                        <div class="playbook" bind:this={playbookSectionEl}>
 	                            <div class="playbook-header">
 	                                <div class="playbook-title">Playbook</div>
 	                                <button
@@ -1013,7 +1098,12 @@
 	                                        <div class="pb-list">
 	                                            {#each drivers as row, idx}
 	                                                <div class="pb-row">
-	                                                    <button class="pb-main" on:click={() => addOne(row.token)}>
+	                                                    <button
+	                                                        class="pb-main"
+	                                                        on:click={() => addOne(row.token)}
+	                                                        on:mouseenter={() => setHoverForTokens([row.token])}
+	                                                        on:mouseleave={clearHoveredTokens}
+	                                                    >
 	                                                        <div class="pb-rank">#{idx + 1}</div>
 	                                                        <div class="pb-icon">
 	                                                            {#if row.token?.startsWith('E:')}
@@ -1071,7 +1161,12 @@
 	                                        <div class="pb-list">
 	                                            {#each killers as row, idx}
 	                                                <div class="pb-row">
-	                                                    <button class="pb-main" on:click={() => addOne(row.token)}>
+	                                                    <button
+	                                                        class="pb-main"
+	                                                        on:click={() => addOne(row.token)}
+	                                                        on:mouseenter={() => setHoverForTokens([row.token])}
+	                                                        on:mouseleave={clearHoveredTokens}
+	                                                    >
 	                                                        <div class="pb-rank">#{idx + 1}</div>
 	                                                        <div class="pb-icon">
 	                                                            {#if row.token?.startsWith('E:')}
@@ -1124,14 +1219,19 @@
 	                        </div>
 
 	                        {#if unifiedTokens.length > 0}
-	                            <div class="unified-tokens">
+	                            <div class="unified-tokens" bind:this={tokensSectionEl}>
 	                                <div class="tokens-header">
 	                                    <span class="tokens-title">Top Tokens</span>
                                     <span class="tokens-count">{unifiedTokens.length} tokens</span>
                                 </div>
                                 <div class="tokens-list">
                                     {#each unifiedTokens as tok}
-                                        <button class="token-row {tok.type}" on:click={() => addOne(tok.token)}>
+                                        <button
+                                            class="token-row {tok.type}"
+                                            on:click={() => addOne(tok.token)}
+                                            on:mouseenter={() => setHoverForTokens([tok.token])}
+                                            on:mouseleave={clearHoveredTokens}
+                                        >
                                             {#if tokenIcon(tok.token) && !hasIconFailed(getTokenType(tok.token), tok.token.slice(2))}
                                                 <img
                                                     class="token-icon"
@@ -1712,6 +1812,47 @@
         overflow: auto;
         min-height: 0;
         padding: 12px 14px 16px;
+    }
+
+    .details-nav {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0 -14px 12px;
+        padding: 10px 14px;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border);
+    }
+
+    .details-nav-btn {
+        height: 28px;
+        padding: 0 10px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--bg-tertiary);
+        color: var(--text-secondary);
+        font-size: 10px;
+        font-weight: 750;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+        font-family: inherit;
+        white-space: nowrap;
+    }
+
+    .details-nav-btn:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.06);
+        border-color: var(--border-hover);
+        color: var(--text-primary);
+    }
+
+    .details-nav-btn:disabled {
+        opacity: 0.45;
+        cursor: default;
     }
 
     .content.narrow {

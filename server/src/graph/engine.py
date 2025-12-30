@@ -251,11 +251,27 @@ class GraphEngine:
             equipped_tokens = [t for t in self.id_to_token if t.startswith(prefix)]
             equipped_token_ids: list[int] = []
             for eq_tok in equipped_tokens:
+                # Parse optional copy-count suffix: E:Unit|Item:2 / :3
+                item_part = eq_tok.split("|", 1)[1] if "|" in eq_tok else ""
+                item_name = item_part
+                copies = 1
+                if ":" in item_part:
+                    base, maybe_copies = item_part.rsplit(":", 1)
+                    try:
+                        c = int(maybe_copies)
+                    except ValueError:
+                        c = None
+                    if c is not None and c >= 2:
+                        copies = c
+                        item_name = base
+
                 tok_id = self.token_to_id.get(eq_tok)
                 tok_stats = self.tokens.get(tok_id) if tok_id is not None else None
                 if tok_id is None or tok_stats is None:
                     continue
-                equipped_token_ids.append(int(tok_id))
+                # Only compute AIPW τ for the base ">=1 copy" equipped token.
+                if copies == 1:
+                    equipped_token_ids.append(int(tok_id))
 
                 bm = base_bitmap_model & tok_stats.bitmap
                 if not bm:
@@ -264,7 +280,6 @@ class GraphEngine:
                 rows = np.searchsorted(base_ids, ids).astype(np.int64, copy=False)
                 unit_item_count[rows] += 1.0
 
-                item_name = eq_tok.split("|", 1)[1]
                 if get_item_type(item_name) == "component":
                     unit_component_count[rows] += 1.0
                 else:
@@ -513,7 +528,14 @@ class GraphEngine:
                 ids.append(pm_id)
                 token_data[token_id] = (ids, psum + placement)
 
-            # Equipped tokens and track board items
+            # Equipped tokens and track board items.
+            #
+            # Notes:
+            # - E:Unit|Item represents "unit has >=1 copy of item".
+            # - When duplicates exist, we also emit count tokens:
+            #   - E:Unit|Item:2 => unit has >=2 copies
+            #   - E:Unit|Item:3 => unit has >=3 copies
+            item_counts: dict[str, int] = {}
             for item_id in items:
                 item_name = self._clean_item_name(item_id)
                 if item_name == "EmptyBag":  # Placeholder for Thief's Gloves random items
@@ -524,17 +546,33 @@ class GraphEngine:
                 else:
                     board_completed_count += 1
                 board_items.add(item_name)
+                item_counts[item_name] = item_counts.get(item_name, 0) + 1
 
-                # Equipped token
-                equipped_token = f"E:{unit_name}|{item_name}"
-                token_id = self._get_or_create_token_id(equipped_token)
-                self.labels[token_id] = f"{unit_name} + {item_name}"
+            def _add_equipped_token(token_str: str, label: str) -> None:
+                token_id = self._get_or_create_token_id(token_str)
+                self.labels[token_id] = label
 
                 if token_id not in token_data:
                     token_data[token_id] = ([], 0)
                 ids, psum = token_data[token_id]
                 ids.append(pm_id)
                 token_data[token_id] = (ids, psum + placement)
+
+            for item_name, n_copies in item_counts.items():
+                _add_equipped_token(
+                    f"E:{unit_name}|{item_name}",
+                    f"{unit_name} + {item_name}",
+                )
+                if n_copies >= 2:
+                    _add_equipped_token(
+                        f"E:{unit_name}|{item_name}:2",
+                        f"{unit_name} + {item_name} x2",
+                    )
+                if n_copies >= 3:
+                    _add_equipped_token(
+                        f"E:{unit_name}|{item_name}:3",
+                        f"{unit_name} + {item_name} x3",
+                    )
 
         # Flush last board
         flush_board()
@@ -796,10 +834,25 @@ class GraphEngine:
                 rest = token_str[2:]
                 if "|" not in rest:
                     continue
-                unit, item_id = rest.split("|", 1)
+                unit, item_part = rest.split("|", 1)
+                copies = 1
+                item_id = item_part
+                if ":" in item_part:
+                    base, maybe_copies = item_part.rsplit(":", 1)
+                    try:
+                        c = int(maybe_copies)
+                    except ValueError:
+                        c = None
+                    if c is not None and c >= 2:
+                        copies = c
+                        item_id = base
+
                 display = item_display_names.get(item_id.lower())
                 if display:
-                    self.labels[token_id] = f"{unit} + {display}"
+                    label = f"{unit} + {display}"
+                    if copies >= 2:
+                        label = f"{label} ×{copies}"
+                    self.labels[token_id] = label
                     updated += 1
                 continue
 

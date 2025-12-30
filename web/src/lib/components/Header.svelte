@@ -3,14 +3,17 @@
     import SearchBar from './SearchBar.svelte';
     import Chips from './Chips.svelte';
     import FilterToggles from './FilterToggles.svelte';
+    import ItemFilterMenu from './ItemFilterMenu.svelte';
     import SortModeSelector from './SortModeSelector.svelte';
     import TopKInput from './TopKInput.svelte';
     import Stats from './Stats.svelte';
-    import { selectedTokens } from '../stores/state.js';
+    import { activeTypes, selectedTokens } from '../stores/state.js';
 
     const dispatch = createEventDispatcher();
 
     export let page = 'home';
+
+    $: itemActive = $activeTypes.has('item');
 
     function openWalkthrough() {
         dispatch('openWalkthrough');
@@ -31,17 +34,20 @@
         </div>
 
         {#if page === 'home'}
-            <div class="search-wrap">
+            <div class="search-area">
                 <SearchBar />
+                <div class="stats-pill" aria-label="Stats">
+                    <Stats />
+                </div>
             </div>
 
             <div class="controls-wrap" aria-label="Filters and sorting">
                 <FilterToggles />
+                <div class="item-scope">
+                    <ItemFilterMenu compact active={itemActive} />
+                </div>
                 <SortModeSelector />
                 <TopKInput />
-                <div class="stats-pill" aria-label="Stats">
-                    <Stats />
-                </div>
             </div>
 
             <div class="actions-wrap">
@@ -95,7 +101,7 @@
         display: flex;
         flex-wrap: wrap;
         gap: 10px 12px;
-        padding: 10px 16px;
+        padding: 9px 14px;
     }
 
     .brand {
@@ -134,14 +140,17 @@
         color: var(--text-secondary);
     }
 
-    .search-wrap {
+    .search-area {
         min-width: 0;
-        flex: 1 1 360px;
-        min-width: 220px;
+        flex: 1 1 520px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
     }
 
-    .search-wrap :global(.search-wrapper) {
-        width: 100%;
+    .search-area :global(.search-wrapper) {
+        flex: 1;
+        min-width: 0;
     }
 
     .controls-wrap {
@@ -150,6 +159,11 @@
         gap: 8px;
         flex-shrink: 0;
         flex-wrap: wrap;
+    }
+
+    .item-scope {
+        display: inline-flex;
+        align-items: center;
     }
 
     .stats-pill {
@@ -246,11 +260,11 @@
 
     @media (max-width: 900px) {
         .bar-row {
-            padding: 10px 12px;
+            padding: 9px 12px;
             gap: 8px 10px;
         }
 
-        .search-wrap {
+        .search-area {
             order: 3;
             flex: 1 1 100%;
             min-width: 0;

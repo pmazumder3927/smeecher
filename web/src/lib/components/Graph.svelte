@@ -6,7 +6,9 @@
         stats,
         activeTypes,
         addToken,
-        highlightedTokens,
+        graphHighlightTokens,
+        itemExplorerOpen,
+        clusterExplorerOpen,
         showTooltip,
         hideTooltip,
         forceHideTooltip,
@@ -28,6 +30,15 @@
     let lastTransform = null;
     let currentNodes = [];
     let nodeSelection = null;
+    let zoomBehavior = null;
+    let graphGroup = null;
+    let resizeObserver = null;
+    let resizeRafId = null;
+    let resizeFinalizeTimer = null;
+    let lastWidth = 0;
+    let lastHeight = 0;
+    let isResizing = false;
+    let autoFrameResumeAt = 0;
 
     // Reactively render when data or filters change
     $: if (svg && $graphData) {
@@ -36,25 +47,25 @@
 
     // Update highlights without re-rendering
     $: if (nodeSelection) {
-        applyHighlights($highlightedTokens);
+        applyHighlights($graphHighlightTokens);
     }
 
     onMount(() => {
         svg = d3.select(container);
         if ($graphData) {
             renderGraph($graphData, $activeTypes);
+        } else {
+            scheduleResize();
         }
 
         // Handle resize
-        const resizeObserver = new ResizeObserver(() => {
-            if ($graphData) {
-                renderGraph($graphData, $activeTypes);
-            }
-        });
+        resizeObserver = new ResizeObserver(() => scheduleResize());
         resizeObserver.observe(container);
 
         return () => {
-            resizeObserver.disconnect();
+            resizeObserver?.disconnect();
+            if (resizeRafId) cancelAnimationFrame(resizeRafId);
+            if (resizeFinalizeTimer) clearTimeout(resizeFinalizeTimer);
             if (driftAnimationId) {
                 cancelAnimationFrame(driftAnimationId);
             }
@@ -65,6 +76,8 @@
     });
 
     onDestroy(() => {
+        if (resizeRafId) cancelAnimationFrame(resizeRafId);
+        if (resizeFinalizeTimer) clearTimeout(resizeFinalizeTimer);
         if (driftAnimationId) {
             cancelAnimationFrame(driftAnimationId);
         }
@@ -73,18 +86,86 @@
         }
     });
 
+    function scheduleResize() {
+        if (resizeRafId) cancelAnimationFrame(resizeRafId);
+        resizeRafId = requestAnimationFrame(() => {
+            resizeRafId = null;
+            handleResize();
+        });
+    }
+
+    function scheduleResizeFinalize() {
+        if (resizeFinalizeTimer) clearTimeout(resizeFinalizeTimer);
+        resizeFinalizeTimer = setTimeout(() => {
+            resizeFinalizeTimer = null;
+            finalizeResize();
+        }, 160);
+    }
+
+    function handleResize() {
+        if (!svg || !container) return;
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        if (!width || !height) return;
+
+        if (width === lastWidth && height === lastHeight) return;
+
+        isResizing = true;
+
+        const prevWidth = lastWidth || width;
+        const prevHeight = lastHeight || height;
+        const dx = (width - prevWidth) / 2;
+        const dy = (height - prevHeight) / 2;
+
+        lastWidth = width;
+        lastHeight = height;
+
+        // Keep viewBox synced without rebuilding the whole graph.
+        svg.attr('viewBox', [0, 0, width, height]);
+
+        // Preserve the world coordinate under the viewport center while resizing.
+        if (zoomBehavior && graphGroup && (dx !== 0 || dy !== 0)) {
+            currentZoomTransform = d3.zoomIdentity
+                .translate(currentZoomTransform.x + dx, currentZoomTransform.y + dy)
+                .scale(currentZoomTransform.k);
+            svg.call(zoomBehavior.transform, currentZoomTransform);
+        }
+
+        // Keep empty state centered without a full re-render.
+        const emptyState = svg.select('.empty-state-fo');
+        if (!emptyState.empty()) {
+            emptyState.attr('x', width / 2 - 200).attr('y', height / 2 - 60);
+        }
+
+        scheduleResizeFinalize();
+    }
+
+    function finalizeResize() {
+        isResizing = false;
+        autoFrameResumeAt = performance.now() + 250;
+    }
+
     function renderGraph(data, types) {
         if (!svg) return;
 
+        if (simulation) {
+            simulation.stop();
+            simulation = null;
+        }
+
         svg.selectAll('*').remove();
         nodeSelection = null;
+        graphGroup = null;
 
         const width = container.clientWidth;
         const height = container.clientHeight;
+        lastWidth = width;
+        lastHeight = height;
 
         svg.attr('viewBox', [0, 0, width, height]);
 
         const g = svg.append('g').attr('class', 'graph-container-g');
+        graphGroup = g;
         g.attr('transform', currentZoomTransform);
 
         // Grid pattern
@@ -122,12 +203,14 @@
                 currentZoomTransform = event.transform;
                 g.attr('transform', event.transform);
 
-                const t = get(tooltip);
-                if (!t.fromTouch) {
-                    hideTooltip();
+                if (event.sourceEvent) {
+                    const t = get(tooltip);
+                    if (!t.fromTouch) {
+                        hideTooltip();
+                    }
                 }
 
-                if (simulation && (Math.abs(panVelocity.x) > 0.5 || Math.abs(panVelocity.y) > 0.5)) {
+                if (event.sourceEvent && simulation && (Math.abs(panVelocity.x) > 0.5 || Math.abs(panVelocity.y) > 0.5)) {
                     simulation.alpha(0.15).restart();
                 }
             })
@@ -136,9 +219,10 @@
                 lastTransform = null;
             });
 
-        svg.call(zoom);
-        svg.call(zoom.transform, currentZoomTransform);
-        startAutoFraming(svg, zoom, width, height, types);
+        zoomBehavior = zoom;
+        svg.call(zoomBehavior);
+        svg.call(zoomBehavior.transform, currentZoomTransform);
+        startAutoFraming(svg, zoomBehavior, width, height, types);
 
         if (!data || data.nodes.length === 0) {
             renderEmptyState(g, width, height);
@@ -303,7 +387,7 @@
         // Nodes
         const node = createNodes(g, nodes, simulation, data);
         nodeSelection = node;
-        applyHighlights(get(highlightedTokens));
+        applyHighlights(get(graphHighlightTokens));
 
         // Tick handler
         simulation.on('tick', () => {
@@ -752,7 +836,12 @@
 
         function drift() {
             driftAnimationId = requestAnimationFrame(drift);
-            if (isDragging || !currentNodes.length) return;
+            if (isDragging || isResizing || performance.now() < autoFrameResumeAt || !currentNodes.length) return;
+
+            // Use the latest viewport size (important during side-panel transitions).
+            width = lastWidth || container?.clientWidth || width;
+            height = lastHeight || container?.clientHeight || height;
+            if (!width || !height) return;
 
             let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
             currentNodes.forEach(n => {
@@ -805,6 +894,7 @@
 
     function renderEmptyState(g, width, height) {
         g.append('foreignObject')
+            .attr('class', 'empty-state-fo')
             .attr('x', width / 2 - 200)
             .attr('y', height / 2 - 60)
             .attr('width', 400)
@@ -819,7 +909,12 @@
 </script>
 
 <div class="graph-section">
-    <div class="graph-container" data-walkthrough="graph">
+    <div
+        class="graph-container"
+        data-walkthrough="graph"
+        class:leftPanelOpen={$itemExplorerOpen}
+        class:rightPanelOpen={$clusterExplorerOpen}
+    >
         <div class="avp-hud" class:empty={$stats.games === 0} aria-label="Average placement">
             <div class="avp-hud-stat">
                 <span class="avp-hud-label">Avg</span>
@@ -850,6 +945,37 @@
         overflow: hidden;
         height: 100%;
         touch-action: none;
+    }
+
+    .graph-container::before,
+    .graph-container::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 28px;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.18s ease;
+        z-index: 4;
+    }
+
+    .graph-container::before {
+        left: 0;
+        background: linear-gradient(to right, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
+    }
+
+    .graph-container::after {
+        right: 0;
+        background: linear-gradient(to left, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
+    }
+
+    .graph-container.leftPanelOpen::before {
+        opacity: 1;
+    }
+
+    .graph-container.rightPanelOpen::after {
+        opacity: 1;
     }
 
     .avp-hud {

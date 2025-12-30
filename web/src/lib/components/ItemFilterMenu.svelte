@@ -94,15 +94,15 @@
         on:click={toggleOpen}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label="Item filters"
-        title="Item filters"
+        aria-label="Item scope"
+        title="Item scope"
     >
         {#if compact}
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M3 5h18M6 12h12M10 19h4" />
             </svg>
         {:else}
-            Item filters
+            Item scope
         {/if}
 
         {#if hasCustomFilters}
@@ -111,7 +111,7 @@
     </button>
 
     {#if open}
-        <div class="popover" role="dialog" aria-label="Item filters">
+        <div class="popover" role="dialog" aria-label="Item scope">
             {#if loading}
                 <div class="muted">Loading…</div>
             {:else if error}
