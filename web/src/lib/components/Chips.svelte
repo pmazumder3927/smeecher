@@ -533,20 +533,16 @@
     .chips {
         display: flex;
         flex-wrap: wrap;
-        gap: 5px;
-        min-height: 24px;
+        gap: 6px;
         align-items: center;
     }
 
     .empty-message {
-        color: var(--text-tertiary);
-        font-size: 11px;
-        white-space: nowrap;
+        display: none;
     }
 
     .empty-hint {
         display: none;
-        opacity: 0.8;
     }
 
     .chip {

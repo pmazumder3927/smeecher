@@ -1944,8 +1944,16 @@ def get_unit_items(
                 star2plus_bm |= stats.bitmap
 
             if star2plus_bm:
-                n_all = len(base_bitmap)
-                n_2p = len(base_bitmap & star2plus_bm)
+                # Match the engine's precomputed cache in the default view (no extra filters),
+                # but allow the decision to adapt to the filtered context when users add tokens.
+                if include_filters or exclude_filters:
+                    n_all = len(base_bitmap)
+                    n_2p = len(base_bitmap & star2plus_bm)
+                else:
+                    unit_stats = ENGINE.tokens.get(ENGINE.token_to_id.get(unit_token))
+                    unit_all_bm = unit_stats.bitmap if unit_stats is not None else base_bitmap
+                    n_all = len(unit_all_bm)
+                    n_2p = len(unit_all_bm & star2plus_bm)
                 if n_all > 0 and n_2p >= 2000 and (n_2p / float(n_all)) >= 0.7:
                     base_bitmap &= star2plus_bm
                     n_base = len(base_bitmap)
@@ -2038,9 +2046,11 @@ def get_unit_items(
         # Worst items first (most positive delta = worsens placement most)
         results.sort(key=lambda x: x["delta"], reverse=True)
     elif sort_mode == "necessity":
-        # Causal "necessity" sort: AIPW estimate of ΔTop4 for each item-on-unit treatment.
-        # When possible (no additional filter tokens), use the engine.bin cache to avoid
-        # fitting thousands of models at request time.
+        # Causal "necessity" sort: estimated ΔTop4 for each item-on-unit treatment.
+        #
+        # - Default view (no extra filters): use the engine.bin cache (fast + stable).
+        # - Filtered context: compute a fast, context-specific estimate for ranking; the
+        #   UI can request the full AIPW estimate for a specific item via /item-necessity.
         necessity_outcome = "top4"
         use_cache = bool(
             getattr(ENGINE, "necessity_top4_ready", False)
@@ -2105,15 +2115,17 @@ def get_unit_items(
                     "scope_min_star": stored_scope or scope_min_star,
                 }
         else:
-            # Fall back to per-request estimation (needed when additional filter tokens are applied).
+            # Fast contextual estimate:
+            # stratify boards into coarse archetype clusters (units+traits only),
+            # then compute a trimmed, cluster-adjusted Top4 difference for each item.
             from pyroaring import BitMap
-            from scipy.sparse import csr_matrix, hstack
 
             max_rows = 80_000
             min_token_freq = max(50, int(min_sample))
             overlap_min = 0.05
             overlap_max = 0.95
             min_group = max(100, int(min_sample))
+            min_cluster_group = max(25, int(min_sample))
 
             base_ids_full = np.array(base_bitmap.to_array(), dtype=np.int64)
             rng = np.random.default_rng(42)
@@ -2127,6 +2139,8 @@ def get_unit_items(
 
             placements = ENGINE.placements[base_ids].astype(np.int16, copy=False)
             y, kind = placements_to_outcome(placements, necessity_outcome)
+            if kind != "binary":
+                y = (placements <= 4).astype(np.float32, copy=False)
 
             feature_tokens = select_feature_tokens(
                 ENGINE,
@@ -2142,120 +2156,153 @@ def get_unit_items(
                 exclude={unit_token},
             )
 
-            X_tok, _, _, _ = build_sparse_feature_matrix(ENGINE, base_bitmap_model, base_ids, feature_tokens)
-            X_tok_f = X_tok.astype(np.float32)
+            X_tok, kept, _, _ = build_sparse_feature_matrix(ENGINE, base_bitmap_model, base_ids, feature_tokens)
 
-            # Rest-of-board strength proxies (avoid conditioning on the unit's own items).
-            Z_full = board_strength_features(ENGINE, base_ids).astype(np.float32, copy=False)
-            unit_item_count = np.zeros((base_ids.size,), dtype=np.float32)
-            unit_component_count = np.zeros((base_ids.size,), dtype=np.float32)
-            unit_completed_count = np.zeros((base_ids.size,), dtype=np.float32)
-
-            for eq_tok in equipped_tokens:
-                tok_id = ENGINE.token_to_id.get(eq_tok)
-                tok_stats = ENGINE.tokens.get(tok_id) if tok_id is not None else None
-                if tok_stats is None:
-                    continue
-                bm = base_bitmap_model & tok_stats.bitmap
-                if not bm:
-                    continue
-                ids = np.array(bm.to_array(), dtype=np.int64)
-                rows = np.searchsorted(base_ids, ids).astype(np.int64, copy=False)
-                unit_item_count[rows] += 1.0
-
-                item_name = eq_tok.split("|", 1)[1]
-                if get_item_type(item_name) == "component":
-                    unit_component_count[rows] += 1.0
-                else:
-                    unit_completed_count[rows] += 1.0
-
-            other_item_count = np.clip(Z_full[:, 0] - unit_item_count, 0.0, None)
-            other_component_count = np.clip(Z_full[:, 1] - unit_component_count, 0.0, None)
-            other_completed_count = np.clip(Z_full[:, 2] - unit_completed_count, 0.0, None)
-            Z = np.stack(
-                [
-                    other_item_count,
-                    other_component_count,
-                    other_completed_count,
-                    Z_full[:, 3],
-                    Z_full[:, 4],
-                    Z_full[:, 5],
-                    Z_full[:, 6],
-                ],
-                axis=1,
-            )
-
-            X = hstack([X_tok_f, csr_matrix(Z, dtype=np.float32)], format="csr")
-
-            cfg = AIPWConfig(
-                n_splits=2,
-                random_state=42,
-                clip_eps=0.01,
-                trim_low=overlap_min,
-                trim_high=overlap_max,
-            )
-
-            for row in results:
-                eq_token = row.get("token")
-                token_id = ENGINE.token_to_id.get(eq_token) if isinstance(eq_token, str) else None
-                token_stats = ENGINE.tokens.get(token_id) if token_id is not None else None
-                if token_stats is None:
+            # If we can't build a meaningful context representation, don't try to estimate.
+            if base_ids.size < 2000 or X_tok.shape[1] < 2:
+                for row in results:
                     row["necessity"] = None
-                    continue
+            else:
+                from sklearn.cluster import MiniBatchKMeans
 
-                treated_bm = base_bitmap_model & token_stats.bitmap
-                n_treated = len(treated_bm)
-                n_control = int(base_ids.size - n_treated)
-                if n_treated < min_group or n_control < min_group:
-                    row["necessity"] = None
-                    continue
+                n_clusters = 8
+                # Keep clusters reasonably populated to reduce noise.
+                n_clusters = min(n_clusters, max(2, int(base_ids.size // 500)))
 
-                treated_ids = np.array(treated_bm.to_array(), dtype=np.int64)
-                T = np.zeros((base_ids.size,), dtype=np.int8)
-                if treated_ids.size:
-                    idxs = np.searchsorted(base_ids, treated_ids).astype(np.int64, copy=False)
-                    T[idxs] = 1
+                kmeans = MiniBatchKMeans(
+                    n_clusters=n_clusters,
+                    random_state=42,
+                    batch_size=2048,
+                    n_init=3,
+                    reassignment_ratio=0.01,
+                )
+                labels = kmeans.fit_predict(X_tok).astype(np.int32, copy=False)
 
-                raw_tau = float(y[T == 1].mean() - y[T == 0].mean())
+                cluster_sizes = np.bincount(labels, minlength=n_clusters).astype(np.int32, copy=False)
+                cluster_y_sum = np.bincount(labels, weights=y.astype(np.float64, copy=False), minlength=n_clusters).astype(
+                    np.float64, copy=False
+                )
+                n_total = int(base_ids.size)
 
-                try:
-                    est, _, _, _ = aipw_ate(X, T, y, kind=kind, cfg=cfg)
-                except Exception:
-                    row["necessity"] = None
-                    continue
+                # Precompute weighted quantiles of per-cluster treatment rates.
+                def _weighted_quantile(v: np.ndarray, w: np.ndarray, q: float) -> float:
+                    if v.size == 0:
+                        return float("nan")
+                    q = float(q)
+                    q = 0.0 if q < 0 else 1.0 if q > 1 else q
+                    order = np.argsort(v)
+                    v_s = v[order]
+                    w_s = w[order].astype(np.float64, copy=False)
+                    cw = np.cumsum(w_s)
+                    total = float(cw[-1]) if cw.size else 0.0
+                    if total <= 0:
+                        return float("nan")
+                    target = q * total
+                    idx = int(np.searchsorted(cw, target, side="left"))
+                    idx = max(0, min(idx, v_s.size - 1))
+                    return float(v_s[idx])
 
-                warnings: list[str] = []
-                if est.frac_trimmed > 0.5:
-                    warnings.append("Low overlap: large fraction of samples trimmed by propensity bounds.")
-                if est.e_p01 < 0.02 or est.e_p99 > 0.98:
-                    warnings.append("Positivity warning: propensity is near 0/1 in parts of X (effect may be unstable).")
+                # Iterate items and compute a trimmed, cluster-adjusted estimate.
+                for row in results:
+                    eq_token = row.get("token")
+                    token_id = ENGINE.token_to_id.get(eq_token) if isinstance(eq_token, str) else None
+                    token_stats = ENGINE.tokens.get(token_id) if token_id is not None else None
+                    if token_stats is None:
+                        row["necessity"] = None
+                        continue
 
-                rr = None
-                e_value = None
-                if kind == "binary" and est.y0 > 0 and np.isfinite(est.y0) and np.isfinite(est.y1):
-                    rr = float(est.y1 / est.y0)
-                    e_value = e_value_from_risk_ratio(rr)
+                    treated_bm = base_bitmap_model & token_stats.bitmap
+                    treated_ids = np.array(treated_bm.to_array(), dtype=np.int64)
+                    T_rows = np.searchsorted(base_ids, treated_ids).astype(np.int32, copy=False) if treated_ids.size else np.zeros((0,), dtype=np.int32)
 
-                row["necessity"] = {
-                    "method": "aipw",
-                    "outcome": necessity_outcome,
-                    "tau": round(float(est.tau), 6),
-                    "ci95_low": round(float(est.ci95_low), 6) if np.isfinite(est.ci95_low) else None,
-                    "ci95_high": round(float(est.ci95_high), 6) if np.isfinite(est.ci95_high) else None,
-                    "se": round(float(est.se), 6) if np.isfinite(est.se) else None,
-                    "p_value": round(float(est.p_value), 6) if est.p_value is not None else None,
-                    "raw_tau": round(raw_tau, 6),
-                    "n_treated": int(n_treated),
-                    "n_control": int(n_control),
-                    "n_used": int(est.n_used),
-                    "frac_trimmed": round(float(est.frac_trimmed), 6),
-                    "e_p01": round(float(est.e_p01), 6),
-                    "e_p50": round(float(est.e_p50), 6),
-                    "e_p99": round(float(est.e_p99), 6),
-                    "risk_ratio": round(rr, 6) if rr is not None and np.isfinite(rr) else None,
-                    "e_value": round(float(e_value), 6) if e_value is not None and np.isfinite(e_value) else None,
-                    "warnings": warnings,
-                }
+                    n_treated = int(T_rows.size)
+                    n_control = int(n_total - n_treated)
+                    if n_treated < min_group or n_control < min_group:
+                        row["necessity"] = None
+                        continue
+
+                    # Raw (unadjusted) Top4 delta.
+                    y_t = y[T_rows] if T_rows.size else np.zeros((0,), dtype=np.float32)
+                    y1_mean = float(y_t.mean()) if y_t.size else float("nan")
+                    y0_mean = float(((y.sum() - y_t.sum()) / max(1, n_control)))
+                    raw_tau = float(y1_mean - y0_mean) if np.isfinite(y1_mean) and np.isfinite(y0_mean) else float("nan")
+
+                    treated_labels = labels[T_rows] if T_rows.size else np.zeros((0,), dtype=np.int32)
+                    treated_counts = np.bincount(treated_labels, minlength=n_clusters).astype(np.int32, copy=False)
+                    treated_y_sum = np.bincount(treated_labels, weights=y_t.astype(np.float64, copy=False), minlength=n_clusters).astype(
+                        np.float64, copy=False
+                    )
+
+                    control_counts = (cluster_sizes - treated_counts).astype(np.int32, copy=False)
+                    control_y_sum = (cluster_y_sum - treated_y_sum).astype(np.float64, copy=False)
+
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        e = treated_counts.astype(np.float64) / np.maximum(cluster_sizes.astype(np.float64), 1.0)
+
+                    used_clusters = (
+                        (cluster_sizes >= (min_cluster_group * 2))
+                        & (treated_counts >= min_cluster_group)
+                        & (control_counts >= min_cluster_group)
+                        & (e >= overlap_min)
+                        & (e <= overlap_max)
+                    )
+
+                    n_used = int(cluster_sizes[used_clusters].sum())
+                    n_treated_used = int(treated_counts[used_clusters].sum())
+                    n_control_used = int(control_counts[used_clusters].sum())
+                    if n_used < max(200, int(0.05 * n_total)) or n_treated_used < 50 or n_control_used < 50:
+                        row["necessity"] = None
+                        continue
+
+                    mu1 = treated_y_sum[used_clusters] / treated_counts[used_clusters]
+                    mu0 = control_y_sum[used_clusters] / control_counts[used_clusters]
+                    diffs = mu1 - mu0
+                    weights = cluster_sizes[used_clusters].astype(np.float64, copy=False)
+                    tau = float(np.average(diffs, weights=weights)) if weights.size else float("nan")
+
+                    # Approx SE for weighted stratified difference in means (binary Y).
+                    var1 = mu1 * (1.0 - mu1)
+                    var0 = mu0 * (1.0 - mu0)
+                    var_diff = (var1 / treated_counts[used_clusters]) + (var0 / control_counts[used_clusters])
+                    w = weights / float(n_used) if n_used > 0 else np.zeros_like(weights)
+                    var_tau = float(np.sum((w**2) * var_diff)) if weights.size else float("nan")
+                    se = float(np.sqrt(var_tau)) if var_tau >= 0 and np.isfinite(var_tau) else float("nan")
+
+                    frac_trimmed = float(1.0 - (n_used / float(n_total))) if n_total else 1.0
+
+                    e_used = e[cluster_sizes > 0]
+                    w_used = cluster_sizes[cluster_sizes > 0]
+                    e_p01 = _weighted_quantile(e_used, w_used, 0.01)
+                    e_p99 = _weighted_quantile(e_used, w_used, 0.99)
+
+                    warnings: list[str] = []
+                    if np.isfinite(frac_trimmed) and frac_trimmed > 0.5:
+                        warnings.append("Low overlap: large fraction of samples trimmed by propensity bounds.")
+                    if np.isfinite(e_p01) and np.isfinite(e_p99) and (e_p01 < 0.02 or e_p99 > 0.98):
+                        warnings.append("Positivity warning: propensity is near 0/1 in parts of X (effect may be unstable).")
+
+                    row["necessity"] = {
+                        "method": "cluster_adjusted",
+                        "outcome": necessity_outcome,
+                        "tau": round(tau, 6) if np.isfinite(tau) else None,
+                        "ci95_low": round(tau - 1.96 * se, 6) if np.isfinite(tau) and np.isfinite(se) else None,
+                        "ci95_high": round(tau + 1.96 * se, 6) if np.isfinite(tau) and np.isfinite(se) else None,
+                        "se": round(se, 6) if np.isfinite(se) else None,
+                        "p_value": None,
+                        "raw_tau": round(raw_tau, 6) if np.isfinite(raw_tau) else None,
+                        "n_treated": int(n_treated),
+                        "n_control": int(n_control),
+                        "n_used": int(n_used),
+                        "frac_trimmed": round(frac_trimmed, 6) if np.isfinite(frac_trimmed) else None,
+                        "e_p01": round(e_p01, 6) if np.isfinite(e_p01) else None,
+                        "e_p50": None,
+                        "e_p99": round(e_p99, 6) if np.isfinite(e_p99) else None,
+                        "risk_ratio": None,
+                        "e_value": None,
+                        "warnings": warnings,
+                        "cached": False,
+                        "scope_min_star": int(scope.get("unit_stars_min") or 1),
+                    }
 
         def _sort_key(x: dict) -> tuple:
             nec = x.get("necessity") or {}

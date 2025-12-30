@@ -364,8 +364,13 @@
         }
 
         necessityOpenToken = eqToken;
-        if (row?.necessity) return;
+        const hasExtraContext = contextTokens.length > 0;
+
+        // If we already computed an estimate for this context, don't refetch.
         if (necessityByToken[eqToken]) return;
+
+        // In the default (unfiltered) view, necessity is precomputed and already present on the row.
+        if (!hasExtraContext && row?.necessity) return;
 
         necessityLoadingToken = eqToken;
         necessityErrorByToken = { ...necessityErrorByToken, [eqToken]: null };
@@ -575,7 +580,7 @@
                                         </ul>
                                     </div>
                                     <div class="sort-help-text">
-                                        Performance note: in the default unfiltered view, these necessity estimates are precomputed and load fast. If you add extra filters, we re‑estimate necessity for that specific context and it can take longer.
+                                        Performance note: in the default view, necessity values are precomputed and load fast. If you add extra filters, we compute a fast context-specific estimate for ranking; expanding a row runs the full causal estimate for your exact context (and can take longer).
                                     </div>
                                     <div class="sort-help-text">
                                         Interpreting the number: <span class="k">+3.0pp</span> means <em>+3 percentage points</em> Top4 chance (e.g. 52% → 55%), not “+3%”.
@@ -671,6 +676,7 @@
                             </div>
                         {:else}
                             {#each items as item, idx (item.item)}
+                                {@const tau = necessityByToken[item.token]?.effect?.tau ?? item.necessity?.tau}
                                 <div
                                     class="row item-row"
                                     role="button"
@@ -708,11 +714,11 @@
                                     <div class="row-metrics">
                                         <div class="row-avg"><AvgPlacement value={item.avg_placement} /></div>
                                         <div
-                                            class="row-delta {showNecessity ? necessityClass(item.necessity?.tau ?? null) : deltaClass(item.delta)}"
+                                            class="row-delta {showNecessity ? necessityClass(tau ?? null) : deltaClass(item.delta)}"
                                         >
                                             {#if showNecessity}
-                                                {#if item.necessity?.tau !== null && item.necessity?.tau !== undefined}
-                                                    {fmtPp(item.necessity.tau)}
+                                                {#if tau !== null && tau !== undefined}
+                                                    {fmtPp(tau)}
                                                 {:else}
                                                     —
                                                 {/if}
@@ -738,27 +744,6 @@
                                             <div class="necessity-row">Estimating…</div>
                                         {:else if necessityErrorByToken[item.token]}
                                             <div class="necessity-row error">{necessityErrorByToken[item.token]}</div>
-                                        {:else if item.necessity}
-                                            {@const r = item.necessity}
-                                            <div class="necessity-row">
-                                                <span class="k">AIPW ΔTop4</span>
-                                                <span class="v">{fmtPp(r.tau)}</span>
-                                                <span class="ci">{fmtCi(r.ci95_low, r.ci95_high)}</span>
-                                            </div>
-                                            <div class="necessity-row meta">
-                                                <span>{r.n_treated.toLocaleString()} with</span>
-                                                <span class="dot">&bull;</span>
-                                                <span>{r.n_control.toLocaleString()} without</span>
-                                                <span class="dot">&bull;</span>
-                                                <span>{r.n_used.toLocaleString()} used</span>
-                                                <span class="dot">&bull;</span>
-                                                <span>{Math.round(r.frac_trimmed * 100)}% trimmed</span>
-                                            </div>
-                                            {#if r.warnings?.length}
-                                                {#each r.warnings as w (w)}
-                                                    <div class="necessity-row warn">{w}</div>
-                                                {/each}
-                                            {/if}
                                         {:else if necessityByToken[item.token]}
                                             {@const r = necessityByToken[item.token]}
                                             {#if r.effect}
@@ -797,6 +782,27 @@
                                             {/if}
                                             {#if !r.effect}
                                                 <div class="necessity-row meta">No estimate available.</div>
+                                            {/if}
+                                        {:else if item.necessity}
+                                            {@const r = item.necessity}
+                                            <div class="necessity-row">
+                                                <span class="k">{r.method === 'aipw' ? 'AIPW ΔTop4' : 'Fast ΔTop4'}</span>
+                                                <span class="v">{fmtPp(r.tau)}</span>
+                                                <span class="ci">{fmtCi(r.ci95_low, r.ci95_high)}</span>
+                                            </div>
+                                            <div class="necessity-row meta">
+                                                <span>{r.n_treated.toLocaleString()} with</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{r.n_control.toLocaleString()} without</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{r.n_used.toLocaleString()} used</span>
+                                                <span class="dot">&bull;</span>
+                                                <span>{Math.round(r.frac_trimmed * 100)}% trimmed</span>
+                                            </div>
+                                            {#if r.warnings?.length}
+                                                {#each r.warnings as w (w)}
+                                                    <div class="necessity-row warn">{w}</div>
+                                                {/each}
                                             {/if}
                                         {:else}
                                             <div class="necessity-row meta">No estimate available.</div>
@@ -967,7 +973,7 @@
                                     </ul>
                                 </div>
                                 <div class="sort-help-text">
-                                    Performance note: necessity values are precomputed and load fast. If you add extra filters, the list still uses the cached global necessity values, but expanding a row will estimate necessity for your exact filtered context (and can take longer).
+                                    Performance note: in the default view, necessity values are precomputed and load fast. If you add extra filters, we compute a fast context-specific estimate for ranking; expanding a row runs the full causal estimate for your exact context (and can take longer).
                                 </div>
                                 <div class="sort-help-text">
                                     Interpreting the number: <span class="k">+3.0pp</span> means <em>+3 percentage points</em> Top4 chance (e.g. 52% → 55%), not “+3%”.
@@ -1012,6 +1018,7 @@
                         </div>
                     {:else}
                         {#each holders as h, idx (h.unit)}
+                            {@const tau = necessityByToken[h.token]?.effect?.tau ?? h.necessity?.tau}
                             <div
                                 class="row item-row"
                                 role="button"
@@ -1049,11 +1056,11 @@
                                 <div class="row-metrics">
                                     <div class="row-avg"><AvgPlacement value={h.avg_placement} /></div>
                                     <div
-                                        class="row-delta {showNecessity ? necessityClass(h.necessity?.tau ?? null) : deltaClass(h.delta)}"
+                                        class="row-delta {showNecessity ? necessityClass(tau ?? null) : deltaClass(h.delta)}"
                                     >
                                         {#if showNecessity}
-                                            {#if h.necessity?.tau !== null && h.necessity?.tau !== undefined}
-                                                {fmtPp(h.necessity.tau)}
+                                            {#if tau !== null && tau !== undefined}
+                                                {fmtPp(tau)}
                                             {:else}
                                                 —
                                             {/if}
@@ -1076,27 +1083,10 @@
 
                             {#if necessityOpenToken === h.token}
                                 <div class="necessity-panel">
-                                    {#if h.necessity}
-                                        {@const r = h.necessity}
-                                        <div class="necessity-row">
-                                            <span class="k">AIPW ΔTop4</span>
-                                            <span class="v">{fmtPp(r.tau)}</span>
-                                            <span class="ci">{fmtCi(r.ci95_low, r.ci95_high)}</span>
-                                        </div>
-                                        <div class="necessity-row meta">
-                                            <span>{r.n_treated.toLocaleString()} with</span>
-                                            <span class="dot">&bull;</span>
-                                            <span>{r.n_control.toLocaleString()} without</span>
-                                            <span class="dot">&bull;</span>
-                                            <span>{r.n_used.toLocaleString()} used</span>
-                                            <span class="dot">&bull;</span>
-                                            <span>{Math.round(r.frac_trimmed * 100)}% trimmed</span>
-                                        </div>
-                                        {#if r.warnings?.length}
-                                            {#each r.warnings as w (w)}
-                                                <div class="necessity-row warn">{w}</div>
-                                            {/each}
-                                        {/if}
+                                    {#if necessityLoadingToken === h.token}
+                                        <div class="necessity-row">Estimating…</div>
+                                    {:else if necessityErrorByToken[h.token]}
+                                        <div class="necessity-row error">{necessityErrorByToken[h.token]}</div>
                                     {:else if necessityByToken[h.token]}
                                         {@const r = necessityByToken[h.token]}
                                         {#if r.effect}
@@ -1136,10 +1126,27 @@
                                         {#if !r.effect}
                                             <div class="necessity-row meta">No estimate available.</div>
                                         {/if}
-                                    {:else if necessityErrorByToken[h.token]}
-                                        <div class="necessity-row error">{necessityErrorByToken[h.token]}</div>
-                                    {:else if necessityLoadingToken === h.token}
-                                        <div class="necessity-row">Estimating…</div>
+                                    {:else if h.necessity}
+                                        {@const r = h.necessity}
+                                        <div class="necessity-row">
+                                            <span class="k">{r.method === 'aipw' ? 'AIPW ΔTop4' : 'Fast ΔTop4'}</span>
+                                            <span class="v">{fmtPp(r.tau)}</span>
+                                            <span class="ci">{fmtCi(r.ci95_low, r.ci95_high)}</span>
+                                        </div>
+                                        <div class="necessity-row meta">
+                                            <span>{r.n_treated.toLocaleString()} with</span>
+                                            <span class="dot">&bull;</span>
+                                            <span>{r.n_control.toLocaleString()} without</span>
+                                            <span class="dot">&bull;</span>
+                                            <span>{r.n_used.toLocaleString()} used</span>
+                                            <span class="dot">&bull;</span>
+                                            <span>{Math.round(r.frac_trimmed * 100)}% trimmed</span>
+                                        </div>
+                                        {#if r.warnings?.length}
+                                            {#each r.warnings as w (w)}
+                                                <div class="necessity-row warn">{w}</div>
+                                            {/each}
+                                        {/if}
                                     {:else}
                                         <div class="necessity-row meta">No estimate available.</div>
                                     {/if}

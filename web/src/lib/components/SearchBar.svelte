@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { fly } from "svelte/transition";
   import { searchTokens } from "../api.js";
   import { addToken, addTokens } from "../stores/state.js";
@@ -426,6 +426,14 @@
     clearResults();
   }
 
+  async function handleClearClick(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    clearInput();
+    await tick();
+    inputEl?.focus?.();
+  }
+
   function addMany(tokens, source) {
     let unique = Array.from(new Set(tokens || [])).filter(Boolean);
     unique = pruneImpliedTokens(unique);
@@ -689,16 +697,35 @@
     class:has-cue={hasFocus && searchReady}
     data-walkthrough="search"
   >
+    <span class="search-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="7" />
+        <path d="M20 20l-3.2-3.2" />
+      </svg>
+    </span>
     <input
-      type="text"
+      type="search"
       bind:this={inputEl}
       bind:value={query}
       on:input={handleInput}
       on:focus={handleFocus}
       on:keydown={handleKeydown}
-      placeholder="ashe -tryndamere3"
+      placeholder="Add filters… (e.g. Lissandra -Tryndamere 3)"
+      aria-label="Search and add filters"
       autocomplete="off"
     />
+
+    {#if query.length > 0}
+      <button
+        type="button"
+        class="clear-btn"
+        on:click={handleClearClick}
+        aria-label="Clear search"
+        title="Clear search"
+      >
+        ×
+      </button>
+    {/if}
     {#if hasFocus && searchReady}
       <div class="input-cue" aria-hidden="true">
         <kbd>Space</kbd><span class="cue-text">add</span>
@@ -804,7 +831,7 @@
 
   input {
     width: 100%;
-    padding: 8px 12px;
+    padding: 8px 42px 8px 36px;
     font-size: 13px;
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
@@ -825,9 +852,58 @@
     box-shadow: 0 4px 16px rgba(0, 112, 243, 0.15);
   }
 
-  .input-cue {
+  .search-icon {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .search-icon svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+  }
+
+  .clear-btn {
     position: absolute;
     right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    font-family: inherit;
+    z-index: 4;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    padding: 0;
+  }
+
+  .clear-btn:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--border);
+    color: var(--text-primary);
+  }
+
+  .input-cue {
+    position: absolute;
+    right: 42px;
     top: 50%;
     transform: translateY(-50%);
     display: flex;
@@ -1069,8 +1145,14 @@
     }
 
     input {
-      padding: 10px 14px;
+      padding: 10px 44px 10px 38px;
       font-size: 14px;
+    }
+
+    .clear-btn {
+      width: 30px;
+      height: 30px;
+      right: 8px;
     }
   }
 </style>

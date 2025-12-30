@@ -1,7 +1,5 @@
 <script>
     import { onMount } from 'svelte';
-    import Header from './lib/components/Header.svelte';
-    import ControlPanel from './lib/components/ControlPanel.svelte';
     import ClusterExplorer from './lib/components/ClusterExplorer.svelte';
     import ItemExplorer from './lib/components/ItemExplorer.svelte';
     import Graph from './lib/components/Graph.svelte';
@@ -9,6 +7,7 @@
     import Tooltip from './lib/components/Tooltip.svelte';
     import Walkthrough from './lib/components/Walkthrough.svelte';
     import ChangelogPage from './lib/components/ChangelogPage.svelte';
+    import Header from './lib/components/Header.svelte';
 
     import { loadCDragonData } from './lib/stores/assets.js';
     import { selectedTokens, topK, graphData, activeTypes, sortMode, itemTypeFilters, itemPrefixFilters } from './lib/stores/state.js';
@@ -137,12 +136,9 @@
 </script>
 
 <div class="app-shell">
-    {#if page === 'home'}
-        <header class="top-bar">
-            <Header {page} on:navigate={handleNavigate} on:openWalkthrough={() => walkthroughOpen = true} />
-            <ControlPanel />
-        </header>
+    <Header {page} on:navigate={handleNavigate} on:openWalkthrough={() => walkthroughOpen = true} />
 
+    {#if page === 'home'}
         <main class="workspace">
             <ItemExplorer />
             <div class="graph-area">
@@ -152,10 +148,9 @@
             <ClusterExplorer />
         </main>
     {:else if page === 'changelog'}
-        <div class="page-container">
-            <Header {page} on:navigate={handleNavigate} on:openWalkthrough={() => walkthroughOpen = true} />
+        <main class="page-container">
             <ChangelogPage />
-        </div>
+        </main>
     {/if}
 </div>
 
@@ -168,16 +163,6 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
-    }
-
-    .top-bar {
-        flex-shrink: 0;
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        padding: 8px 16px;
-        background: var(--bg-secondary);
-        border-bottom: 1px solid var(--border);
     }
 
     .workspace {
@@ -199,25 +184,20 @@
         max-width: 900px;
         margin: 0 auto;
         padding: 32px 24px;
-        height: 100%;
         display: flex;
         flex-direction: column;
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
     }
 
-    @media (max-width: 1024px) {
-        .top-bar {
-            flex-wrap: wrap;
-            gap: 12px;
+    @media (max-width: 900px) {
+        .page-container {
+            padding: 24px 18px;
         }
     }
 
     @media (max-width: 768px) {
-        .top-bar {
-            padding: 8px 12px;
-            flex-direction: column;
-            align-items: stretch;
-        }
-
         .workspace {
             flex-direction: column;
         }
