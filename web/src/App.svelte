@@ -136,20 +136,26 @@
     }
 </script>
 
-<div class="container">
-    <Header {page} on:navigate={handleNavigate} on:openWalkthrough={() => walkthroughOpen = true} />
-
+<div class="app-shell">
     {#if page === 'home'}
-        <ControlPanel />
+        <header class="top-bar">
+            <Header {page} on:navigate={handleNavigate} on:openWalkthrough={() => walkthroughOpen = true} />
+            <ControlPanel />
+        </header>
 
-        <div class="main-row">
+        <main class="workspace">
             <ItemExplorer />
-            <Graph />
+            <div class="graph-area">
+                <Graph />
+                <Legend />
+            </div>
             <ClusterExplorer />
-        </div>
-        <Legend />
+        </main>
     {:else if page === 'changelog'}
-        <ChangelogPage />
+        <div class="page-container">
+            <Header {page} on:navigate={handleNavigate} on:openWalkthrough={() => walkthroughOpen = true} />
+            <ChangelogPage />
+        </div>
     {/if}
 </div>
 
@@ -157,33 +163,67 @@
 <Walkthrough open={walkthroughOpen} on:close={handleWalkthroughClose} />
 
 <style>
-    .container {
-        max-width: 1400px;
-        margin: 0 auto;
-        padding: 32px 40px 24px;
+    .app-shell {
         height: 100%;
         display: flex;
         flex-direction: column;
-        gap: 24px;
+        overflow: hidden;
     }
 
-    .main-row {
+    .top-bar {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 8px 16px;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border);
+    }
+
+    .workspace {
         flex: 1;
         min-height: 0;
         display: flex;
-        gap: 12px;
-        margin-bottom: 16px;
+        gap: 0;
+    }
+
+    .graph-area {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        position: relative;
+    }
+
+    .page-container {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 32px 24px;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+    }
+
+    @media (max-width: 1024px) {
+        .top-bar {
+            flex-wrap: wrap;
+            gap: 12px;
+        }
     }
 
     @media (max-width: 768px) {
-        .container {
-            padding: 20px 16px 16px;
-            gap: 16px;
+        .top-bar {
+            padding: 8px 12px;
+            flex-direction: column;
+            align-items: stretch;
         }
 
-        .main-row {
+        .workspace {
             flex-direction: column;
-            gap: 12px;
+        }
+
+        .page-container {
+            padding: 20px 16px;
         }
     }
 </style>

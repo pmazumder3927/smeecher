@@ -8,108 +8,52 @@
 </script>
 
 <div class="control-panel">
-  <div class="primary-row">
-    <div class="search-section">
-      <SearchBar />
-      <div class="toggles-wrapper">
-        <FilterToggles />
-      </div>
-    </div>
-    <div class="stats-wrapper">
-      <Stats />
-    </div>
+  <div class="search-section">
+    <SearchBar />
   </div>
-
-  <div class="secondary-row">
-    <div class="chips-container">
-      <Chips />
-    </div>
-    <div class="controls-container">
-      <SortModeSelector />
-      <div class="separator"></div>
-      <TopKInput />
-    </div>
+  <div class="chips-section">
+    <Chips />
+  </div>
+  <div class="controls-section">
+    <FilterToggles />
+    <div class="separator"></div>
+    <SortModeSelector />
+    <div class="separator"></div>
+    <TopKInput />
+    <div class="separator"></div>
+    <Stats />
   </div>
 </div>
 
 <style>
   .control-panel {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 0;
+    flex: 1;
     display: flex;
-    flex-direction: column;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-    /* Allow search results and other dropdowns to overflow */
-  }
-
-  .primary-row {
-    position: relative;
-    z-index: 10;
-    padding: 16px 20px;
-    display: flex;
-    gap: 24px;
     align-items: center;
-    justify-content: space-between;
-    background: var(--bg-secondary);
-    border-top-left-radius: 11px;
-    border-top-right-radius: 11px;
+    gap: 12px;
+    min-width: 0;
   }
 
   .search-section {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    min-width: 0;
+    flex: 0 1 320px;
+    min-width: 180px;
   }
 
-  .toggles-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-
-  /* Make search bar take available space */
   .search-section :global(.search-wrapper) {
+    width: 100%;
+  }
+
+  .chips-section {
     flex: 1;
-    max-width: 600px;
-  }
-
-  .stats-wrapper {
-    flex-shrink: 0;
-    padding-left: 24px;
-    border-left: 1px solid var(--border);
-  }
-
-  .secondary-row {
-    position: relative;
-    z-index: 5;
-    padding: 12px 20px;
-    display: flex;
-    gap: 24px;
-    align-items: flex-start; /* Allow chips to wrap */
-    justify-content: space-between;
-    background: var(--bg-tertiary);
-    border-top: 1px solid var(--border);
-    min-height: 52px;
-    border-bottom-left-radius: 11px;
-    border-bottom-right-radius: 11px;
-  }
-
-  .chips-container {
-    flex: 1;
-    display: flex;
-    align-items: center;
     min-width: 0;
-  }
-
-  .controls-container {
     display: flex;
     align-items: center;
-    gap: 16px;
+  }
+
+  .controls-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     flex-shrink: 0;
   }
 
@@ -117,57 +61,49 @@
     width: 1px;
     height: 16px;
     background: var(--border);
+    opacity: 0.5;
   }
 
   @media (max-width: 1024px) {
-    .primary-row {
-      flex-direction: column;
-      align-items: stretch;
-      gap: 16px;
+    .control-panel {
+      flex-wrap: wrap;
+      gap: 8px;
     }
 
-    .stats-wrapper {
-      padding-left: 0;
-      border-left: none;
-      justify-content: flex-end;
-      display: flex;
+    .search-section {
+      flex: 1 1 280px;
     }
 
-    .search-section :global(.search-wrapper) {
-      max-width: none;
+    .chips-section {
+      flex: 1 1 100%;
+      order: 3;
     }
   }
 
   @media (max-width: 768px) {
     .control-panel {
-      border-radius: 8px;
-    }
-
-    .primary-row {
-      border-top-left-radius: 7px;
-      border-top-right-radius: 7px;
-    }
-
-    .secondary-row {
-      border-bottom-left-radius: 7px;
-      border-bottom-right-radius: 7px;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
     }
 
     .search-section {
-      flex-direction: column;
-      align-items: stretch;
-      gap: 12px;
-    }
-
-    .secondary-row {
-      flex-direction: column;
-      gap: 16px;
-      align-items: stretch;
-    }
-
-    .controls-container {
-      justify-content: space-between;
+      flex: none;
       width: 100%;
+    }
+
+    .chips-section {
+      order: 0;
+    }
+
+    .controls-section {
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .separator {
+      display: none;
     }
   }
 </style>

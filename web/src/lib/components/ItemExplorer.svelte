@@ -1162,8 +1162,7 @@
         display: flex;
         flex-direction: column;
         background: var(--bg-secondary);
-        border: 1px solid var(--border);
-        border-radius: 12px;
+        border-right: 1px solid var(--border);
         overflow: hidden;
         min-width: 46px;
         transition: width 0.18s ease;
@@ -1915,6 +1914,8 @@
         .item-explorer {
             width: 100% !important;
             height: auto;
+            border-right: none;
+            border-bottom: 1px solid var(--border);
         }
 
         .item-explorer:not(.open) .toggle {
@@ -1932,11 +1933,11 @@
         }
 
         .panel {
-            height: min(480px, 60vh);
+            height: min(400px, 50vh);
         }
 
         .list-container {
-            max-height: 50vh;
+            max-height: 45vh;
         }
     }
 </style>

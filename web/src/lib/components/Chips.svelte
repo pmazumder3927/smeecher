@@ -523,34 +523,29 @@
 <style>
     .chips-section {
         flex: 1;
+        min-width: 0;
     }
 
     .section-title {
-        font-size: 10px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        color: var(--text-tertiary);
-        margin-bottom: 6px;
+        display: none;
     }
 
     .chips {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
-        min-height: 28px;
+        gap: 5px;
+        min-height: 24px;
+        align-items: center;
     }
 
     .empty-message {
         color: var(--text-tertiary);
-        font-size: 12px;
+        font-size: 11px;
+        white-space: nowrap;
     }
 
     .empty-hint {
-        display: block;
-        margin-top: 6px;
-        color: var(--text-secondary);
-        font-size: 11px;
+        display: none;
         opacity: 0.8;
     }
 

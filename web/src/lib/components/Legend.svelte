@@ -53,16 +53,21 @@
 
 <style>
     .legend {
+        position: absolute;
+        bottom: 12px;
+        left: 12px;
         display: flex;
         flex-wrap: wrap;
-        gap: 32px;
-        padding: 10px 16px;
-        background: transparent;
-        border-top: 1px solid var(--border);
-        font-size: 11px;
-        flex-shrink: 0;
-        opacity: 0.7;
+        gap: 16px;
+        padding: 8px 12px;
+        background: rgba(10, 10, 10, 0.85);
+        backdrop-filter: blur(8px);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font-size: 10px;
+        opacity: 0.6;
         transition: opacity 0.2s ease;
+        z-index: 10;
     }
 
     .legend:hover {
@@ -72,30 +77,30 @@
     .legend-group {
         display: flex;
         align-items: center;
-        gap: 16px;
+        gap: 10px;
     }
 
     .legend-group-title {
         font-size: 9px;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.1em;
+        letter-spacing: 0.08em;
         color: var(--text-tertiary);
     }
 
     .legend-items {
         display: flex;
-        gap: 14px;
+        gap: 10px;
     }
 
     .legend-item {
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 5px;
         color: var(--text-tertiary);
         font-size: 10px;
         cursor: pointer;
-        transition: opacity 0.2s ease;
+        transition: opacity 0.2s ease, color 0.15s ease;
         user-select: none;
         background: none;
         border: none;
@@ -117,8 +122,8 @@
     }
 
     .legend-dot {
-        width: 8px;
-        height: 8px;
+        width: 7px;
+        height: 7px;
         border-radius: 50%;
         flex-shrink: 0;
     }
@@ -136,7 +141,7 @@
     }
 
     .legend-line {
-        width: 16px;
+        width: 14px;
         height: 2px;
         flex-shrink: 0;
     }
@@ -151,14 +156,14 @@
 
     @media (max-width: 768px) {
         .legend {
-            gap: 20px;
-            padding: 8px 12px;
+            bottom: 8px;
+            left: 8px;
+            gap: 12px;
+            padding: 6px 10px;
         }
 
-        .legend-group {
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 6px;
+        .legend-group-title {
+            display: none;
         }
     }
 </style>

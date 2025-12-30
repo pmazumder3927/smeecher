@@ -1181,8 +1181,7 @@
         display: flex;
         flex-direction: column;
         background: var(--bg-secondary);
-        border: 1px solid var(--border);
-        border-radius: 12px;
+        border-left: 1px solid var(--border);
         overflow: hidden;
         min-width: 46px;
     }
@@ -2781,6 +2780,8 @@
         .cluster-explorer {
             width: 100% !important;
             height: auto;
+            border-left: none;
+            border-top: 1px solid var(--border);
         }
 
         .cluster-explorer:not(.open) .toggle {

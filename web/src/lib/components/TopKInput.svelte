@@ -32,25 +32,25 @@
     .topk-control {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 5px;
         white-space: nowrap;
         background: var(--bg-tertiary);
-        padding: 2px 6px 2px 8px;
-        border-radius: 6px;
+        padding: 2px 4px 2px 6px;
+        border-radius: 4px;
         border: 1px solid var(--border);
     }
 
     .label {
-        font-size: 11px;
+        font-size: 10px;
         color: var(--text-secondary);
-        font-weight: 500;
+        font-weight: 600;
     }
 
     input {
-        width: 40px;
-        padding: 4px 0;
-        font-size: 12px;
-        font-weight: 600;
+        width: 36px;
+        padding: 2px 0;
+        font-size: 11px;
+        font-weight: 700;
         background: transparent;
         border: none;
         color: var(--text-primary);

@@ -14,9 +14,10 @@
     }
 </script>
 
-<header>
+<div class="header-inline">
     <div class="logo">
-        <div class="logo-text">smeecher</div>
+        <span class="logo-text">smeecher</span>
+        <a href="https://www.pramit.gg" target="_blank" rel="noopener" class="by-line">by JoyFired</a>
     </div>
 
     <div class="actions">
@@ -29,52 +30,42 @@
                 Changelog
             </button>
             <button class="action-btn" on:click={openWalkthrough} aria-label="Open walkthrough">
-                Walkthrough
+                ?
             </button>
         {/if}
     </div>
-    <a href="https://www.pramit.gg" target="_blank" rel="noopener" class="by-line">
-        by JoyFired
-    </a>
-</header>
+</div>
 
 <style>
-    header {
+    .header-inline {
         display: flex;
         align-items: center;
-        justify-content: center;
-        margin-bottom: 24px;
-        padding: 8px 0 16px;
+        gap: 12px;
         flex-shrink: 0;
-        position: relative;
     }
 
     .logo {
         display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 12px;
+        align-items: baseline;
+        gap: 8px;
     }
 
     .logo-text {
-        font-size: 42px;
+        font-size: 20px;
         font-weight: 800;
-        letter-spacing: -0.05em;
+        letter-spacing: -0.03em;
         color: var(--text-primary);
         text-transform: lowercase;
         line-height: 1;
     }
 
     .by-line {
-        position: absolute;
-        left: calc(50% + 110px);
-        font-size: 12px;
+        font-size: 11px;
         font-style: italic;
         color: var(--text-tertiary);
         text-decoration: none;
-        opacity: 0.5;
+        opacity: 0.6;
         transition: opacity 0.2s ease, color 0.2s ease;
-        letter-spacing: 0.02em;
         white-space: nowrap;
     }
 
@@ -84,60 +75,44 @@
     }
 
     .actions {
-        position: absolute;
-        right: 0;
-        top: 50%;
-        transform: translateY(-50%);
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 4px;
     }
 
     .action-btn {
-        padding: 6px 10px;
-        font-size: 11px;
+        padding: 4px 8px;
+        font-size: 10px;
         font-weight: 700;
-        letter-spacing: 0.06em;
+        letter-spacing: 0.04em;
         text-transform: uppercase;
-        background: var(--bg-tertiary);
+        background: transparent;
         border: 1px solid var(--border);
-        border-radius: 8px;
-        color: var(--text-secondary);
+        border-radius: 6px;
+        color: var(--text-tertiary);
         cursor: pointer;
         transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
         font-family: inherit;
     }
 
     .action-btn:hover {
-        background: var(--bg-secondary);
+        background: rgba(255, 255, 255, 0.05);
         border-color: var(--border-hover);
         color: var(--text-primary);
     }
 
     @media (max-width: 768px) {
-        header {
-            justify-content: center;
-            padding: 4px 0 12px;
-            margin-bottom: 16px;
+        .header-inline {
+            width: 100%;
+            justify-content: space-between;
         }
 
         .logo-text {
-            font-size: 28px;
+            font-size: 18px;
         }
 
         .by-line {
-            left: calc(50% + 70px);
-            font-size: 11px;
-        }
-
-        .actions {
-            gap: 6px;
-        }
-
-        .action-btn {
-            padding: 6px 8px;
-            font-size: 10px;
-            border-radius: 7px;
+            display: none;
         }
     }
 </style>

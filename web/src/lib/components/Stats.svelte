@@ -18,37 +18,35 @@
 
 <style>
     .stats {
-        display: contents;
+        display: flex;
+        align-items: center;
+        gap: 12px;
     }
 
     .stat-inline {
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 0 12px;
-        border-left: 1px solid var(--border);
+        gap: 5px;
         white-space: nowrap;
     }
 
     .stat-label {
-        font-size: 10px;
+        font-size: 9px;
         color: var(--text-tertiary);
         text-transform: uppercase;
         letter-spacing: 0.04em;
-        font-weight: 500;
+        font-weight: 600;
     }
 
     .stat-value {
-        font-size: 14px;
+        font-size: 12px;
         font-weight: 700;
         color: var(--text-primary);
     }
 
     @media (max-width: 768px) {
-        .stat-inline {
-            border-left: none;
-            padding: 0;
-            order: 3;
+        .stats {
+            gap: 10px;
         }
     }
 </style>

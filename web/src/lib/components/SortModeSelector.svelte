@@ -40,23 +40,23 @@
 
     .button-group {
         display: flex;
-        gap: 2px;
+        gap: 1px;
         background: var(--bg-tertiary);
         border: 1px solid var(--border);
-        border-radius: 6px;
+        border-radius: 4px;
         padding: 2px;
     }
 
     button {
-        padding: 4px 10px;
-        font-size: 11px;
-        font-weight: 500;
+        padding: 3px 8px;
+        font-size: 10px;
+        font-weight: 600;
         background: transparent;
         border: none;
-        border-radius: 4px;
+        border-radius: 3px;
         color: var(--text-secondary);
         cursor: pointer;
-        transition: all 0.15s ease;
+        transition: all 0.12s ease;
         font-family: inherit;
     }
 

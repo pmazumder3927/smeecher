@@ -240,8 +240,10 @@
     }
 
     .trigger.compact {
-        padding: 6px 8px;
-        gap: 4px;
+        padding: 4px 6px;
+        gap: 3px;
+        height: 26px;
+        font-size: 10px;
     }
 
     .trigger.active {

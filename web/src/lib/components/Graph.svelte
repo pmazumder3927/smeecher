@@ -845,10 +845,7 @@
     }
 
     .graph-container {
-        background: var(--bg-secondary);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 12px;
+        background: var(--bg-primary);
         position: relative;
         overflow: hidden;
         height: 100%;
@@ -857,46 +854,46 @@
 
     .avp-hud {
         position: absolute;
-        left: 50%;
-        top: 16px;
-        transform: translateX(-50%);
+        right: 12px;
+        top: 12px;
         z-index: 5;
         pointer-events: none;
         display: flex;
         align-items: center;
         gap: 0;
         padding: 0;
-        border-radius: 8px;
+        border-radius: 6px;
         border: 1px solid var(--border);
-        background: var(--bg-secondary);
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+        background: rgba(10, 10, 10, 0.85);
+        backdrop-filter: blur(8px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
         font-variant-numeric: tabular-nums;
         font-feature-settings: "tnum" 1;
         overflow: visible;
     }
 
     .avp-hud.empty {
-        opacity: 0.5;
+        opacity: 0.4;
     }
 
     .avp-hud-stat {
         display: flex;
         align-items: baseline;
-        gap: 6px;
-        padding: 8px 12px;
+        gap: 5px;
+        padding: 6px 10px;
     }
 
     .avp-hud-divider {
         width: 1px;
         align-self: stretch;
-        margin: 6px 0;
+        margin: 5px 0;
         background: var(--border);
         flex-shrink: 0;
     }
 
     .avp-hud-label {
-        font-size: 10px;
-        font-weight: 500;
+        font-size: 9px;
+        font-weight: 600;
         letter-spacing: 0.03em;
         text-transform: uppercase;
         color: var(--text-tertiary);
@@ -904,7 +901,7 @@
     }
 
     .avp-hud-num {
-        font-size: 14px;
+        font-size: 12px;
         font-weight: 700;
         font-variant-numeric: tabular-nums;
         font-feature-settings: "tnum" 1;

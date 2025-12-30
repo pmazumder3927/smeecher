@@ -53,7 +53,7 @@
 <style>
     .filter-toggles {
         display: flex;
-        gap: 8px;
+        gap: 4px;
     }
 
     .item-toggle-group {
@@ -74,22 +74,22 @@
     }
 
     .filter-toggle {
-        height: 28px;
+        height: 26px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         line-height: 1;
-        padding: 6px 10px;
-        border-radius: 5px;
+        padding: 4px 8px;
+        border-radius: 4px;
         border: 1px solid var(--border);
         background: var(--bg-tertiary);
         color: var(--text-secondary);
-        font-size: 11px;
-        font-weight: 600;
+        font-size: 10px;
+        font-weight: 700;
         cursor: pointer;
-        transition: all 0.2s ease;
+        transition: all 0.15s ease;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
+        letter-spacing: 0.04em;
         font-family: inherit;
     }
 
