@@ -113,6 +113,43 @@ export async function fetchClusterPlaybook(tokens, clusterId, params = {}) {
 }
 
 /**
+ * Fetch fast stats (avg/top4/win + placement histogram) for an arbitrary token filter.
+ */
+export async function fetchTokenStats(tokens) {
+    const tokensParam = tokens.join(',');
+    const search = new URLSearchParams({
+        tokens: tokensParam,
+        t: String(Date.now())
+    });
+
+    const response = await fetch(`${API_BASE}/token-stats?${search.toString()}`);
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data?.detail || 'Failed to fetch token stats');
+    }
+    return data;
+}
+
+/**
+ * Fetch a "playbook" for an arbitrary token filter (treated as a cluster).
+ */
+export async function fetchTokenPlaybook(tokens, params = {}) {
+    const tokensParam = tokens.join(',');
+    const search = new URLSearchParams({
+        tokens: tokensParam,
+        t: String(Date.now()),
+        ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)]))
+    });
+
+    const response = await fetch(`${API_BASE}/token-playbook?${search.toString()}`);
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data?.detail || 'Failed to fetch token playbook');
+    }
+    return data;
+}
+
+/**
  * Get engine stats
  */
 export async function getStats() {

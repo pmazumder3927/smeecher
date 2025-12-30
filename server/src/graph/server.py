@@ -24,7 +24,14 @@ import uvicorn
 import httpx
 
 from .engine import GraphEngine, build_engine
-from .clustering import ClusterParams, compute_clusters, compute_cluster_playbook
+from .clustering import (
+    ClusterParams,
+    TokenReportParams,
+    compute_clusters,
+    compute_cluster_playbook,
+    compute_token_playbook,
+    compute_token_stats,
+)
 from .causal import AIPWConfig, OverlapError, aipw_ate, e_value_from_risk_ratio, placements_to_outcome
 from .features import TokenFeatureParams, board_strength_features, build_sparse_feature_matrix, select_feature_tokens
 from .items import get_item_prefix, get_item_type
@@ -1062,6 +1069,63 @@ def get_cluster_playbook(
         token_list,
         params,
         cluster_id,
+        min_with=min_with,
+        min_without=min_without,
+        max_drivers=max_drivers,
+        max_killers=max_killers,
+    )
+
+
+@app.get("/token-stats")
+def get_token_stats(
+    tokens: str = Query(default="", description="Comma-separated tokens (filters)"),
+):
+    """
+    Return fast placement stats for a token filter without running clustering.
+
+    Intended for meta comps list rendering (avg/top4/win + placement histogram).
+    """
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    token_list = [t.strip() for t in tokens.split(",") if t.strip()]
+    return compute_token_stats(ENGINE, token_list)
+
+
+@app.get("/token-playbook")
+def get_token_playbook(
+    tokens: str = Query(default="", description="Comma-separated tokens (filters)"),
+    use_units: bool = Query(default=True),
+    use_traits: bool = Query(default=True),
+    use_items: bool = Query(default=True),
+    min_token_freq: int = Query(default=100, ge=1),
+    top_k_tokens: int = Query(default=10, ge=1, le=30),
+    min_with: int = Query(default=30, ge=1),
+    min_without: int = Query(default=30, ge=1),
+    max_drivers: int = Query(default=12, ge=1, le=50),
+    max_killers: int = Query(default=12, ge=1, le=50),
+):
+    """
+    Compute a "playbook" for a token filter (treat the filtered set as a cluster).
+
+    Used to make TFTAcademy meta comps feel first-class in the explorer without
+    requiring a separate clustering run per comp.
+    """
+    if ENGINE is None:
+        raise HTTPException(status_code=503, detail="Engine not loaded")
+
+    token_list = [t.strip() for t in tokens.split(",") if t.strip()]
+    params = TokenReportParams(
+        use_units=use_units,
+        use_traits=use_traits,
+        use_items=use_items,
+        min_token_freq=min_token_freq,
+        top_k_tokens=top_k_tokens,
+    )
+    return compute_token_playbook(
+        ENGINE,
+        token_list,
+        params,
         min_with=min_with,
         min_without=min_without,
         max_drivers=max_drivers,
