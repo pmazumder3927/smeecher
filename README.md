@@ -60,6 +60,7 @@ uv run smeecher-graph
 - Edge thickness = placement impact
 - Green = improves placement, Red = worsens placement
 - Hover for detailed stats (avg placement, sample size)
+- Shareable URLs: your filters + view settings are encoded in the URL (reload/share to restore)
 
 ## Data
 

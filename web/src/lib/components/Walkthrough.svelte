@@ -107,7 +107,7 @@
       id: "done",
       title: "Done",
       target: null,
-      body: "Re-open this tour anytime from the header.",
+      body: "Re-open this tour anytime from the header. Tip: your URL updates as you add filters — use “Copy link” in the header to share or resume a view.",
       primaryLabel: "Finish",
     },
   ];

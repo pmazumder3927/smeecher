@@ -12,6 +12,7 @@
     import { loadCDragonData } from './lib/stores/assets.js';
     import { selectedTokens, topK, graphData, activeTypes, sortMode, itemTypeFilters, itemPrefixFilters } from './lib/stores/state.js';
     import { fetchGraphData } from './lib/api.js';
+    import { hydrateStateFromLocation, hydrateStateFromUrlOnly, startStateSync } from './lib/utils/urlState.js';
 
     let ready = false;
     let walkthroughOpen = false;
@@ -19,6 +20,7 @@
 
     let fetchTimer = null;
     let fetchVersion = 0;
+    let stopStateSync = null;
 
     // Fetch graph when tokens, topK, activeTypes, or sortMode change (debounced).
     let page = 'home';
@@ -49,7 +51,9 @@
         const nextPath = normalizePathname(path);
         const current = normalizePathname(window.location.pathname);
         if (nextPath === current) return;
-        window.history.pushState({}, '', nextPath);
+        // Preserve current query string so the user can bounce between pages
+        // without losing their current filter state permalink.
+        window.history.pushState({}, '', `${nextPath}${window.location.search || ''}`);
         syncPageFromLocation();
     }
 
@@ -66,9 +70,6 @@
         homeInitPromise = (async () => {
             await loadCDragonData();
             ready = true;
-            const version = ++fetchVersion;
-            clearTimeout(fetchTimer);
-            await fetchGraph($selectedTokens, $topK, $activeTypes, $sortMode, $itemTypeFilters, $itemPrefixFilters, version);
 
             try {
                 const seen = localStorage.getItem(WALKTHROUGH_KEY) === '1';
@@ -96,7 +97,7 @@
 
         fetchTimer = setTimeout(() => {
             fetchGraph(tokensSnapshot, kSnapshot, typesSnapshot, modeSnapshot, itemTypesSnapshot, itemPrefixesSnapshot, version);
-        }, 150);
+        }, $graphData ? 150 : 0);
     }
 
     async function fetchGraph(tokens, k, types, mode, itemTypes, itemPrefixes, version = fetchVersion) {
@@ -112,7 +113,17 @@
     onMount(async () => {
         syncPageFromLocation();
         mounted = true;
-        const onPopState = () => syncPageFromLocation();
+        hydrateStateFromLocation();
+        stopStateSync = startStateSync();
+
+        const onPopState = () => {
+            syncPageFromLocation();
+            if (stopStateSync?.suspend) {
+                stopStateSync.suspend(() => hydrateStateFromUrlOnly());
+            } else {
+                hydrateStateFromUrlOnly();
+            }
+        };
         window.addEventListener('popstate', onPopState);
 
         if (page === 'home') {
@@ -121,6 +132,7 @@
 
         return () => {
             window.removeEventListener('popstate', onPopState);
+            stopStateSync?.();
         };
     });
 

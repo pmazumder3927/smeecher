@@ -1,4 +1,5 @@
 <script>
+    import { onDestroy } from 'svelte';
     import { createEventDispatcher } from 'svelte';
     import SearchBar from './SearchBar.svelte';
     import Chips from './Chips.svelte';
@@ -8,12 +9,19 @@
     import TopKInput from './TopKInput.svelte';
     import Stats from './Stats.svelte';
     import { activeTypes, selectedTokens } from '../stores/state.js';
+    import posthog from '../client/posthog';
+    import { copyTextToClipboard } from '../utils/clipboard.js';
+    import { buildPermalink } from '../utils/urlState.js';
 
     const dispatch = createEventDispatcher();
 
     export let page = 'home';
 
     $: itemActive = $activeTypes.has('item');
+
+    let shareStatus = '';
+    let shareTimer = null;
+    $: shareLabel = shareStatus === 'copied' ? 'Copied' : shareStatus === 'error' ? 'Copy failed' : 'Copy link';
 
     function openWalkthrough() {
         dispatch('openWalkthrough');
@@ -22,6 +30,28 @@
     function navigate(path) {
         dispatch('navigate', { path });
     }
+
+    async function copyLink() {
+        const url = buildPermalink({ pathname: '/' });
+        const ok = await copyTextToClipboard(url);
+        shareStatus = ok ? 'copied' : 'error';
+
+        posthog.capture('share_link_copied', {
+            ok,
+            token_count: $selectedTokens.length,
+            has_tokens: $selectedTokens.length > 0
+        });
+
+        if (shareTimer) clearTimeout(shareTimer);
+        shareTimer = setTimeout(() => {
+            shareStatus = '';
+            shareTimer = null;
+        }, 1800);
+    }
+
+    onDestroy(() => {
+        if (shareTimer) clearTimeout(shareTimer);
+    });
 </script>
 
 <header class="app-header" class:home={page === 'home'} class:changelog={page === 'changelog'}>
@@ -57,6 +87,28 @@
                         <path d="M14 2v6h6" />
                     </svg>
                     <span class="sr-only">Changelog</span>
+                </button>
+
+                <button
+                    type="button"
+                    class="icon-btn"
+                    on:click={copyLink}
+                    title={shareLabel}
+                    aria-label={shareLabel}
+                >
+                    {#if shareStatus === 'copied'}
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M20 6L9 17l-5-5" />
+                        </svg>
+                        <span class="sr-only">Copied link</span>
+                    {:else}
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M10 13a5 5 0 007.07 0l1.41-1.41a5 5 0 00-7.07-7.07L10 4.93" />
+                            <path d="M14 11a5 5 0 00-7.07 0L5.52 12.41a5 5 0 007.07 7.07L14 19.07" />
+                        </svg>
+                        <span class="sr-only">Copy link</span>
+                    {/if}
+                    <span class="sr-only" aria-live="polite">{shareStatus ? shareLabel : ''}</span>
                 </button>
 
                 <button type="button" class="icon-btn" on:click={openWalkthrough} title="Help">

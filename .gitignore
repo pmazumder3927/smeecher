@@ -18,6 +18,7 @@ data/*.bin
 
 # Web build output
 static/
+.vite-build/
 
 # IDE
 .claude/
